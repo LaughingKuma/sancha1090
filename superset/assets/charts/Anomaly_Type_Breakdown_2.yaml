@@ -1,0 +1,68 @@
+slice_name: Anomaly Type Breakdown
+description: null
+certified_by: null
+certification_details: null
+viz_type: pie
+params:
+  datasource: 2__table
+  viz_type: pie
+  slice_id: 2
+  matrixify_enable: false
+  matrixify_mode_columns: disabled
+  matrixify_dimension_selection_mode_columns: members
+  matrixify_dimension_columns:
+    dimension: ''
+    values: []
+  matrixify_topn_value_columns: 10
+  matrixify_all_sort_by_columns: a_to_z
+  matrixify_topn_order_columns: true
+  matrixify_show_column_headers: true
+  matrixify_fit_columns_dynamically: true
+  matrixify_mode_rows: disabled
+  matrixify_dimension_selection_mode_rows: members
+  matrixify_dimension_rows:
+    dimension: ''
+    values: []
+  matrixify_topn_value_rows: 10
+  matrixify_all_sort_by_rows: a_to_z
+  matrixify_topn_order_rows: true
+  matrixify_show_row_labels: true
+  matrixify_row_height: 300
+  matrixify_charts_per_row: 4
+  matrixify_cell_title_template: ''
+  groupby:
+  - anomaly_type
+  metric: count
+  adhoc_filters:
+  - clause: WHERE
+    comparator: No filter
+    expressionType: SIMPLE
+    operator: TEMPORAL_RANGE
+    subject: snapshot_time
+  row_limit: 10
+  sort_by_metric: true
+  color_scheme: supersetColors
+  show_labels_threshold: 5
+  threshold_for_other: 0
+  show_legend: true
+  legendType: scroll
+  legendOrientation: top
+  label_type: key
+  number_format: SMART_NUMBER
+  date_format: smart_date
+  show_labels: true
+  labels_outside: true
+  label_line: false
+  show_total: false
+  outerRadius: 70
+  donut: false
+  innerRadius: 30
+  extra_form_data: {}
+  dashboards: []
+query_context: '{"datasource":{"id":2,"type":"table"},"force":false,"queries":[{"filters":[{"col":"snapshot_time","op":"TEMPORAL_RANGE","val":"No
+  filter"}],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":["anomaly_type"],"metrics":["count"],"orderby":[["count",false]],"annotation_layers":[],"row_limit":10,"series_limit":0,"group_others_when_limit_reached":false,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{},"post_processing":[{"operation":"contribution","options":{"columns":["count"],"rename_columns":["count__contribution"]}}]}],"form_data":{"datasource":"2__table","viz_type":"pie","slice_id":2,"matrixify_enable":false,"matrixify_mode_columns":"disabled","matrixify_dimension_selection_mode_columns":"members","matrixify_dimension_columns":{"dimension":"","values":[]},"matrixify_topn_value_columns":10,"matrixify_all_sort_by_columns":"a_to_z","matrixify_topn_order_columns":true,"matrixify_show_column_headers":true,"matrixify_fit_columns_dynamically":true,"matrixify_mode_rows":"disabled","matrixify_dimension_selection_mode_rows":"members","matrixify_dimension_rows":{"dimension":"","values":[]},"matrixify_topn_value_rows":10,"matrixify_all_sort_by_rows":"a_to_z","matrixify_topn_order_rows":true,"matrixify_show_row_labels":true,"matrixify_row_height":300,"matrixify_charts_per_row":4,"matrixify_cell_title_template":"","groupby":["anomaly_type"],"metric":"count","adhoc_filters":[{"clause":"WHERE","comparator":"No
+  filter","expressionType":"SIMPLE","operator":"TEMPORAL_RANGE","subject":"snapshot_time"}],"row_limit":10,"sort_by_metric":true,"color_scheme":"supersetColors","show_labels_threshold":5,"threshold_for_other":0,"show_legend":true,"legendType":"scroll","legendOrientation":"top","label_type":"key","number_format":"SMART_NUMBER","date_format":"smart_date","show_labels":true,"labels_outside":true,"label_line":false,"show_total":false,"outerRadius":70,"donut":false,"innerRadius":30,"extra_form_data":{},"dashboards":[],"force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
+cache_timeout: null
+uuid: ee139245-7250-42db-bd86-c06624dec0f5
+version: 1.0.0
+dataset_uuid: 089ea899-67f8-4869-bf02-a76a8281bdf0

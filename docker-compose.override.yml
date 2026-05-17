@@ -1,0 +1,18 @@
+networks:
+  default:
+    name: opensky_net
+    driver: bridge
+
+services:
+  airflow-apiserver:
+    ports:
+      - "127.0.0.1:38080:8080"
+  minio:
+    ports:
+      - "127.0.0.1:39001:9001"
+  postgres-analytics:
+    ports:
+      - "127.0.0.1:35432:5432"
+  superset:
+    ports:
+      - "127.0.0.1:38088:8088"

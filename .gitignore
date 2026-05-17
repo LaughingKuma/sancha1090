@@ -1,4 +1,5 @@
 .env
+superset-metadata-backup-*.sql
 .venv/
 logs/
 __pycache__/
@@ -6,4 +7,5 @@ __pycache__/
 .pytest_cache/
 dbt/opensky/target/
 dbt/opensky/dbt_pacakages/
+dbt/opensky/.user.yml
 

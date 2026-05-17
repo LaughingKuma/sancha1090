@@ -1,0 +1,18 @@
+version: 2
+
+sources:
+  - name: staging
+    description: "Raw landing tables loaded by Airflow from MinIO bronze parquet"
+    schema: staging
+    tables:
+      - name: raw_states
+        description: "Aircraft state vectors snapshotted every 10 minutes"
+        columns:
+          - name: icao24
+            description: "Unique aircraft ICAO 24-bit address"
+            tests:
+              - not_null
+          - name: snapshot_time
+            description: "Epoch second when this snapshot was taken"
+            tests:
+              - not_null
