@@ -1,0 +1,70 @@
+version: 2
+
+models:
+  - name: stg_states
+    description: "Cleaned aircraft state vectors, one row per (icao24, snapshot_time)"
+    columns:
+      - name: icao24
+        description: "Unique aircraft ICAO 24-bit address"
+        tests:
+          - not_null
+      - name: snapshot_time
+        description: "Timestamp when this snapshot was captured"
+        tests:
+          - not_null
+
+  - name: agg_country_traffic
+    description: "Airborne aircraft (latest snapshot only) aggregated by origin country"
+    columns:
+      - name: origin_country
+        description: "Country the aircraft is registered in"
+        tests:
+          - not_null
+          - unique
+      - name: airborne_aircraft
+        description: "Count of airborne aircraft from this country in the latest snapshot"
+        tests:
+          - not_null
+
+  - name: anomalies
+    description: "Suspicious or invalid state observations for data quality monitoring"
+    columns:
+      - name: anomaly_type
+        tests:
+          - accepted_values:
+              arguments:
+                  values:
+                    - altitude_too_high
+                    - altitude_below_sea_level
+                    - velocity_too_high
+                    - negative_velocity
+                    - invalid_latitude
+                    - invalid_longitude
+
+  - name: fact_state_snapshots
+    description: "Atomic time-series fact: one row per (aircraft, snapshot)"
+    columns:
+      - name: icao24
+        tests:
+          - not_null
+      - name: snapshot_time
+        tests:
+          - not_null
+
+  - name: agg_hourly_traffic
+    description: "Hourly aggregations of aircraft activity; powers the time-series chart"
+    columns:
+      - name: snapshot_hour
+        tests:
+          - not_null
+          - unique
+
+  - name: agg_status_breakdown
+    description: "Airborne vs on-ground breakdown for the latest snapshot"
+    columns:
+      - name: status
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [airborne, on_ground]
