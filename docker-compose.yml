@@ -1,0 +1,237 @@
+# Minimal Airflow stack, stage 2.
+# Just Postgres (metadata) + Airflow (api-server, scheduler, dag-processor).
+# LocalExecutor — no separate workers, no Redis.
+
+# YAML anchor: define common config once, reuse in each Airflow service.
+# This is the same pattern the official Astronomer compose uses.
+x-airflow-common:
+  &airflow-common
+  build: .
+  image: opensky-airflow:latest
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_PG_USER:-airflow}:${AIRFLOW_PG_PASSWORD:?AIRFLOW_PG_PASSWORD must be set in .env}@postgres-airflow/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: 'true'
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SESSION_SECRET}
+    PYTHONPATH: /opt/airflow
+    OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID}
+    OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET}
+    MINIO_ENDPOINT: minio:9000
+    MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+    MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}
+    MINIO_BUCKET: ${MINIO_BUCKET:-opensky}
+    ANALYTICS_PG_HOST: ${ANALYTICS_PG_HOST:-postgres-analytics}
+    ANALYTICS_PG_PORT: ${ANALYTICS_PG_PORT:-5432}
+    ANALYTICS_PG_DB: ${ANALYTICS_PG_DB:-analytics}
+    ANALYTICS_PG_USER: ${ANALYTICS_PG_USER:-analytics}
+    ANALYTICS_PG_PASSWORD: ${ANALYTICS_PG_PASSWORD:?ANALYTICS_PG_PASSWORD must be set in .env}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./include:/opt/airflow/include
+    - ./plugins:/opt/airflow/plugins
+    - ./config:/opt/airflow/config
+    - ./dbt:/opt/airflow/dbt
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres-airflow:
+      condition: service_healthy
+
+services:
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    user: "0:0"
+    command:
+      - -c
+      - |
+        if [[ -z "${AIRFLOW_UID}" ]]; then
+          echo "ERROR: AIRFLOW_UID is not set. Add 'AIRFLOW_UID=\$(id -u)' to .env"
+          exit 1
+        fi
+        mkdir -p /sources/logs /sources/dags /sources/plugins /sources/include /sources/config
+        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins,include,config}
+        exec /entrypoint airflow db migrate
+    volumes:
+      - .:/sources
+    restart: "no"
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+
+  postgres-airflow:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${AIRFLOW_PG_USER:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_PG_PASSWORD:?AIRFLOW_PG_PASSWORD must be set in .env}
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-airflow-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${AIRFLOW_PG_USER:-airflow}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  postgres-analytics:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${ANALYTICS_PG_USER:-analytics}
+      POSTGRES_PASSWORD: ${ANALYTICS_PG_PASSWORD:?ANALYTICS_PG_PASSWORD must be set in .env}
+      POSTGRES_DB: ${ANALYTICS_PG_DB:-analytics}
+    expose:
+      - "5432"
+    volumes:
+      - postgres-analytics-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${ANALYTICS_PG_USER:-analytics}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  postgres-superset:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${SUPERSET_PG_USER:-superset}
+      POSTGRES_PASSWORD: ${SUPERSET_PG_PASSWORD:?SUPERSET_PG_PASSWORD must be set in .env}
+      POSTGRES_DB: superset
+    expose:
+      - "5432"
+    volumes:
+      - postgres-superset-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${SUPERSET_PG_USER:-superset}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  superset:
+    build: ./superset
+    image: opensky-superset:latest
+    depends_on:
+      postgres-superset:
+        condition: service_healthy
+      postgres-analytics:
+        condition: service_healthy
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:?SUPERSET_SECRET_KEY must be set in .env}
+      DATABASE_DIALECT: postgresql
+      DATABASE_USER: ${SUPERSET_PG_USER:-superset}
+      DATABASE_PASSWORD: ${SUPERSET_PG_PASSWORD:?SUPERSET_PG_PASSWORD must be set in .env}
+      DATABASE_HOST: postgres-superset
+      DATABASE_PORT: 5432
+      DATABASE_DB: superset
+      ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
+      ADMIN_FIRST_NAME: ${SUPERSET_ADMIN_FIRST_NAME:-Admin}
+      ADMIN_LAST_NAME: ${SUPERSET_ADMIN_LAST_NAME:-User}
+      ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:?SUPERSET_ADMIN_PASSWORD must be set in .env}
+      ANALYTICS_DB_URI: >-
+        postgresql+psycopg2://${ANALYTICS_PG_USER:-analytics}:${ANALYTICS_PG_PASSWORD:?ANALYTICS_PG_PASSWORD must be set in .env}@postgres-analytics:5432/${ANALYTICS_PG_DB:-analytics}
+    volumes:
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+      - ./superset/bootstrap.sh:/app/docker/bootstrap.sh:ro
+      - ./superset/assets:/app/assets:ro
+      - superset-home:/app/superset_home
+    expose:
+      - "8088"
+    command: ["/bin/bash", "/app/docker/bootstrap.sh"]
+    restart: unless-stopped
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}
+    expose:
+      - "9000"    # S3 API; reached at minio:9000 from inside the network
+      - "9001"    # Web console; exposed via override
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env};
+      mc mb --ignore-existing local/${MINIO_BUCKET:-opensky};
+      echo 'Bucket ready';
+      exit 0;
+      "
+    restart: "no"
+
+volumes:
+  postgres-airflow-data:
+  postgres-analytics-data:
+  postgres-superset-data:
+  minio-data:
+  superset-home:
