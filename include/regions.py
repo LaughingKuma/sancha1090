@@ -6,7 +6,10 @@ Why split the world into regions?
 2. Operationally: smaller bboxes finish faster, give finer-grained retry
    on failure (a 429 over Europe doesn't lose the data over Asia), and
    parallelize across workers.
-3. Cost: OpenSky charges more credits for larger bboxes; smaller is cheaper.
+3. Cost ceiling: each bbox is already in OpenSky's top per-call tier
+   (4 credits for area > 400 sq deg). Splitting them further would only
+   increase the number of calls without reducing per-call cost, so we
+   stay continent-sized.
 
 Bounding box format: (lamin, lomin, lamax, lomax)
   Latitudes: -90 (south pole) to 90 (north pole)

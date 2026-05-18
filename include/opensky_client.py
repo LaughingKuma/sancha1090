@@ -42,7 +42,6 @@ class OpenSkyClient:
         self.client_secret = client_secret
         self.timeout = timeout
         self.max_retries = max_retries
-        # Token cache state
         self._token: str | None = None
         self._token_expiry: float = 0.0
 
@@ -58,7 +57,6 @@ class OpenSkyClient:
 
     @property
     def is_authenticated(self) -> bool:
-        """True iff both client_id and client_secret are set."""
         return bool(self.client_id and self.client_secret)
 
     def _get_token(self) -> str | None:

@@ -18,10 +18,6 @@ logger = logging.getLogger(__name__)
 
 
 def get_s3fs() -> s3fs.S3FileSystem:
-    """Build an s3fs filesystem pointed at our MinIO endpoint.
-
-    Reads MINIO_ENDPOINT / MINIO_ACCESS_KEY / MINIO_SECRET_KEY from env.
-    """
     endpoint = os.environ["MINIO_ENDPOINT"]
     access_key = os.environ["MINIO_ACCESS_KEY"]
     secret_key = os.environ["MINIO_SECRET_KEY"]
@@ -34,7 +30,6 @@ def get_s3fs() -> s3fs.S3FileSystem:
 
 
 def get_bucket() -> str:
-    """Read the bucket name from env, defaulting to 'opensky'."""
     return os.environ.get("MINIO_BUCKET", "opensky")
 
 

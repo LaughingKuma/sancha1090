@@ -1,0 +1,224 @@
+slice_name: Top 15 Countries by Airborne Aircraft
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  datasource: 2__table
+  viz_type: echarts_timeseries_bar
+  matrixify_enable: false
+  matrixify_mode_columns: disabled
+  matrixify_dimension_selection_mode_columns: members
+  matrixify_dimension_columns:
+    dimension: ''
+    values: []
+  matrixify_topn_value_columns: 10
+  matrixify_all_sort_by_columns: a_to_z
+  matrixify_topn_order_columns: true
+  matrixify_show_column_headers: true
+  matrixify_fit_columns_dynamically: true
+  matrixify_mode_rows: disabled
+  matrixify_dimension_selection_mode_rows: members
+  matrixify_dimension_rows:
+    dimension: ''
+    values: []
+  matrixify_topn_value_rows: 10
+  matrixify_all_sort_by_rows: a_to_z
+  matrixify_topn_order_rows: true
+  matrixify_show_row_labels: true
+  matrixify_row_height: 300
+  matrixify_charts_per_row: 4
+  matrixify_cell_title_template: ''
+  x_axis: origin_country
+  time_grain_sqla: P1D
+  xAxisForceCategorical: false
+  x_axis_sort_asc: true
+  metrics:
+  - expressionType: SIMPLE
+    column:
+      advanced_data_type: null
+      certification_details: null
+      certified_by: null
+      column_name: airborne_aircraft
+      description: null
+      expression: null
+      filterable: true
+      groupby: true
+      id: 2
+      is_certified: false
+      is_dttm: false
+      python_date_format: null
+      type: BIGINT
+      type_generic: 0
+      uuid: 34015fb5-074f-40f6-af17-ff7f3c097f45
+      verbose_name: null
+      warning_markdown: null
+    aggregate: SUM
+    sqlExpression: null
+    datasourceWarning: false
+    hasCustomLabel: false
+    label: SUM(airborne_aircraft)
+    optionName: metric_q3e5f8n4izs_sghacvvp47
+  groupby: []
+  adhoc_filters:
+  - clause: WHERE
+    subject: snapshot_ts
+    operator: TEMPORAL_RANGE
+    comparator: No filter
+    expressionType: SIMPLE
+  group_others_when_limit_reached: false
+  timeseries_limit_metric:
+    expressionType: SIMPLE
+    column:
+      advanced_data_type: null
+      certification_details: null
+      certified_by: null
+      column_name: airborne_aircraft
+      description: null
+      expression: null
+      filterable: true
+      groupby: true
+      id: 2
+      is_certified: false
+      is_dttm: false
+      python_date_format: null
+      type: BIGINT
+      type_generic: 0
+      uuid: 34015fb5-074f-40f6-af17-ff7f3c097f45
+      verbose_name: null
+      warning_markdown: null
+    aggregate: SUM
+    sqlExpression: null
+    datasourceWarning: false
+    hasCustomLabel: false
+    label: SUM(airborne_aircraft)
+    optionName: metric_efip7wmtuaj_h9mzznbhr1l
+  order_desc: true
+  row_limit: '15'
+  truncate_metric: true
+  show_empty_columns: true
+  comparison_type: values
+  annotation_layers: []
+  forecastEnabled: false
+  forecastPeriods: 10
+  forecastInterval: 0.8
+  orientation: horizontal
+  x_axis_title: ''
+  x_axis_title_margin: 0
+  y_axis_title: ''
+  y_axis_title_margin: 15
+  y_axis_title_position: Left
+  sort_series_type: sum
+  sort_series_ascending: false
+  color_scheme: supersetColors
+  time_shift_color: true
+  show_value: false
+  only_total: true
+  percentage_threshold: 0
+  color_by_primary_axis: false
+  minorTicks: false
+  zoomable: false
+  show_legend: true
+  legendType: scroll
+  legendOrientation: top
+  x_axis_time_format: smart_date
+  x_axis_number_format: ~g
+  xAxisLabelRotation: 0
+  xAxisLabelInterval: auto
+  y_axis_format: SMART_NUMBER
+  logAxis: false
+  minorSplitLine: false
+  truncateYAxis: false
+  y_axis_bounds:
+  - null
+  - null
+  truncateXAxis: true
+  force_max_interval: false
+  rich_tooltip: true
+  showTooltipTotal: true
+  showTooltipPercentage: false
+  tooltipSortByMetric: false
+  tooltipTimeFormat: smart_date
+  echart_options: '{}'
+  extra_form_data: {}
+  dashboards: []
+query_context: '{"datasource": {"id": 2, "type": "table"}, "force": false, "queries":
+  [{"filters": [{"col": "snapshot_ts", "op": "TEMPORAL_RANGE", "val": "No filter"}],
+  "extras": {"time_grain_sqla": "P1D", "having": "", "where": ""}, "applied_time_extras":
+  {}, "columns": [{"timeGrain": "P1D", "columnType": "BASE_AXIS", "sqlExpression":
+  "origin_country", "label": "origin_country", "expressionType": "SQL", "isColumnReference":
+  true}], "metrics": [{"expressionType": "SIMPLE", "column": {"advanced_data_type":
+  null, "certification_details": null, "certified_by": null, "column_name": "airborne_aircraft",
+  "description": null, "expression": null, "filterable": true, "groupby": true, "id":
+  2, "is_certified": false, "is_dttm": false, "python_date_format": null, "type":
+  "BIGINT", "type_generic": 0, "uuid": "34015fb5-074f-40f6-af17-ff7f3c097f45", "verbose_name":
+  null, "warning_markdown": null}, "aggregate": "SUM", "sqlExpression": null, "datasourceWarning":
+  false, "hasCustomLabel": false, "label": "SUM(airborne_aircraft)", "optionName":
+  "metric_q3e5f8n4izs_sghacvvp47"}], "orderby": [[{"expressionType": "SIMPLE", "column":
+  {"advanced_data_type": null, "certification_details": null, "certified_by": null,
+  "column_name": "airborne_aircraft", "description": null, "expression": null, "filterable":
+  true, "groupby": true, "id": 2, "is_certified": false, "is_dttm": false, "python_date_format":
+  null, "type": "BIGINT", "type_generic": 0, "uuid": "34015fb5-074f-40f6-af17-ff7f3c097f45",
+  "verbose_name": null, "warning_markdown": null}, "aggregate": "SUM", "sqlExpression":
+  null, "datasourceWarning": false, "hasCustomLabel": false, "label": "SUM(airborne_aircraft)",
+  "optionName": "metric_efip7wmtuaj_h9mzznbhr1l"}, false]], "annotation_layers": [],
+  "row_limit": 15, "series_columns": [], "series_limit": 0, "series_limit_metric":
+  {"expressionType": "SIMPLE", "column": {"advanced_data_type": null, "certification_details":
+  null, "certified_by": null, "column_name": "airborne_aircraft", "description": null,
+  "expression": null, "filterable": true, "groupby": true, "id": 2, "is_certified":
+  false, "is_dttm": false, "python_date_format": null, "type": "BIGINT", "type_generic":
+  0, "uuid": "34015fb5-074f-40f6-af17-ff7f3c097f45", "verbose_name": null, "warning_markdown":
+  null}, "aggregate": "SUM", "sqlExpression": null, "datasourceWarning": false, "hasCustomLabel":
+  false, "label": "SUM(airborne_aircraft)", "optionName": "metric_efip7wmtuaj_h9mzznbhr1l"},
+  "group_others_when_limit_reached": false, "order_desc": true, "url_params": {},
+  "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing":
+  [{"operation": "pivot", "options": {"index": ["origin_country"], "columns": [],
+  "aggregates": {"SUM(airborne_aircraft)": {"operator": "mean"}}, "drop_missing_columns":
+  false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "2__table", "viz_type":
+  "echarts_timeseries_bar", "matrixify_enable": false, "matrixify_mode_columns": "disabled",
+  "matrixify_dimension_selection_mode_columns": "members", "matrixify_dimension_columns":
+  {"dimension": "", "values": []}, "matrixify_topn_value_columns": 10, "matrixify_all_sort_by_columns":
+  "a_to_z", "matrixify_topn_order_columns": true, "matrixify_show_column_headers":
+  true, "matrixify_fit_columns_dynamically": true, "matrixify_mode_rows": "disabled",
+  "matrixify_dimension_selection_mode_rows": "members", "matrixify_dimension_rows":
+  {"dimension": "", "values": []}, "matrixify_topn_value_rows": 10, "matrixify_all_sort_by_rows":
+  "a_to_z", "matrixify_topn_order_rows": true, "matrixify_show_row_labels": true,
+  "matrixify_row_height": 300, "matrixify_charts_per_row": 4, "matrixify_cell_title_template":
+  "", "x_axis": "origin_country", "time_grain_sqla": "P1D", "xAxisForceCategorical":
+  false, "x_axis_sort_asc": true, "metrics": [{"expressionType": "SIMPLE", "column":
+  {"advanced_data_type": null, "certification_details": null, "certified_by": null,
+  "column_name": "airborne_aircraft", "description": null, "expression": null, "filterable":
+  true, "groupby": true, "id": 2, "is_certified": false, "is_dttm": false, "python_date_format":
+  null, "type": "BIGINT", "type_generic": 0, "uuid": "34015fb5-074f-40f6-af17-ff7f3c097f45",
+  "verbose_name": null, "warning_markdown": null}, "aggregate": "SUM", "sqlExpression":
+  null, "datasourceWarning": false, "hasCustomLabel": false, "label": "SUM(airborne_aircraft)",
+  "optionName": "metric_q3e5f8n4izs_sghacvvp47"}], "groupby": [], "adhoc_filters":
+  [{"clause": "WHERE", "subject": "snapshot_ts", "operator": "TEMPORAL_RANGE", "comparator":
+  "No filter", "expressionType": "SIMPLE"}], "group_others_when_limit_reached": false,
+  "timeseries_limit_metric": {"expressionType": "SIMPLE", "column": {"advanced_data_type":
+  null, "certification_details": null, "certified_by": null, "column_name": "airborne_aircraft",
+  "description": null, "expression": null, "filterable": true, "groupby": true, "id":
+  2, "is_certified": false, "is_dttm": false, "python_date_format": null, "type":
+  "BIGINT", "type_generic": 0, "uuid": "34015fb5-074f-40f6-af17-ff7f3c097f45", "verbose_name":
+  null, "warning_markdown": null}, "aggregate": "SUM", "sqlExpression": null, "datasourceWarning":
+  false, "hasCustomLabel": false, "label": "SUM(airborne_aircraft)", "optionName":
+  "metric_efip7wmtuaj_h9mzznbhr1l"}, "order_desc": true, "row_limit": "15", "truncate_metric":
+  true, "show_empty_columns": true, "comparison_type": "values", "annotation_layers":
+  [], "forecastEnabled": false, "forecastPeriods": 10, "forecastInterval": 0.8, "orientation":
+  "horizontal", "x_axis_title": "", "x_axis_title_margin": 0, "y_axis_title": "",
+  "y_axis_title_margin": 15, "y_axis_title_position": "Left", "sort_series_type":
+  "sum", "sort_series_ascending": false, "color_scheme": "supersetColors", "time_shift_color":
+  true, "show_value": false, "only_total": true, "percentage_threshold": 0, "color_by_primary_axis":
+  false, "minorTicks": false, "zoomable": false, "show_legend": true, "legendType":
+  "scroll", "legendOrientation": "top", "x_axis_time_format": "smart_date", "x_axis_number_format":
+  "~g", "xAxisLabelRotation": 0, "xAxisLabelInterval": "auto", "y_axis_format": "SMART_NUMBER",
+  "logAxis": false, "minorSplitLine": false, "truncateYAxis": false, "y_axis_bounds":
+  [null, null], "truncateXAxis": true, "force_max_interval": false, "rich_tooltip":
+  true, "showTooltipTotal": true, "showTooltipPercentage": false, "tooltipSortByMetric":
+  false, "tooltipTimeFormat": "smart_date", "echart_options": "{}", "extra_form_data":
+  {}, "dashboards": [], "force": false, "result_format": "json", "result_type": "full"},
+  "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: f9ddf320-8f4d-4902-a0f2-ec1ba8cc7f25
+version: 1.0.0
+dataset_uuid: 31dc0986-1631-4b3e-b04d-c6f2c81e82f9

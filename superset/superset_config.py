@@ -29,5 +29,8 @@ CACHE_CONFIG = {
     "CACHE_DEFAULT_TIMEOUT": 300,
 }
 
+# Mapbox token for deck.gl basemaps. Optional — charts render without it.
+MAPBOX_API_KEY = os.environ.get("MAPBOX_API_KEY", "")
+
 # Disable telemetry
 SCARF_ANALYTICS = False
