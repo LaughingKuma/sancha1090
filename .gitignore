@@ -6,6 +6,7 @@ __pycache__/
 *.pyc 
 .pytest_cache/
 dbt/opensky/target/
-dbt/opensky/dbt_pacakages/
+dbt/opensky/dbt_packages/
 dbt/opensky/.user.yml
 
+.playwright-mcp/

@@ -38,6 +38,8 @@ x-airflow-common:
     - ./plugins:/opt/airflow/plugins
     - ./config:/opt/airflow/config
     - ./dbt:/opt/airflow/dbt
+    - ./tests:/opt/airflow/tests:ro
+    - ./pytest.ini:/opt/airflow/pytest.ini:ro
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres-airflow:
@@ -137,6 +139,7 @@ services:
       ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:?SUPERSET_ADMIN_PASSWORD must be set in .env}
       ANALYTICS_DB_URI: >-
         postgresql+psycopg2://${ANALYTICS_PG_USER:-analytics}:${ANALYTICS_PG_PASSWORD:?ANALYTICS_PG_PASSWORD must be set in .env}@postgres-analytics:5432/${ANALYTICS_PG_DB:-analytics}
+      MAPBOX_API_KEY: ${MAPBOX_API_KEY:-}
     volumes:
       - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
       - ./superset/bootstrap.sh:/app/docker/bootstrap.sh:ro

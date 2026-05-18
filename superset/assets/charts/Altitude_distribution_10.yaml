@@ -1,0 +1,88 @@
+slice_name: Altitude distribution
+description: null
+certified_by: null
+certification_details: null
+viz_type: histogram_v2
+params:
+  datasource: 5__table
+  viz_type: histogram_v2
+  slice_id: 10
+  matrixify_enable: false
+  matrixify_mode_columns: disabled
+  matrixify_dimension_selection_mode_columns: members
+  matrixify_dimension_columns:
+    dimension: ''
+    values: []
+  matrixify_topn_value_columns: 10
+  matrixify_all_sort_by_columns: a_to_z
+  matrixify_topn_order_columns: true
+  matrixify_show_column_headers: true
+  matrixify_fit_columns_dynamically: true
+  matrixify_mode_rows: disabled
+  matrixify_dimension_selection_mode_rows: members
+  matrixify_dimension_rows:
+    dimension: ''
+    values: []
+  matrixify_topn_value_rows: 10
+  matrixify_all_sort_by_rows: a_to_z
+  matrixify_topn_order_rows: true
+  matrixify_show_row_labels: true
+  matrixify_row_height: 300
+  matrixify_charts_per_row: 4
+  matrixify_cell_title_template: ''
+  column: baro_altitude_m
+  groupby: []
+  adhoc_filters:
+  - clause: WHERE
+    comparator: No filter
+    datasourceWarning: false
+    expressionType: SIMPLE
+    filterOptionName: filter_89z1cg7kuor_yuqmarnc3ed
+    isExtra: false
+    isNew: false
+    operator: TEMPORAL_RANGE
+    sqlExpression: null
+    subject: snapshot_time
+  - clause: WHERE
+    comparator: 0
+    datasourceWarning: false
+    expressionType: SIMPLE
+    filterOptionName: filter_3nc2mea6zfv_igy1hl12z2
+    isExtra: false
+    isNew: false
+    operator: '>'
+    operatorId: GREATER_THAN
+    sqlExpression: null
+    subject: baro_altitude_m
+  - clause: WHERE
+    comparator: '15500'
+    datasourceWarning: false
+    expressionType: SIMPLE
+    filterOptionName: filter_owyd82jjatd_dvrtlcyya9v
+    isExtra: false
+    isNew: false
+    operator: <
+    operatorId: LESS_THAN
+    sqlExpression: null
+    subject: baro_altitude_m
+  row_limit: '100000'
+  bins: '40'
+  normalize: false
+  cumulative: false
+  color_scheme: supersetColors
+  show_value: false
+  show_legend: true
+  x_axis_title: Altitude (m)
+  x_axis_format: SMART_NUMBER
+  y_axis_title: Aircraft Observations
+  y_axis_format: SMART_NUMBER
+  extra_form_data: {}
+  dashboards: []
+query_context: '{"datasource":{"id":5,"type":"table"},"force":false,"queries":[{"filters":[{"col":"snapshot_time","op":"TEMPORAL_RANGE","val":"No
+  filter"},{"col":"baro_altitude_m","op":">","val":0},{"col":"baro_altitude_m","op":"<","val":"15500"}],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":["baro_altitude_m"],"annotation_layers":[],"row_limit":100000,"series_limit":0,"group_others_when_limit_reached":false,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{},"post_processing":[{"operation":"histogram","options":{"column":"baro_altitude_m","groupby":[],"bins":40,"cumulative":false,"normalize":false}}]}],"form_data":{"datasource":"5__table","viz_type":"histogram_v2","slice_id":10,"matrixify_enable":false,"matrixify_mode_columns":"disabled","matrixify_dimension_selection_mode_columns":"members","matrixify_dimension_columns":{"dimension":"","values":[]},"matrixify_topn_value_columns":10,"matrixify_all_sort_by_columns":"a_to_z","matrixify_topn_order_columns":true,"matrixify_show_column_headers":true,"matrixify_fit_columns_dynamically":true,"matrixify_mode_rows":"disabled","matrixify_dimension_selection_mode_rows":"members","matrixify_dimension_rows":{"dimension":"","values":[]},"matrixify_topn_value_rows":10,"matrixify_all_sort_by_rows":"a_to_z","matrixify_topn_order_rows":true,"matrixify_show_row_labels":true,"matrixify_row_height":300,"matrixify_charts_per_row":4,"matrixify_cell_title_template":"","column":"baro_altitude_m","groupby":[],"adhoc_filters":[{"clause":"WHERE","comparator":"No
+  filter","datasourceWarning":false,"expressionType":"SIMPLE","filterOptionName":"filter_89z1cg7kuor_yuqmarnc3ed","isExtra":false,"isNew":false,"operator":"TEMPORAL_RANGE","sqlExpression":null,"subject":"snapshot_time"},{"clause":"WHERE","comparator":0,"datasourceWarning":false,"expressionType":"SIMPLE","filterOptionName":"filter_3nc2mea6zfv_igy1hl12z2","isExtra":false,"isNew":false,"operator":">","operatorId":"GREATER_THAN","sqlExpression":null,"subject":"baro_altitude_m"},{"clause":"WHERE","comparator":"15500","datasourceWarning":false,"expressionType":"SIMPLE","filterOptionName":"filter_owyd82jjatd_dvrtlcyya9v","isExtra":false,"isNew":false,"operator":"<","operatorId":"LESS_THAN","sqlExpression":null,"subject":"baro_altitude_m"}],"row_limit":"100000","bins":"40","normalize":false,"cumulative":false,"color_scheme":"supersetColors","show_value":false,"show_legend":true,"x_axis_title":"Altitude
+  (m)","x_axis_format":"SMART_NUMBER","y_axis_title":"Aircraft Observations","y_axis_format":"SMART_NUMBER","extra_form_data":{},"dashboards":[],"force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
+cache_timeout: null
+uuid: afb8c77c-1dc7-4558-b4b4-22f6be2e40c9
+version: 1.0.0
+dataset_uuid: 6c03563a-f561-46b7-afd3-3b0d36872142

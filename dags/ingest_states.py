@@ -1,4 +1,4 @@
-"""ingest_states: pull aircraft state snapshots from OpenSky every 10 minutes.
+"""ingest_states: pull aircraft state snapshots from OpenSky every 12 minutes.
 
 Stage 9: dynamic task mapping over geographic regions. Each region runs
 as its own parallel task instance, with independent retries and logs.
@@ -7,9 +7,11 @@ Design notes:
 - 8 regions cover the populated airspace. Sparse polar areas omitted.
 - The summarize task uses trigger_rule="all_done" so it runs even if
   some regions fail — we want the partial-success summary, not "skipped".
-- Bounding boxes are small enough that each call costs ~1 OpenSky credit.
-  8 calls every 10 minutes = 48 calls/hour = 1152/day. Well under the
-  4000/day quota for authenticated accounts.
+- All 8 bboxes are >400 sq deg, the top tier of OpenSky's pricing, so
+  each call costs 4 credits. 8 regions x 4 credits x 120 runs/day =
+  3,840 credits/day, comfortably under the 4,000/day quota for
+  authenticated accounts. The */12 cadence is pinned by this math —
+  see tests/test_credit_budget.py for the enforced version.
 """
 
 from __future__ import annotations
@@ -26,9 +28,9 @@ from include.assets import bronze_states
 
 @dag(
     dag_id="ingest_states",
-    description="Pull state vectors per region every 10 minutes",
+    description="Pull state vectors per region every 12 minutes",
     start_date=pendulum.datetime(2026, 5, 1, tz="UTC"),
-    schedule="*/10 * * * *",
+    schedule="*/12 * * * *",
     catchup=False,
     max_active_runs=1,
     default_args={
@@ -44,10 +46,8 @@ def ingest_states():
 
     @task
     def list_regions() -> list[dict[str, Any]]:
-        """Return the region list. This is the 'expansion source' — its
-        output becomes the iterable that fetch_region maps over."""
         from include.regions import REGIONS
-        
+
         return REGIONS
 
     @task(
@@ -57,11 +57,7 @@ def ingest_states():
         max_retry_delay=timedelta(minutes=5),
     )
     def fetch_region(region: dict[str, Any], **context) -> dict[str, Any]:
-        """Fetch state vectors for one region's bbox, write parquet.
-
-        Returns a small summary dict for the summarizer. The actual data
-        never travels through XCom — only the URI of where it landed.
-        """
+        """The actual data never travels through XCom — only the URI."""
 
         import polars as pl
         from include.opensky_client import OpenSkyClient
@@ -103,8 +99,7 @@ def ingest_states():
             pl.lit(context["logical_date"].isoformat()).alias("ingested_at"),
         )
 
-        # Build the partitioned key. Note we include region in the key so
-        # 8 regions per minute don't collide.
+        # Include region in the key so 8 regions per minute don't collide.
         logical = context["logical_date"]
         key = (
             f"bronze/states/"
@@ -119,12 +114,8 @@ def ingest_states():
 
     @task(trigger_rule="all_done", outlets=[bronze_states])
     def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
-        """Aggregate per-region results into a single summary.
-
-        trigger_rule='all_done' means this runs whether the mapped tasks
-        succeeded, failed, or got skipped. We want the summary even on
-        partial failure so we can see what happened.
-        """
+        """trigger_rule='all_done' runs this even on partial failure —
+        we want the summary, not skipped."""
         results = list(results)
 
         total_rows = sum(r["rows"] for r in results if r is not None)
@@ -138,7 +129,6 @@ def ingest_states():
         print(f"Ingestion summary: {summary}")
         return summary
 
-    # The actual graph.
     regions = list_regions()
     results = fetch_region.expand(region=regions)
     summarize(results) # type: ignore[arg-type] 

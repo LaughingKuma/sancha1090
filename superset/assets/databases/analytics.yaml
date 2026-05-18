@@ -1,5 +1,5 @@
 database_name: analytics
-sqlalchemy_uri: "${ANALYTICS_DB_URI}"
+sqlalchemy_uri: postgresql+psycopg2://analytics:XXXXXXXXXX@postgres-analytics:5432/analytics
 cache_timeout: null
 expose_in_sqllab: true
 allow_run_async: false
@@ -8,5 +8,7 @@ allow_cvas: false
 allow_dml: false
 allow_file_upload: false
 extra: {}
-uuid: "01234567-0000-0000-0000-000000000001"
+impersonate_user: false
+configuration_method: sqlalchemy_form
+uuid: 01234567-0000-0000-0000-000000000001
 version: 1.0.0
