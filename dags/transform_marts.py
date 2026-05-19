@@ -1,23 +1,6 @@
-"""transform_marts: load bronze parquet to Postgres, build dbt models.
-
-Stage 12: asset-triggered consumer that materializes the silver and gold
-layers.
-
-Design notes:
-- TRUNCATE + INSERT for staging.raw_states. Simple, idempotent. At our
-  data volume (~5k rows/snapshot × 144 snapshots/day = ~720k rows/day max)
-  this is fine. At scale you'd switch to incremental loads partitioned
-  by snapshot_time. 
-- dbt called via BashOperator. Cosmos would give per-model task
-  granularity but is overkill for 3 models.
-- dbt test failures fail the DAG by design. Bad data should not silently
-  land in marts.
-"""
-
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any
 
 from airflow.sdk import dag, task
 from airflow.providers.standard.operators.bash import BashOperator
@@ -25,9 +8,14 @@ from airflow.providers.standard.operators.bash import BashOperator
 from include.assets import bronze_states_table
 
 
+WATERMARK_NAME = "transform_marts"
+SEED_OFFSET = timedelta(days=7)
+RETENTION = timedelta(days=30)
+
+
 @dag(
     dag_id="transform_marts",
-    description="Load bronze to Postgres, build dbt staging + marts",
+    description="Append Iceberg deltas to staging.raw_states, trim retention, build dbt models",
     schedule=[bronze_states_table],
     catchup=False,
     max_active_runs=1,
@@ -42,38 +30,37 @@ def transform_marts():
 
     @task
     def load_states_to_pg() -> int:
-        """Idempotent: we replace the table on each run. Marts re-derive
-        from whatever bronze currently holds."""
         import os
+        from datetime import datetime, timezone
+
         import polars as pl
         import sqlalchemy as sa
-        from include.s3_helpers import get_s3fs, get_bucket
 
-        fs = get_s3fs()
-        bucket = get_bucket()
+        from include import iceberg as ib
+        from include import watermark
 
-        # v1.1 transition: read both new and legacy prefixes until v1.6 retires the old one.
-        prefixes = [f"{bucket}/bronze/states_raw/", f"{bucket}/bronze/states/"]
-        files: list[str] = []
-        for prefix in prefixes:
-            try:
-                files.extend(fs.glob(f"{prefix}**/*.parquet"))
-            except FileNotFoundError:
-                pass
-        files = sorted(set(files))
+        watermark.ensure_table()
+        wm = watermark.get_or_seed(WATERMARK_NAME, SEED_OFFSET)
+        print(f"watermark: {wm.isoformat()}")
 
-        if not files:
-            print("No parquet files in bronze/states_raw/ or bronze/states/. Skipping load.")
+        catalog = ib.get_catalog()
+        table = catalog.load_table(ib.QUALIFIED)
+        # pyiceberg 0.7.1 rejects tz-aware datetime literals; filter in polars instead.
+        df = pl.from_arrow(table.scan().to_arrow()).filter(pl.col("snapshot_time") > wm)
+
+        if df.height == 0:
+            print("no new rows above watermark; skipping load")
             return 0
 
-        # diagonal_relaxed handles schema drift across files by unioning
-        # columns and filling missing with nulls.
-        frames = []
-        for f in files:
-            with fs.open(f, "rb") as fh:
-                frames.append(pl.read_parquet(fh))
+        new_max = df["snapshot_time"].max()
 
-        df = pl.concat(frames, how="diagonal_relaxed")
+        # Existing stg_states expects epoch ints + iso strings (legacy schema).
+        df = df.with_columns(
+            pl.col("snapshot_time").dt.epoch("s").alias("snapshot_time"),
+            pl.col("time_position").dt.epoch("s").alias("time_position"),
+            pl.col("last_contact").dt.epoch("s").alias("last_contact"),
+            pl.col("ingested_at").dt.strftime("%Y-%m-%dT%H:%M:%S%z").alias("ingested_at"),
+        )
 
         url = (
             f"postgresql+psycopg2://"
@@ -82,28 +69,30 @@ def transform_marts():
             f"/{os.environ['ANALYTICS_PG_DB']}"
         )
         engine = sa.create_engine(url)
+        pdf = df.to_pandas()
 
-        # TRUNCATE (not DROP) so dependent dbt views like stg_states stay
-        # valid. if_exists='replace' would DROP+CREATE and fail with
-        # DependentObjectsStillExist on the second run.
         with engine.begin() as conn:
             conn.execute(sa.text("CREATE SCHEMA IF NOT EXISTS staging"))
-            if sa.inspect(conn).has_table("raw_states", schema="staging"):
-                conn.execute(sa.text("TRUNCATE TABLE staging.raw_states"))
+            pdf.to_sql(
+                "raw_states",
+                conn,
+                schema="staging",
+                if_exists="append",
+                index=False,
+                chunksize=10000,
+            )
+            floor_epoch = int((datetime.now(timezone.utc) - RETENTION).timestamp())
+            deleted = conn.execute(
+                sa.text("DELETE FROM staging.raw_states WHERE snapshot_time < :floor"),
+                {"floor": floor_epoch},
+            )
+            watermark.advance(WATERMARK_NAME, new_max, conn)
 
-        pdf = df.to_pandas()
-        pdf.to_sql(
-            "raw_states",
-            engine,
-            schema="staging",
-            if_exists="append",
-            index=False,
-            chunksize=10000,
+        print(
+            f"appended {len(pdf)} rows, deleted {deleted.rowcount} below retention, "
+            f"watermark advanced to {new_max.isoformat()}"
         )
-
-        row_count = len(pdf)
-        print(f"Loaded {row_count} rows into staging.raw_states")
-        return row_count
+        return len(pdf)
 
     dbt_deps = BashOperator(
         task_id="dbt_deps",
