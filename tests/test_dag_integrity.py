@@ -25,6 +25,12 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"load_states_to_pg", "dbt_deps", "dbt_run", "dbt_test"},
     },
+    "tableize_states": {
+        "schedule_is_asset_triggered": True,
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"load_pending_to_iceberg"},
+    },
 }
 
 
