@@ -11,4 +11,5 @@ RUN pip install --no-cache-dir \
     s3fs==2024.6.1 \
     dbt-postgres==1.8.2 \
     pytest==8.3.3 \
-    respx==0.21.1
+    respx==0.21.1 \
+    "pyiceberg[sql-postgres]==0.7.1"
