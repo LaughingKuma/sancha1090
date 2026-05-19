@@ -47,7 +47,7 @@ def transform_marts():
         import os
         import polars as pl
         import sqlalchemy as sa
-        from include.minio_helpers import get_s3fs, get_bucket
+        from include.s3_helpers import get_s3fs, get_bucket
 
         fs = get_s3fs()
         bucket = get_bucket()
