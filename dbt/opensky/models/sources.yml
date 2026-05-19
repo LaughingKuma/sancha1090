@@ -2,7 +2,7 @@ version: 2
 
 sources:
   - name: staging
-    description: "Raw landing tables loaded by Airflow from MinIO bronze parquet"
+    description: "Raw landing tables loaded by Airflow from Garage bronze parquet"
     schema: staging
     tables:
       - name: raw_states
