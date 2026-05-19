@@ -22,10 +22,17 @@ x-airflow-common:
     PYTHONPATH: /opt/airflow
     OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID}
     OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET}
+    # Object storage: s3_helpers reads S3_* first, falls back to MINIO_*.
+    # Both passed through during the migration window. MINIO_* are removed
+    # in the cleanup commit at the end of this PR.
     MINIO_ENDPOINT: minio:9000
     MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
     MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}
     MINIO_BUCKET: ${MINIO_BUCKET:-opensky}
+    S3_ENDPOINT: ${S3_ENDPOINT:-}
+    S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+    S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+    S3_BUCKET: ${S3_BUCKET:-}
     ANALYTICS_PG_HOST: ${ANALYTICS_PG_HOST:-postgres-analytics}
     ANALYTICS_PG_PORT: ${ANALYTICS_PG_PORT:-5432}
     ANALYTICS_PG_DB: ${ANALYTICS_PG_DB:-analytics}
@@ -232,9 +239,51 @@ services:
       "
     restart: "no"
 
+  garage:
+    # Verify the current stable tag at https://hub.docker.com/r/dxflrs/garage/tags
+    image: dxflrs/garage:v1.0.1
+    volumes:
+      - ./config/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    expose:
+      - "3900"   # S3 API
+      - "3903"   # Admin API (loopback inside container)
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 10s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  garage-init:
+    image: dxflrs/garage:v1.0.1
+    depends_on:
+      garage:
+        condition: service_healthy
+    volumes:
+      - ./config/garage.toml:/etc/garage.toml:ro
+    # Single-node cluster bootstrap. Idempotent — each step swallows
+    # "already exists" errors so the init container is safe to re-run.
+    entrypoint: >
+      /bin/sh -c "
+      set -e;
+      NODE_ID=$$(/garage node id -q | cut -d@ -f1);
+      echo \"Garage node id: $$NODE_ID\";
+      /garage layout assign -z dc1 -c 1G $$NODE_ID 2>/dev/null || echo 'layout already assigned';
+      /garage layout apply --version 1 2>/dev/null || echo 'layout already applied';
+      /garage bucket create ${S3_BUCKET:-opensky} 2>/dev/null || echo 'bucket exists';
+      /garage key import --yes ${S3_ACCESS_KEY} ${S3_SECRET_KEY} airflow 2>/dev/null || echo 'key exists';
+      /garage bucket allow --read --write --owner ${S3_BUCKET:-opensky} --key airflow;
+      echo 'Garage ready';
+      "
+    restart: "no"
+
 volumes:
   postgres-airflow-data:
   postgres-analytics-data:
   postgres-superset-data:
   minio-data:
+  garage-meta:
+  garage-data:
   superset-home:
