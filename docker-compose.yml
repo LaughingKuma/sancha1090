@@ -240,8 +240,7 @@ services:
     restart: "no"
 
   garage:
-    # Verify the current stable tag at https://hub.docker.com/r/dxflrs/garage/tags
-    image: dxflrs/garage:v1.0.1
+    image: dxflrs/garage:v2.3.0
     volumes:
       - ./config/garage.toml:/etc/garage.toml:ro
       - garage-meta:/var/lib/garage/meta
@@ -257,7 +256,7 @@ services:
     restart: unless-stopped
 
   garage-init:
-    image: dxflrs/garage:v1.0.1
+    image: dxflrs/garage:v2.3.0
     depends_on:
       garage:
         condition: service_healthy
