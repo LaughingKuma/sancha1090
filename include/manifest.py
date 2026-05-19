@@ -39,6 +39,39 @@ def ensure_table(engine: Optional[sa.Engine] = None) -> None:
         _table_ready = True
 
 
+def pending_uris(engine: Optional[sa.Engine] = None) -> list[dict]:
+    eng = engine or _engine()
+    if engine is None and not _table_ready:
+        ensure_table(eng)
+    stmt = sa.text(
+        """
+        SELECT object_uri, snapshot_min, snapshot_max, row_count
+          FROM public.ingestion_manifest
+         WHERE iceberg_committed_at IS NULL
+         ORDER BY loaded_at
+        """
+    )
+    with eng.begin() as conn:
+        return [dict(r._mapping) for r in conn.execute(stmt).fetchall()]
+
+
+def mark_iceberg_committed(uris: list[str], engine: Optional[sa.Engine] = None) -> int:
+    if not uris:
+        return 0
+    eng = engine or _engine()
+    stmt = sa.text(
+        """
+        UPDATE public.ingestion_manifest
+           SET iceberg_committed_at = CURRENT_TIMESTAMP
+         WHERE object_uri IN :uris
+           AND iceberg_committed_at IS NULL
+        """
+    ).bindparams(sa.bindparam("uris", expanding=True))
+    with eng.begin() as conn:
+        result = conn.execute(stmt, {"uris": list(uris)})
+        return result.rowcount or 0
+
+
 def record_load(
     object_uri: str,
     snapshot_min: Optional[int],

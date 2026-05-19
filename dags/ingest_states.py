@@ -23,7 +23,7 @@ import pendulum
 
 from airflow.sdk import dag, task, Asset
 
-from include.assets import bronze_states
+from include.assets import bronze_states, raw_states_landed
 
 
 @dag(
@@ -122,7 +122,7 @@ def ingest_states():
 
         return {"region": region["name"], "rows": df.height, "uri": uri, "snapshot_time": snapshot_time}
 
-    @task(trigger_rule="all_done", outlets=[bronze_states])
+    @task(trigger_rule="all_done", outlets=[bronze_states, raw_states_landed])
     def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
         """trigger_rule='all_done' runs this even on partial failure —
         we want the summary, not skipped."""
