@@ -18,9 +18,12 @@ A few things that don't always show up in tutorial-grade pipelines:
 
 - **Dynamic task mapping** over 8 geographic regions with independent
   retries and logs. A 429 over Europe doesn't lose the snapshot over Asia.
-- **Asset-triggered scheduling.** `transform_marts` runs when
-  `ingest_states` emits the `bronze_states` asset event. No polling, no
-  cron coupling between DAGs.
+- **Three-DAG asset chain.** `ingest_states` lands raw parquet and emits
+  `raw_states_landed`. `tableize_states` triggers off that, appends to an
+  Apache Iceberg table, and emits `bronze_states_table` on successful
+  commit. `transform_marts` triggers off *that*, reads the Iceberg delta
+  since its watermark, and rebuilds dbt marts. No polling, no cron
+  coupling between DAGs.
 - Per-task retry strategy. Ingestion retries fast with exponential backoff
   (network errors are transient); the transform retries once with a longer
   delay (a failed dbt run usually needs a human).
@@ -28,9 +31,11 @@ A few things that don't always show up in tutorial-grade pipelines:
   credit consumption from the live region config and asserts it stays under
   the 4,000/day quota. Anyone who changes the schedule has to confront the
   budget consciously.
-- Bronze (parquet in Garage), silver (typed dbt views), gold (Postgres mart
-  tables), with dbt tests in the DAG path so bad data fails the run instead
-  of landing silently.
+- Bronze raw (parquet in Garage as immutable audit evidence), bronze
+  table (Iceberg, the canonical analytical layer), silver (typed dbt
+  views on a rolling 30-day Postgres window driven by a watermark), gold
+  (Postgres mart tables), with dbt tests in the DAG path so bad data
+  fails the run instead of landing silently.
 - **Declarative Superset.** Datasets, charts, and the dashboard live as YAML
   in `superset/assets/` and get re-imported on every container start.
   Anything you build in the UI but don't export gets overwritten.
@@ -67,7 +72,7 @@ glitch produces an out-of-range value.
 
 The `ingest_states` DAG. Three tasks: `list_regions` is the expansion
 source, `fetch_region` is mapped over 8 regions, and `summarize` emits
-the `bronze_states` asset event.
+the `raw_states_landed` asset event.
 
 ![ingest_states DAG graph](docs/airflow-dag-graph.png)
 
@@ -77,36 +82,38 @@ slowest single region: ~6s.
 
 ![Mapped task instances](docs/airflow-mapped-tasks.png)
 
-The bronze layer in Garage. Each snapshot writes 8 parquet files under
-`bronze/states/dt=.../hr=.../min=.../region=*.parquet`. Sizes range
-from ~12 to ~180 KiB depending on how busy the region is — Europe and
-North America dominate. Recent partitions, via `rclone lsl garage:opensky`:
+The raw landing zone in Garage. Each snapshot writes 8 parquet files under
+`bronze/states_raw/dt=.../hr=.../min=.../region=*.parquet`. These files
+are the immutable ingestion evidence — they're never rewritten or
+compacted; the Iceberg layer above handles that. Sizes range from ~12 to
+~180 KiB depending on how busy the region is — Europe and North America
+dominate. Recent partitions, via `rclone lsl garage:opensky`:
 
 ```
-    16767 2026-05-19 06:48:04.841000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=africa.parquet
-    42178 2026-05-19 06:48:04.429000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=east_asia.parquet
-   169455 2026-05-19 06:48:05.869000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=europe.parquet
-    16911 2026-05-19 06:48:05.658000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=middle_east.parquet
-    68404 2026-05-19 06:48:04.024000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=north_america.parquet
-    26751 2026-05-19 06:48:03.201000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=oceania.parquet
-    13116 2026-05-19 06:48:04.634000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=south_america.parquet
-    22204 2026-05-19 06:48:02.999000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=south_asia.parquet
-    17390 2026-05-19 07:00:06.249000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=africa.parquet
-    41545 2026-05-19 07:00:03.948000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=east_asia.parquet
-   174299 2026-05-19 07:00:06.668000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=europe.parquet
-    16116 2026-05-19 07:00:06.657000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=middle_east.parquet
-    64877 2026-05-19 07:00:04.612000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=north_america.parquet
-    26847 2026-05-19 07:00:05.430000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=oceania.parquet
-    12893 2026-05-19 07:00:05.636000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=south_america.parquet
-    22127 2026-05-19 07:00:03.565000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=south_asia.parquet
-    18722 2026-05-19 07:12:05.101000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=africa.parquet
-    41444 2026-05-19 07:12:03.717000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=east_asia.parquet
-   179090 2026-05-19 07:12:04.599000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=europe.parquet
-    18857 2026-05-19 07:12:05.270000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=middle_east.parquet
-    59917 2026-05-19 07:12:03.891000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=north_america.parquet
-    26475 2026-05-19 07:12:03.538000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=oceania.parquet
-    13702 2026-05-19 07:12:04.865000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=south_america.parquet
-    21925 2026-05-19 07:12:03.359000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=south_asia.parquet
+    16767 2026-05-19 06:48:04.841000000 bronze/states_raw/dt=2026-05-19/hr=06/min=48/region=africa.parquet
+    42178 2026-05-19 06:48:04.429000000 bronze/states_raw/dt=2026-05-19/hr=06/min=48/region=east_asia.parquet
+   169455 2026-05-19 06:48:05.869000000 bronze/states_raw/dt=2026-05-19/hr=06/min=48/region=europe.parquet
+    16911 2026-05-19 06:48:05.658000000 bronze/states_raw/dt=2026-05-19/hr=06/min=48/region=middle_east.parquet
+    68404 2026-05-19 06:48:04.024000000 bronze/states_raw/dt=2026-05-19/hr=06/min=48/region=north_america.parquet
+    26751 2026-05-19 06:48:03.201000000 bronze/states_raw/dt=2026-05-19/hr=06/min=48/region=oceania.parquet
+    13116 2026-05-19 06:48:04.634000000 bronze/states_raw/dt=2026-05-19/hr=06/min=48/region=south_america.parquet
+    22204 2026-05-19 06:48:02.999000000 bronze/states_raw/dt=2026-05-19/hr=06/min=48/region=south_asia.parquet
+    17390 2026-05-19 07:00:06.249000000 bronze/states_raw/dt=2026-05-19/hr=07/min=00/region=africa.parquet
+    41545 2026-05-19 07:00:03.948000000 bronze/states_raw/dt=2026-05-19/hr=07/min=00/region=east_asia.parquet
+   174299 2026-05-19 07:00:06.668000000 bronze/states_raw/dt=2026-05-19/hr=07/min=00/region=europe.parquet
+    16116 2026-05-19 07:00:06.657000000 bronze/states_raw/dt=2026-05-19/hr=07/min=00/region=middle_east.parquet
+    64877 2026-05-19 07:00:04.612000000 bronze/states_raw/dt=2026-05-19/hr=07/min=00/region=north_america.parquet
+    26847 2026-05-19 07:00:05.430000000 bronze/states_raw/dt=2026-05-19/hr=07/min=00/region=oceania.parquet
+    12893 2026-05-19 07:00:05.636000000 bronze/states_raw/dt=2026-05-19/hr=07/min=00/region=south_america.parquet
+    22127 2026-05-19 07:00:03.565000000 bronze/states_raw/dt=2026-05-19/hr=07/min=00/region=south_asia.parquet
+    18722 2026-05-19 07:12:05.101000000 bronze/states_raw/dt=2026-05-19/hr=07/min=12/region=africa.parquet
+    41444 2026-05-19 07:12:03.717000000 bronze/states_raw/dt=2026-05-19/hr=07/min=12/region=east_asia.parquet
+   179090 2026-05-19 07:12:04.599000000 bronze/states_raw/dt=2026-05-19/hr=07/min=12/region=europe.parquet
+    18857 2026-05-19 07:12:05.270000000 bronze/states_raw/dt=2026-05-19/hr=07/min=12/region=middle_east.parquet
+    59917 2026-05-19 07:12:03.891000000 bronze/states_raw/dt=2026-05-19/hr=07/min=12/region=north_america.parquet
+    26475 2026-05-19 07:12:03.538000000 bronze/states_raw/dt=2026-05-19/hr=07/min=12/region=oceania.parquet
+    13702 2026-05-19 07:12:04.865000000 bronze/states_raw/dt=2026-05-19/hr=07/min=12/region=south_america.parquet
+    21925 2026-05-19 07:12:03.359000000 bronze/states_raw/dt=2026-05-19/hr=07/min=12/region=south_asia.parquet
 ```
 
 dbt tests in the DAG path. After `dbt_run`, `dbt_test` runs all 14
@@ -126,21 +133,41 @@ OpenSky REST API (live, global aircraft state)
    │  every 12 min, dynamic mapping   │
    │  over 8 geographic regions       │
    └─────────────┬────────────────────┘
-                 │  8 parquet files per run
+                 │  8 parquet files per run, manifest row per file
                  ▼
-       Garage bronze/states/dt=.../hr=.../min=.../region={X}.parquet
+       Garage bronze/states_raw/dt=.../hr=.../min=.../region={X}.parquet
+       Postgres public.ingestion_manifest (one row per landed file)
                  │
-                 │  Asset event: bronze_states
+                 │  Asset event: raw_states_landed
+                 ▼
+   ┌──────────────────────────────────┐
+   │  tableize_states (Airflow)       │
+   │  drain manifest queue            │
+   │  → single PyIceberg append commit│
+   └─────────────┬────────────────────┘
+                 │
+                 ▼
+       Iceberg bronze.opensky_states (canonical analytical truth)
+         warehouse: s3://opensky/warehouse/bronze.db/opensky_states/
+         catalog:   Postgres SQL catalog (public.iceberg_*)
+         partition: days(snapshot_time)
+                 │
+                 │  Asset event: bronze_states_table
                  ▼
    ┌──────────────────────────────────┐
    │  transform_marts (Airflow)       │
-   │  asset-triggered:                │
-   │  load → dbt run → dbt test       │
+   │  Iceberg delta > watermark       │
+   │  → append to Postgres staging    │
+   │  → trim retention                │
+   │  → advance watermark             │
+   │  → dbt run + dbt test            │
    └─────────────┬────────────────────┘
                  │
                  ▼
        Postgres analytics
-         staging.raw_states         (loaded from bronze)
+         public.ingestion_manifest  (audit + Iceberg load queue)
+         public.pipeline_watermarks (incremental load cursors)
+         staging.raw_states         (rolling 30-day window)
          staging.stg_states         (dbt view: typed, deduped)
          marts.fact_state_snapshots (per-aircraft positions, airborne only)
          marts.agg_country_traffic  (latest snapshot, by country)
@@ -158,13 +185,18 @@ OpenSky REST API (live, global aircraft state)
 
 ## Tech stack
 
-- Apache Airflow 3 for orchestration. TaskFlow API, dynamic task mapping,
-  asset-driven scheduling.
-- dbt on Postgres for the staging and mart layers. A custom
+- Apache Airflow 3.2 for orchestration. TaskFlow API, dynamic task mapping,
+  asset-driven scheduling across a three-DAG chain.
+- Apache Iceberg (via PyIceberg) for the bronze analytical table.
+  Postgres-backed SQL catalog, day-partitioned by snapshot_time, written
+  exclusively by `tableize_states` (single canonical writer).
+- dbt on Postgres for the silver/gold layers. A custom
   `generate_schema_name` macro keeps schemas named `staging` and `marts`
   rather than the doubled-up form dbt produces by default.
-- Garage as a local S3-compatible object store for the bronze layer.
-- polars + pyarrow for in-memory transforms in the ingestion path.
+- Garage as a local S3-compatible object store for raw landing
+  (`bronze/states_raw/`) and the Iceberg warehouse (`warehouse/`).
+- polars + pyarrow for in-memory transforms in the ingestion and Iceberg
+  load paths.
 - Apache Superset for the BI layer. Datasets, charts, and dashboards
   bootstrap from YAML on container start.
 - Three separate Postgres instances (Airflow metadata, analytics
@@ -178,12 +210,12 @@ OpenSky REST API (live, global aircraft state)
 
 Three Postgres instances, by design, plus Garage:
 
-| Service                | Role                                    | Why separate                                    |
-|------------------------|-----------------------------------------|--------------------------------------------------|
-| `postgres-airflow`     | Airflow metadata: DAG runs, XCom, etc.  | Latency-sensitive; scheduler heartbeat depends on it |
-| `postgres-analytics`   | Warehouse: staging + marts              | Bursty heavy queries; mustn't threaten scheduler |
-| `postgres-superset`    | Superset metadata: dashboards, charts   | Different upgrade cadence; recoverable from YAML in repo |
-| `garage` (object store) | Bronze layer parquet                   | Cheap, append-only, partitioned for query pruning |
+| Service                | Role                                                    | Why separate                                    |
+|------------------------|---------------------------------------------------------|--------------------------------------------------|
+| `postgres-airflow`     | Airflow metadata: DAG runs, XCom, etc.                  | Latency-sensitive; scheduler heartbeat depends on it |
+| `postgres-analytics`   | Warehouse: staging + marts + Iceberg catalog + manifest | Bursty heavy queries; mustn't threaten scheduler |
+| `postgres-superset`    | Superset metadata: dashboards, charts                   | Different upgrade cadence; recoverable from YAML in repo |
+| `garage` (object store) | Raw parquet + Iceberg warehouse                        | Cheap, append-only, partitioned for query pruning |
 
 The rule I'm following is: don't mix orchestration metadata with
 analytical data. A runaway query that locks tables shouldn't be able to
@@ -254,23 +286,37 @@ credits/day, with headroom for retries). A pytest case in `tests/`
 enforces this: change the schedule or the regions and the test fails
 until the math is updated.
 
-**Asset-triggered transform, not `ExternalTaskSensor`.**
-`transform_marts` subscribes to `bronze_states` (declared in
-`include/assets.py`). When `ingest_states.summarize` succeeds, the asset
-event fires and the transform DAG triggers. No polling, no cron
-coupling between DAGs.
+**Asset-triggered chain, not `ExternalTaskSensor`.**
+Three DAGs are wired via asset events declared in `include/assets.py`:
+`ingest_states` emits `raw_states_landed` after writing parquet;
+`tableize_states` triggers on that, commits to Iceberg, and emits
+`bronze_states_table`; `transform_marts` triggers on that and rebuilds
+marts. No polling, no cron coupling between DAGs, and each step is
+independently rollback-able.
+
+**Iceberg as the analytical boundary, raw parquet as evidence.**
+`bronze/states_raw/*.parquet` files are immutable ingestion evidence —
+small, partitioned, never rewritten. The Iceberg `bronze.opensky_states`
+table is the canonical analytical surface — typed columns, day-partitioned,
+written by a single writer (`tableize_states`), read by everything
+downstream. The split makes audit trivial (every raw file is in
+`public.ingestion_manifest` with its Iceberg commit timestamp) and lets
+us evolve the analytical schema without touching the raw files.
+
+**Watermark-based incremental loads, no TRUNCATE+reload.**
+`transform_marts` keeps a per-pipeline cursor in
+`public.pipeline_watermarks` and only reads Iceberg rows newer than the
+cursor. Each run advances the watermark in the same Postgres transaction
+as the data insert. Old rows beyond a 30-day retention window get
+deleted in the same transaction. dbt deduplicates by `(icao24,
+snapshot_time)` in `stg_states`, so any append-side overlap is invisible
+to marts.
 
 **Three Postgres instances, not one.**
 Detailed in [Storage layout](#storage-layout). Scheduler metadata,
 warehouse data, and BI metadata have different latency profiles, backup
 needs, and failure semantics. Mixing them creates a single point of
 failure that isn't worth the saved overhead.
-
-**`TRUNCATE`, not `DROP`, for staging reloads.**
-The bronze-to-staging load runs `TRUNCATE TABLE` followed by
-`to_sql(if_exists='append')`. `DROP` would cascade-destroy the dependent
-dbt view, forcing it to rebuild on every load. `TRUNCATE` preserves the
-table structure and downstream views.
 
 **Custom dbt `generate_schema_name`.**
 By default dbt concatenates the profile schema with the per-folder
@@ -302,12 +348,18 @@ opensky-airflow/
 ├── .env.example                     # Secrets template
 ├── dags/                            # Airflow DAG definitions (thin)
 │   ├── ingest_states.py
+│   ├── tableize_states.py           # Iceberg loader (asset-triggered)
 │   └── transform_marts.py
 ├── include/                         # Logic imported by DAGs
 │   ├── opensky_client.py            # API client with auth + retries
 │   ├── s3_helpers.py                # Parquet IO via s3fs
 │   ├── regions.py                   # Geographic bbox config
-│   └── assets.py                    # Centralized Asset URIs
+│   ├── assets.py                    # Centralized Asset URIs
+│   ├── iceberg.py                   # PyIceberg catalog + schema bootstrap
+│   ├── manifest.py                  # Ingestion manifest + Iceberg load queue
+│   └── watermark.py                 # Per-pipeline incremental cursors
+├── scripts/                         # One-shot operational helpers
+│   └── backfill_legacy_bronze_states.py
 ├── dbt/opensky/                     # dbt project
 │   ├── dbt_project.yml
 │   ├── profiles.yml
@@ -364,11 +416,17 @@ instead of one developer's curiosity:
 - **Kubernetes executor in Airflow.** LocalExecutor is fine here.
   Per-task isolation via Kubernetes pods would be the production move.
 - **Incremental dbt models.** The marts currently rebuild fully on
-  every run. That's fine for this volume; at scale, switch to
-  `materialized='incremental'` with partition pruning.
-- **Partitioned external tables.** Postgres analytics is convenient
-  but doesn't scale to terabytes. At that point: Iceberg or Delta over
-  the bronze parquet, queried with Trino or DuckDB.
+  every run from a 30-day Postgres window. At scale, switch to
+  `materialized='incremental'` with partition pruning, and have dbt-
+  duckdb read the Iceberg table directly for the long-tail queries
+  instead of going through Postgres at all.
+- **Pyiceberg-side row filters.** Pyiceberg 0.7.1 won't accept a
+  tz-aware datetime literal in `GreaterThan`, so `transform_marts`
+  currently scans the full Iceberg table and filters in polars. Fine at
+  ~2M rows; upgrade pyiceberg (or pass an int-microseconds literal) once
+  the table exceeds tens of millions of rows.
+- **Iceberg maintenance.** Snapshot expiry, manifest rewrites, and
+  small-file compaction (v1.5 in the rollout plan).
 - **Cosmos for dbt.** Right now `dbt run` is one BashOperator. Cosmos
   would split it into one Airflow task per dbt model, for per-model
   retries and observability in the Airflow UI.
