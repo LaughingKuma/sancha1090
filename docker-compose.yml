@@ -241,6 +241,15 @@ services:
 
   garage:
     image: dxflrs/garage:v2.3.0
+    # v2.3 native single-node bootstrap: auto layout, auto-create the access
+    # key from GARAGE_DEFAULT_ACCESS_KEY/SECRET_KEY, auto-create the bucket
+    # from GARAGE_DEFAULT_BUCKET, and grant the key full access. Replaces
+    # the layout/bucket/key/allow CLI dance from earlier Garage versions.
+    command: ["server", "--single-node", "--default-access-key", "--default-bucket"]
+    environment:
+      GARAGE_DEFAULT_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+      GARAGE_DEFAULT_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+      GARAGE_DEFAULT_BUCKET: ${S3_BUCKET:-opensky}
     volumes:
       - ./config/garage.toml:/etc/garage.toml:ro
       - garage-meta:/var/lib/garage/meta
@@ -254,29 +263,6 @@ services:
       retries: 10
       start_period: 15s
     restart: unless-stopped
-
-  garage-init:
-    image: dxflrs/garage:v2.3.0
-    depends_on:
-      garage:
-        condition: service_healthy
-    volumes:
-      - ./config/garage.toml:/etc/garage.toml:ro
-    # Single-node cluster bootstrap. Idempotent — each step swallows
-    # "already exists" errors so the init container is safe to re-run.
-    entrypoint: >
-      /bin/sh -c "
-      set -e;
-      NODE_ID=$$(/garage node id -q | cut -d@ -f1);
-      echo \"Garage node id: $$NODE_ID\";
-      /garage layout assign -z dc1 -c 1G $$NODE_ID 2>/dev/null || echo 'layout already assigned';
-      /garage layout apply --version 1 2>/dev/null || echo 'layout already applied';
-      /garage bucket create ${S3_BUCKET:-opensky} 2>/dev/null || echo 'bucket exists';
-      /garage key import --yes ${S3_ACCESS_KEY} ${S3_SECRET_KEY} airflow 2>/dev/null || echo 'key exists';
-      /garage bucket allow --read --write --owner ${S3_BUCKET:-opensky} --key airflow;
-      echo 'Garage ready';
-      "
-    restart: "no"
 
 volumes:
   postgres-airflow-data:
