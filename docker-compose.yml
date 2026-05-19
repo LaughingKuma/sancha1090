@@ -22,17 +22,11 @@ x-airflow-common:
     PYTHONPATH: /opt/airflow
     OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID}
     OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET}
-    # Object storage: s3_helpers reads S3_* first, falls back to MINIO_*.
-    # Both passed through during the migration window. MINIO_* are removed
-    # in the cleanup commit at the end of this PR.
-    MINIO_ENDPOINT: minio:9000
-    MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-    MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}
-    MINIO_BUCKET: ${MINIO_BUCKET:-opensky}
-    S3_ENDPOINT: ${S3_ENDPOINT:-}
-    S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
-    S3_SECRET_KEY: ${S3_SECRET_KEY:-}
-    S3_BUCKET: ${S3_BUCKET:-}
+    # Object storage (Garage, S3-compatible).
+    S3_ENDPOINT: ${S3_ENDPOINT:-garage:3900}
+    S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+    S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+    S3_BUCKET: ${S3_BUCKET:-opensky}
     ANALYTICS_PG_HOST: ${ANALYTICS_PG_HOST:-postgres-analytics}
     ANALYTICS_PG_PORT: ${ANALYTICS_PG_PORT:-5432}
     ANALYTICS_PG_DB: ${ANALYTICS_PG_DB:-analytics}
@@ -207,38 +201,6 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}
-    expose:
-      - "9000"    # S3 API; reached at minio:9000 from inside the network
-      - "9001"    # Web console; exposed via override
-    volumes:
-      - minio-data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      retries: 5
-      start_period: 10s
-    restart: unless-stopped
-
-  minio-init:
-    image: minio/mc:latest
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env};
-      mc mb --ignore-existing local/${MINIO_BUCKET:-opensky};
-      echo 'Bucket ready';
-      exit 0;
-      "
-    restart: "no"
-
   garage:
     image: dxflrs/garage:v2.3.0
     # v2.3 native single-node bootstrap: auto layout, auto-create the access
@@ -268,7 +230,6 @@ volumes:
   postgres-airflow-data:
   postgres-analytics-data:
   postgres-superset-data:
-  minio-data:
   garage-meta:
   garage-data:
   superset-home:
