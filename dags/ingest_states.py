@@ -62,7 +62,8 @@ def ingest_states():
         import polars as pl
         from include.opensky_client import OpenSkyClient
         from include.s3_helpers import write_parquet
-       
+        from include import manifest
+
         client = OpenSkyClient.from_env()
 
         bbox = (
@@ -102,7 +103,7 @@ def ingest_states():
         # Include region in the key so 8 regions per minute don't collide.
         logical = context["logical_date"]
         key = (
-            f"bronze/states/"
+            f"bronze/states_raw/"
             f"dt={logical.strftime('%Y-%m-%d')}/"
             f"hr={logical.strftime('%H')}/"
             f"min={logical.strftime('%M')}/"
@@ -110,7 +111,16 @@ def ingest_states():
         )
 
         uri = write_parquet(df, key)
-        return {"region": region["name"], "rows": df.height, "uri": uri, "snapshot_time": payload["time"]}
+
+        snapshot_time = payload["time"]
+        manifest.record_load(
+            object_uri=uri,
+            snapshot_min=snapshot_time,
+            snapshot_max=snapshot_time,
+            row_count=df.height,
+        )
+
+        return {"region": region["name"], "rows": df.height, "uri": uri, "snapshot_time": snapshot_time}
 
     @task(trigger_rule="all_done", outlets=[bronze_states])
     def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:

@@ -51,15 +51,19 @@ def transform_marts():
 
         fs = get_s3fs()
         bucket = get_bucket()
-        prefix = f"{bucket}/bronze/states/"
 
-        try:
-            files = fs.glob(f"{prefix}**/*.parquet")
-        except FileNotFoundError:
-            files = []
+        # v1.1 transition: read both new and legacy prefixes until v1.6 retires the old one.
+        prefixes = [f"{bucket}/bronze/states_raw/", f"{bucket}/bronze/states/"]
+        files: list[str] = []
+        for prefix in prefixes:
+            try:
+                files.extend(fs.glob(f"{prefix}**/*.parquet"))
+            except FileNotFoundError:
+                pass
+        files = sorted(set(files))
 
         if not files:
-            print("No parquet files in bronze/states/. Skipping load.")
+            print("No parquet files in bronze/states_raw/ or bronze/states/. Skipping load.")
             return 0
 
         # diagonal_relaxed handles schema drift across files by unioning
