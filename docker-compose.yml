@@ -245,7 +245,7 @@ services:
     # key from GARAGE_DEFAULT_ACCESS_KEY/SECRET_KEY, auto-create the bucket
     # from GARAGE_DEFAULT_BUCKET, and grant the key full access. Replaces
     # the layout/bucket/key/allow CLI dance from earlier Garage versions.
-    command: ["server", "--single-node", "--default-access-key", "--default-bucket"]
+    command: ["/garage", "server", "--single-node", "--default-access-key", "--default-bucket"]
     environment:
       GARAGE_DEFAULT_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
       GARAGE_DEFAULT_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
