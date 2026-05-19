@@ -28,7 +28,7 @@ A few things that don't always show up in tutorial-grade pipelines:
   credit consumption from the live region config and asserts it stays under
   the 4,000/day quota. Anyone who changes the schedule has to confront the
   budget consciously.
-- Bronze (parquet in MinIO), silver (typed dbt views), gold (Postgres mart
+- Bronze (parquet in Garage), silver (typed dbt views), gold (Postgres mart
   tables), with dbt tests in the DAG path so bad data fails the run instead
   of landing silently.
 - **Declarative Superset.** Datasets, charts, and the dashboard live as YAML
@@ -77,11 +77,37 @@ slowest single region: ~6s.
 
 ![Mapped task instances](docs/airflow-mapped-tasks.png)
 
-The bronze layer in MinIO. Each snapshot writes 8 parquet files under
+The bronze layer in Garage. Each snapshot writes 8 parquet files under
 `bronze/states/dt=.../hr=.../min=.../region=*.parquet`. Sizes range
-from 11 to 107 KiB depending on how busy the region is.
+from ~12 to ~180 KiB depending on how busy the region is — Europe and
+North America dominate. Recent partitions, via `rclone lsl garage:opensky`:
 
-![MinIO bronze partitions](docs/minio-partitions.png)
+```
+    16767 2026-05-19 06:48:04.841000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=africa.parquet
+    42178 2026-05-19 06:48:04.429000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=east_asia.parquet
+   169455 2026-05-19 06:48:05.869000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=europe.parquet
+    16911 2026-05-19 06:48:05.658000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=middle_east.parquet
+    68404 2026-05-19 06:48:04.024000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=north_america.parquet
+    26751 2026-05-19 06:48:03.201000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=oceania.parquet
+    13116 2026-05-19 06:48:04.634000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=south_america.parquet
+    22204 2026-05-19 06:48:02.999000000 bronze/states/dt=2026-05-19/hr=06/min=48/region=south_asia.parquet
+    17390 2026-05-19 07:00:06.249000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=africa.parquet
+    41545 2026-05-19 07:00:03.948000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=east_asia.parquet
+   174299 2026-05-19 07:00:06.668000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=europe.parquet
+    16116 2026-05-19 07:00:06.657000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=middle_east.parquet
+    64877 2026-05-19 07:00:04.612000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=north_america.parquet
+    26847 2026-05-19 07:00:05.430000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=oceania.parquet
+    12893 2026-05-19 07:00:05.636000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=south_america.parquet
+    22127 2026-05-19 07:00:03.565000000 bronze/states/dt=2026-05-19/hr=07/min=00/region=south_asia.parquet
+    18722 2026-05-19 07:12:05.101000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=africa.parquet
+    41444 2026-05-19 07:12:03.717000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=east_asia.parquet
+   179090 2026-05-19 07:12:04.599000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=europe.parquet
+    18857 2026-05-19 07:12:05.270000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=middle_east.parquet
+    59917 2026-05-19 07:12:03.891000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=north_america.parquet
+    26475 2026-05-19 07:12:03.538000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=oceania.parquet
+    13702 2026-05-19 07:12:04.865000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=south_america.parquet
+    21925 2026-05-19 07:12:03.359000000 bronze/states/dt=2026-05-19/hr=07/min=12/region=south_asia.parquet
+```
 
 dbt tests in the DAG path. After `dbt_run`, `dbt_test` runs all 14
 schema and source tests. If any fail, the DAG fails. The pytest suite
@@ -102,7 +128,7 @@ OpenSky REST API (live, global aircraft state)
    └─────────────┬────────────────────┘
                  │  8 parquet files per run
                  ▼
-       MinIO bronze/states/dt=.../hr=.../min=.../region={X}.parquet
+       Garage bronze/states/dt=.../hr=.../min=.../region={X}.parquet
                  │
                  │  Asset event: bronze_states
                  ▼
@@ -137,7 +163,7 @@ OpenSky REST API (live, global aircraft state)
 - dbt on Postgres for the staging and mart layers. A custom
   `generate_schema_name` macro keeps schemas named `staging` and `marts`
   rather than the doubled-up form dbt produces by default.
-- MinIO as a local S3-compatible object store for the bronze layer.
+- Garage as a local S3-compatible object store for the bronze layer.
 - polars + pyarrow for in-memory transforms in the ingestion path.
 - Apache Superset for the BI layer. Datasets, charts, and dashboards
   bootstrap from YAML on container start.
@@ -150,14 +176,14 @@ OpenSky REST API (live, global aircraft state)
 
 ## Storage layout
 
-Three Postgres instances, by design, plus MinIO:
+Three Postgres instances, by design, plus Garage:
 
 | Service                | Role                                    | Why separate                                    |
 |------------------------|-----------------------------------------|--------------------------------------------------|
 | `postgres-airflow`     | Airflow metadata: DAG runs, XCom, etc.  | Latency-sensitive; scheduler heartbeat depends on it |
 | `postgres-analytics`   | Warehouse: staging + marts              | Bursty heavy queries; mustn't threaten scheduler |
 | `postgres-superset`    | Superset metadata: dashboards, charts   | Different upgrade cadence; recoverable from YAML in repo |
-| `minio` (object store) | Bronze layer parquet                    | Cheap, append-only, partitioned for query pruning |
+| `garage` (object store) | Bronze layer parquet                   | Cheap, append-only, partitioned for query pruning |
 
 The rule I'm following is: don't mix orchestration metadata with
 analytical data. A runaway query that locks tables shouldn't be able to
@@ -189,12 +215,15 @@ When healthy:
 |---------------------|----------------------------------|----------------------|
 | Airflow             | http://localhost:38080           | admin / admin        |
 | Superset            | http://localhost:38088           | from `.env`          |
-| MinIO Console       | http://localhost:39001           | from `.env`          |
 | Analytics Postgres  | localhost:35432                  | from `.env`          |
 
 > Open Superset via `http://localhost:38088`, not `http://127.0.0.1:38088`.
 > Mapbox URL restrictions don't accept IP literals, so the basemap fails
 > silently on the IP form. The port binding accepts both either way.
+
+> Garage doesn't ship a first-party web UI. For browser-based admin,
+> point [garage-webui](https://github.com/khairul169/garage-webui) at
+> the admin API on port 3903. Not bundled here.
 
 To populate data: in Airflow, unpause `ingest_states` and trigger it. The
 asset-driven `transform_marts` cascades automatically. Within a minute
@@ -276,7 +305,7 @@ opensky-airflow/
 │   └── transform_marts.py
 ├── include/                         # Logic imported by DAGs
 │   ├── opensky_client.py            # API client with auth + retries
-│   ├── minio_helpers.py             # Parquet IO via s3fs
+│   ├── s3_helpers.py                # Parquet IO via s3fs
 │   ├── regions.py                   # Geographic bbox config
 │   └── assets.py                    # Centralized Asset URIs
 ├── dbt/opensky/                     # dbt project
