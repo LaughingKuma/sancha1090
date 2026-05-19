@@ -6,7 +6,7 @@ import pendulum
 
 from airflow.sdk import dag, task
 
-from include.assets import raw_states_landed
+from include.assets import bronze_states_table, raw_states_landed
 
 
 @dag(
@@ -25,7 +25,7 @@ from include.assets import raw_states_landed
 )
 def tableize_states():
 
-    @task
+    @task(outlets=[bronze_states_table])
     def load_pending_to_iceberg() -> dict:
         import os
         import polars as pl
