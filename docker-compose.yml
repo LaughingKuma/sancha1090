@@ -22,10 +22,11 @@ x-airflow-common:
     PYTHONPATH: /opt/airflow
     OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID}
     OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET}
-    MINIO_ENDPOINT: minio:9000
-    MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-    MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}
-    MINIO_BUCKET: ${MINIO_BUCKET:-opensky}
+    # Object storage (Garage, S3-compatible).
+    S3_ENDPOINT: ${S3_ENDPOINT:-garage:3900}
+    S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+    S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+    S3_BUCKET: ${S3_BUCKET:-opensky}
     ANALYTICS_PG_HOST: ${ANALYTICS_PG_HOST:-postgres-analytics}
     ANALYTICS_PG_PORT: ${ANALYTICS_PG_PORT:-5432}
     ANALYTICS_PG_DB: ${ANALYTICS_PG_DB:-analytics}
@@ -200,41 +201,35 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
+  garage:
+    image: dxflrs/garage:v2.3.0
+    # v2.3 native single-node bootstrap: auto layout, auto-create the access
+    # key from GARAGE_DEFAULT_ACCESS_KEY/SECRET_KEY, auto-create the bucket
+    # from GARAGE_DEFAULT_BUCKET, and grant the key full access. Replaces
+    # the layout/bucket/key/allow CLI dance from earlier Garage versions.
+    command: ["/garage", "server", "--single-node", "--default-access-key", "--default-bucket"]
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}
-    expose:
-      - "9000"    # S3 API; reached at minio:9000 from inside the network
-      - "9001"    # Web console; exposed via override
+      GARAGE_DEFAULT_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+      GARAGE_DEFAULT_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+      GARAGE_DEFAULT_BUCKET: ${S3_BUCKET:-opensky}
     volumes:
-      - minio-data:/data
+      - ./config/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    expose:
+      - "3900"   # S3 API
+      - "3903"   # Admin API (loopback inside container)
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "/garage", "status"]
       interval: 10s
-      retries: 5
-      start_period: 10s
+      retries: 10
+      start_period: 15s
     restart: unless-stopped
-
-  minio-init:
-    image: minio/mc:latest
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env};
-      mc mb --ignore-existing local/${MINIO_BUCKET:-opensky};
-      echo 'Bucket ready';
-      exit 0;
-      "
-    restart: "no"
 
 volumes:
   postgres-airflow-data:
   postgres-analytics-data:
   postgres-superset-data:
-  minio-data:
+  garage-meta:
+  garage-data:
   superset-home:

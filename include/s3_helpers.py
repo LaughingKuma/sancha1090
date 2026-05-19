@@ -1,7 +1,8 @@
-"""MinIO/S3 parquet helpers.
+"""S3 / S3-compatible parquet helpers.
 
-Uses s3fs so any code here works against real AWS S3 by changing
-endpoint and credentials. Polars → Arrow → parquet for the write path.
+Uses s3fs so the same code works against AWS S3 or any S3-compatible
+local store (Garage in dev). Polars → Arrow → parquet for the write
+path.
 """
 
 from __future__ import annotations
@@ -18,19 +19,16 @@ logger = logging.getLogger(__name__)
 
 
 def get_s3fs() -> s3fs.S3FileSystem:
-    endpoint = os.environ["MINIO_ENDPOINT"]
-    access_key = os.environ["MINIO_ACCESS_KEY"]
-    secret_key = os.environ["MINIO_SECRET_KEY"]
     return s3fs.S3FileSystem(
-        key=access_key,
-        secret=secret_key,
-        endpoint_url=f"http://{endpoint}",
+        key=os.environ["S3_ACCESS_KEY"],
+        secret=os.environ["S3_SECRET_KEY"],
+        endpoint_url=f"http://{os.environ['S3_ENDPOINT']}",
         client_kwargs={"region_name": "us-east-1"},
     )
 
 
 def get_bucket() -> str:
-    return os.environ.get("MINIO_BUCKET", "opensky")
+    return os.environ.get("S3_BUCKET", "opensky")
 
 
 def write_parquet(df: pl.DataFrame, key: str) -> str:

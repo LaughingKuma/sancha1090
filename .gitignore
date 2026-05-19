@@ -10,3 +10,6 @@ dbt/opensky/dbt_packages/
 dbt/opensky/.user.yml
 
 .playwright-mcp/
+
+# Garage config carries RPC secret + admin tokens
+config/garage.toml

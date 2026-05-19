@@ -61,7 +61,7 @@ def ingest_states():
 
         import polars as pl
         from include.opensky_client import OpenSkyClient
-        from include.minio_helpers import write_parquet
+        from include.s3_helpers import write_parquet
        
         client = OpenSkyClient.from_env()
 
