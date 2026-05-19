@@ -22,13 +22,13 @@ from typing import Any
 from airflow.sdk import dag, task
 from airflow.providers.standard.operators.bash import BashOperator
 
-from include.assets import bronze_states
+from include.assets import bronze_states_table
 
 
 @dag(
     dag_id="transform_marts",
     description="Load bronze to Postgres, build dbt staging + marts",
-    schedule=[bronze_states],
+    schedule=[bronze_states_table],
     catchup=False,
     max_active_runs=1,
     default_args={
