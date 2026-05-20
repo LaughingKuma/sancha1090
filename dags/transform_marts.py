@@ -35,6 +35,7 @@ def transform_marts():
 
         import polars as pl
         import sqlalchemy as sa
+        from pyiceberg.expressions import GreaterThan
 
         from include import iceberg as ib
         from include import watermark
@@ -45,13 +46,13 @@ def transform_marts():
 
         catalog = ib.get_catalog()
         table = catalog.load_table(ib.QUALIFIED)
-        # pyiceberg 0.7.1 rejects tz-aware datetime literals; filter in polars instead.
-        df = pl.from_arrow(table.scan().to_arrow()).filter(pl.col("snapshot_time") > wm)
+        arrow_table = table.scan(row_filter=GreaterThan("snapshot_time", wm)).to_arrow()
 
-        if df.height == 0:
+        if arrow_table.num_rows == 0:
             print("no new rows above watermark; skipping load")
             return 0
 
+        df = pl.from_arrow(arrow_table)
         new_max = df["snapshot_time"].max()
 
         # Existing stg_states expects epoch ints + iso strings (legacy schema).
