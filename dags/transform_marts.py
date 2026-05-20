@@ -46,22 +46,25 @@ def transform_marts():
 
         catalog = ib.get_catalog()
         table = catalog.load_table(ib.QUALIFIED)
-        arrow_table = table.scan(row_filter=GreaterThan("snapshot_time", wm)).to_arrow()
+        # committed_at (Iceberg-commit time) anchors the watermark; backfilled rows
+        # whose snapshot_time is old still get picked up if their commit is recent.
+        arrow_table = table.scan(row_filter=GreaterThan("committed_at", wm)).to_arrow()
 
         if arrow_table.num_rows == 0:
             print("no new rows above watermark; skipping load")
             return 0
 
         df = pl.from_arrow(arrow_table)
-        new_max = df["snapshot_time"].max()
+        new_max = df["committed_at"].max()
 
         # Existing stg_states expects epoch ints + iso strings (legacy schema).
+        # committed_at is an Iceberg-only column, not present in staging.raw_states.
         df = df.with_columns(
             pl.col("snapshot_time").dt.epoch("s").alias("snapshot_time"),
             pl.col("time_position").dt.epoch("s").alias("time_position"),
             pl.col("last_contact").dt.epoch("s").alias("last_contact"),
             pl.col("ingested_at").dt.strftime("%Y-%m-%dT%H:%M:%S%z").alias("ingested_at"),
-        )
+        ).drop("committed_at")
 
         url = (
             f"postgresql+psycopg2://"

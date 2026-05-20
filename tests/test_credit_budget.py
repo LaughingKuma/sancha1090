@@ -30,6 +30,14 @@ CREDIT_TIERS = [
 INGEST_SCHEDULE = "*/12 * * * *"
 RUNS_PER_DAY = 24 * (60 // 12)  # = 120
 
+# Retry budget: every fetch_region task can retry up to 3 times, and each
+# attempt's OpenSkyClient retries internally up to 5 times on 429/5xx. The
+# happy-path math leaves only ~4% headroom under the 4000-credit ceiling, so a
+# burst of 5xx from OpenSky can blow the budget. This factor models a small
+# steady retry rate (~4% extra calls). If real-world retry rate exceeds this,
+# the schedule needs to slow down.
+RETRY_BUDGET_FACTOR = 1.04
+
 
 def credit_cost(bbox_area_sq_deg: float) -> int:
     """Return the OpenSky credit cost for a single /states/all call."""
@@ -46,10 +54,13 @@ def bbox_area_sq_deg(region: dict) -> float:
 def test_daily_credit_consumption_under_budget():
     per_run = sum(credit_cost(bbox_area_sq_deg(r)) for r in REGIONS)
     daily = per_run * RUNS_PER_DAY
+    daily_with_retries = int(daily * RETRY_BUDGET_FACTOR)
 
-    assert daily <= DAILY_CREDIT_BUDGET, (
-        f"Daily OpenSky credit consumption ({daily}) exceeds budget "
+    assert daily_with_retries <= DAILY_CREDIT_BUDGET, (
+        f"Daily OpenSky credit consumption ({daily_with_retries}, including "
+        f"{int((RETRY_BUDGET_FACTOR - 1) * 100)}% retry buffer) exceeds budget "
         f"({DAILY_CREDIT_BUDGET}).\n"
+        f"  Happy-path daily: {daily} credits\n"
         f"  Per-run cost: {per_run} credits across {len(REGIONS)} regions\n"
         f"  Runs per day: {RUNS_PER_DAY} (from schedule {INGEST_SCHEDULE})\n"
         f"  Fixes: slow the schedule, drop regions, or shrink bboxes."

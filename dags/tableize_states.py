@@ -27,7 +27,10 @@ def tableize_states():
 
     @task(outlets=[bronze_states_table])
     def load_pending_to_iceberg() -> dict:
+        import hashlib
         import os
+        from datetime import datetime, timezone
+
         import polars as pl
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -42,6 +45,18 @@ def tableize_states():
         if not pending:
             return {"committed": 0, "rows": 0, "files": 0}
 
+        uris = [r["object_uri"] for r in pending]
+        fingerprint = hashlib.sha256("\n".join(sorted(uris)).encode()).hexdigest()
+        table = catalog.load_table(ib.QUALIFIED)
+
+        # Crash-recovery: if the last commit's snapshot already carries this batch's
+        # fingerprint, the Iceberg append succeeded on a prior attempt that died before
+        # marking the manifest. Skip the append; just reconcile the manifest.
+        current = table.current_snapshot()
+        if current and current.summary and current.summary.additional_properties.get("manifest_fingerprint") == fingerprint:
+            committed = manifest.mark_iceberg_committed(uris)
+            return {"committed": committed, "rows": 0, "files": len(pending), "recovered": True}
+
         # s3fs HEAD against Garage returns 400 without pre-warming; pyarrow doesn't.
         fs = S3FileSystem(
             endpoint_override=f"http://{os.environ['S3_ENDPOINT']}",
@@ -54,18 +69,18 @@ def tableize_states():
         frames: list[pl.DataFrame] = []
         for row in pending:
             uri = row["object_uri"]
-            assert uri.startswith("s3://")
+            if not uri.startswith("s3://"):
+                raise ValueError(f"unexpected non-s3 manifest URI: {uri}")
             path = uri[len("s3://"):]
-            table = pq.read_table(path, filesystem=fs)
+            parquet_table = pq.read_table(path, filesystem=fs)
             # polars from_arrow rejects non-string dict-encoded columns.
             decoded_columns = {}
-            for name in table.column_names:
-                col = table.column(name)
+            for name in parquet_table.column_names:
+                col = parquet_table.column(name)
                 if pa.types.is_dictionary(col.type):
                     col = col.cast(col.type.value_type)
                 decoded_columns[name] = col
-            table = pa.table(decoded_columns)
-            frames.append(pl.from_arrow(table))
+            frames.append(pl.from_arrow(pa.table(decoded_columns)))
 
         df = pl.concat(frames, how="diagonal_relaxed")
 
@@ -80,16 +95,21 @@ def tableize_states():
             pl.col("ingested_at").str.to_datetime(time_zone="UTC").alias("ingested_at"),
             pl.col("position_source").cast(pl.Int32),
             pl.when(callsign_trim == "").then(None).otherwise(callsign_trim).alias("callsign"),
+            pl.lit(datetime.now(timezone.utc)).alias("committed_at"),
         )
 
         columns = [f.name for f in ib.SCHEMA.fields]
         df = df.select(columns)
 
         arrow_table: pa.Table = df.to_arrow()
-        table = catalog.load_table(ib.QUALIFIED)
-        table.append(arrow_table)
+        table.append(
+            arrow_table,
+            snapshot_properties={
+                "manifest_fingerprint": fingerprint,
+                "uri_count": str(len(uris)),
+            },
+        )
 
-        uris = [r["object_uri"] for r in pending]
         committed = manifest.mark_iceberg_committed(uris)
 
         return {"committed": committed, "rows": df.height, "files": len(pending)}
