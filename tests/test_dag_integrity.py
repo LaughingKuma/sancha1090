@@ -31,6 +31,12 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"load_pending_to_iceberg"},
     },
+    "maintain_iceberg_states": {
+        "schedule": "30 3 * * *",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"expire_snapshots"},
+    },
 }
 
 
