@@ -37,6 +37,11 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"expire_snapshots"},
     },
+    "backfill_from_buffer": {
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"sync_r2_to_garage"},
+    },
 }
 
 
