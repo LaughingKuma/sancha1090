@@ -44,6 +44,8 @@ SCHEMA = Schema(
     NestedField(17, "snapshot_time", TimestamptzType(), required=False),
     NestedField(18, "region", StringType(), required=False),
     NestedField(19, "ingested_at", TimestamptzType(), required=False),
+    # Iceberg-commit time — anchors transform_marts watermark so backfilled rows aren't skipped by snapshot_time-based filters.
+    NestedField(20, "committed_at", TimestamptzType(), required=False),
 )
 
 PARTITION_SPEC = PartitionSpec(
@@ -88,3 +90,12 @@ def ensure_namespace_and_table(catalog: Optional[SqlCatalog] = None) -> None:
         )
     except TableAlreadyExistsError:
         pass
+
+    # Schema evolution: add columns present in SCHEMA but missing on disk.
+    table = cat.load_table(QUALIFIED)
+    existing = {f.name for f in table.schema().fields}
+    missing = [f for f in SCHEMA.fields if f.name not in existing]
+    if missing:
+        with table.update_schema() as update:
+            for f in missing:
+                update.add_column(f.name, f.field_type, required=f.required)
