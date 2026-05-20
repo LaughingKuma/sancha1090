@@ -420,11 +420,7 @@ instead of one developer's curiosity:
   `materialized='incremental'` with partition pruning, and have dbt-
   duckdb read the Iceberg table directly for the long-tail queries
   instead of going through Postgres at all.
-- **Iceberg compaction and manifest rewrites.** PyIceberg has snapshot
-  expiry as of 0.11.1, but data-file compaction and `rewrite_manifests`
-  are still on the PyIceberg roadmap. At small-file scale (tens of
-  thousands of snapshots), a Spark sidecar for those operations would be
-  the next addition.
+- **Iceberg compaction.** Tracked in [#9](../../issues/9). Deferred until we actually have small-file pain.
 - **Cosmos for dbt.** Right now `dbt run` is one BashOperator. Cosmos
   would split it into one Airflow task per dbt model, for per-model
   retries and observability in the Airflow UI.
