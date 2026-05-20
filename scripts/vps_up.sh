@@ -1,17 +1,25 @@
 #!/bin/bash
 # Spin up the opensky-collector VPS on Hetzner with cloud-init.
-# Requires hcloud CLI authenticated (HCLOUD_TOKEN or ~/.config/hcloud/cli.toml).
+# Auto-sources ../.env if R2_ENDPOINT isn't already set in the environment.
 set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INIT_TMPL="$HERE/vps_init.sh"
+COLLECTOR="$HERE/vps_collector.py"
+ENV_FILE="$HERE/../.env"
+
+if [ -z "${R2_ENDPOINT:-}" ] && [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+fi
 
 SERVER_NAME="${SERVER_NAME:-opensky-collector}"
 SERVER_TYPE="${SERVER_TYPE:-cx23}"
 IMAGE="${IMAGE:-debian-12}"
 LOCATION="${LOCATION:-nbg1}"
 SSH_KEY="${SSH_KEY:-}"
-
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INIT_TMPL="$HERE/vps_init.sh"
-COLLECTOR="$HERE/vps_collector.py"
 
 for var in OPENSKY_CLIENT_ID OPENSKY_CLIENT_SECRET R2_ENDPOINT R2_ACCESS_KEY R2_SECRET; do
     if [ -z "${!var:-}" ]; then
