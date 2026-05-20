@@ -12,4 +12,4 @@ RUN pip install --no-cache-dir \
     dbt-postgres==1.10.0 \
     pytest==9.0.3 \
     respx==0.23.1 \
-    "pyiceberg[sql-postgres]==0.11.1"
+    "pyiceberg[sql-postgres,pyiceberg-core]==0.11.1"
