@@ -37,6 +37,8 @@ x-airflow-common:
     R2_ACCESS_KEY: ${R2_ACCESS_KEY:-}
     R2_SECRET: ${R2_SECRET:-}
     R2_BUCKET: ${R2_BUCKET:-opensky-vps-buffer}
+    POLARIS_ROOT_CLIENT_ID: ${POLARIS_ROOT_CLIENT_ID:-root}
+    POLARIS_ROOT_CLIENT_SECRET: ${POLARIS_ROOT_CLIENT_SECRET:-}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
@@ -44,6 +46,7 @@ x-airflow-common:
     - ./plugins:/opt/airflow/plugins
     - ./config:/opt/airflow/config
     - ./dbt:/opt/airflow/dbt
+    - ./scripts:/opt/airflow/scripts:ro
     - ./tests:/opt/airflow/tests:ro
     - ./pytest.ini:/opt/airflow/pytest.ini:ro
   user: "${AIRFLOW_UID:-50000}:0"
@@ -229,6 +232,121 @@ services:
       interval: 10s
       retries: 10
       start_period: 15s
+    restart: unless-stopped
+
+  polaris-bootstrap:
+    image: apache/polaris-admin-tool:1.5.0
+    depends_on:
+      postgres-analytics:
+        condition: service_healthy
+    environment:
+      POLARIS_PERSISTENCE_TYPE: relational-jdbc
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://postgres-analytics:5432/${ANALYTICS_PG_DB:-analytics}
+      QUARKUS_DATASOURCE_USERNAME: ${ANALYTICS_PG_USER:-analytics}
+      QUARKUS_DATASOURCE_PASSWORD: ${ANALYTICS_PG_PASSWORD:?ANALYTICS_PG_PASSWORD must be set in .env}
+      POLARIS_ROOT_CLIENT_ID: ${POLARIS_ROOT_CLIENT_ID:-root}
+      POLARIS_ROOT_CLIENT_SECRET: ${POLARIS_ROOT_CLIENT_SECRET:?POLARIS_ROOT_CLIENT_SECRET must be set in .env}
+    volumes:
+      - ./scripts/spike_polaris_bootstrap.sh:/bootstrap.sh:ro
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
+    restart: "no"
+
+  polaris:
+    image: apache/polaris:1.5.0
+    depends_on:
+      polaris-bootstrap:
+        condition: service_completed_successfully
+      postgres-analytics:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+    environment:
+      POLARIS_PERSISTENCE_TYPE: relational-jdbc
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://postgres-analytics:5432/${ANALYTICS_PG_DB:-analytics}
+      QUARKUS_DATASOURCE_USERNAME: ${ANALYTICS_PG_USER:-analytics}
+      QUARKUS_DATASOURCE_PASSWORD: ${ANALYTICS_PG_PASSWORD:?ANALYTICS_PG_PASSWORD must be set in .env}
+      POLARIS_REALM_CONTEXT_REALMS: POLARIS
+      POLARIS_BOOTSTRAP_CREDENTIALS: POLARIS,${POLARIS_ROOT_CLIENT_ID:-root},${POLARIS_ROOT_CLIENT_SECRET:?POLARIS_ROOT_CLIENT_SECRET must be set in .env}
+      QUARKUS_OTEL_SDK_DISABLED: "true"
+      AWS_REGION: garage
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+      polaris.features."ALLOW_INSECURE_STORAGE_TYPES": "true"
+      polaris.features."SUPPORTED_CATALOG_STORAGE_TYPES": '["FILE","S3"]'
+      polaris.features."ALLOW_TABLE_LOCATION_OVERLAP": "true"
+      polaris.features."ALLOW_NAMESPACE_CUSTOM_LOCATION": "true"
+      polaris.features."ALLOW_OVERLAPPING_CATALOG_URLS": "true"
+      polaris.features."DROP_WITH_PURGE_ENABLED": "true"
+      polaris.readiness.ignore-severe-issues: "true"
+    expose:
+      - "8181"
+      - "8182"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8182/q/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  polaris-setup:
+    image: alpine/curl:8.19.0
+    depends_on:
+      polaris:
+        condition: service_healthy
+    environment:
+      POLARIS_ROOT_CLIENT_ID: ${POLARIS_ROOT_CLIENT_ID:-root}
+      POLARIS_ROOT_CLIENT_SECRET: ${POLARIS_ROOT_CLIENT_SECRET:?POLARIS_ROOT_CLIENT_SECRET must be set in .env}
+      S3_BUCKET: ${S3_BUCKET:-opensky}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+    volumes:
+      - ./scripts/spike_create_polaris_catalog.sh:/setup.sh:ro
+    entrypoint: ["/bin/sh", "/setup.sh"]
+    restart: "no"
+
+  trino-coordinator:
+    image: trinodb/trino:481
+    depends_on:
+      polaris-setup:
+        condition: service_completed_successfully
+    environment:
+      POLARIS_ROOT_CLIENT_ID: ${POLARIS_ROOT_CLIENT_ID:-root}
+      POLARIS_ROOT_CLIENT_SECRET: ${POLARIS_ROOT_CLIENT_SECRET:?POLARIS_ROOT_CLIENT_SECRET must be set in .env}
+      S3_ENDPOINT: ${S3_ENDPOINT:-garage:3900}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+    volumes:
+      - ./trino/etc/coordinator:/etc/trino:ro
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/v1/info | grep -q '\"starting\":false'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  trino-worker-1:
+    image: trinodb/trino:481
+    depends_on:
+      trino-coordinator:
+        condition: service_healthy
+    environment:
+      POLARIS_ROOT_CLIENT_ID: ${POLARIS_ROOT_CLIENT_ID:-root}
+      POLARIS_ROOT_CLIENT_SECRET: ${POLARIS_ROOT_CLIENT_SECRET:?POLARIS_ROOT_CLIENT_SECRET must be set in .env}
+      S3_ENDPOINT: ${S3_ENDPOINT:-garage:3900}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+    volumes:
+      - ./trino/etc/worker:/etc/trino:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/v1/info | grep -q '\"starting\":false'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     restart: unless-stopped
 
 volumes:
