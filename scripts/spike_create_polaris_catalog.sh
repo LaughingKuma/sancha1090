@@ -53,17 +53,27 @@ else
   exit 1
 fi
 
-GRANT_STATUS=$(curl -s -o /tmp/grant.json -w "%{http_code}" \
-  -X PUT http://polaris:8181/api/management/v1/catalogs/${CATALOG}/catalog-roles/catalog_admin/grants \
+# Polaris 1.5's PUT grants is not idempotent: re-PUTting an existing grant trips the
+# Postgres grant_records_pkey unique constraint and returns 500 (not 200/409). GET-then-skip.
+EXISTING=$(curl -s http://polaris:8181/api/management/v1/catalogs/${CATALOG}/catalog-roles/catalog_admin/grants \
   -H "Authorization: Bearer ${TOKEN}" \
-  -H "Polaris-Realm: ${REALM}" \
-  -H "Content-Type: application/json" \
-  -d '{"type":"catalog","privilege":"CATALOG_MANAGE_CONTENT"}')
+  -H "Polaris-Realm: ${REALM}")
 
-if [ "${GRANT_STATUS}" = "201" ] || [ "${GRANT_STATUS}" = "200" ] || [ "${GRANT_STATUS}" = "409" ]; then
-  echo "Grant CATALOG_MANAGE_CONTENT->catalog_admin OK (HTTP ${GRANT_STATUS})"
+if echo "${EXISTING}" | jq -e '.grants[] | select(.type=="catalog" and .privilege=="CATALOG_MANAGE_CONTENT")' > /dev/null; then
+  echo "Grant CATALOG_MANAGE_CONTENT->catalog_admin already present, skipping PUT"
 else
-  echo "Grant failed: HTTP ${GRANT_STATUS}"
-  cat /tmp/grant.json
-  exit 1
+  GRANT_STATUS=$(curl -s -o /tmp/grant.json -w "%{http_code}" \
+    -X PUT http://polaris:8181/api/management/v1/catalogs/${CATALOG}/catalog-roles/catalog_admin/grants \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Polaris-Realm: ${REALM}" \
+    -H "Content-Type: application/json" \
+    -d '{"type":"catalog","privilege":"CATALOG_MANAGE_CONTENT"}')
+
+  if [ "${GRANT_STATUS}" = "201" ] || [ "${GRANT_STATUS}" = "200" ]; then
+    echo "Grant CATALOG_MANAGE_CONTENT->catalog_admin OK (HTTP ${GRANT_STATUS})"
+  else
+    echo "Grant failed: HTTP ${GRANT_STATUS}"
+    cat /tmp/grant.json
+    exit 1
+  fi
 fi
