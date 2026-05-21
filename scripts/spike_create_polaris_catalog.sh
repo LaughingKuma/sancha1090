@@ -14,6 +14,11 @@ TOKEN=$(curl -s -X POST http://polaris:8181/api/catalog/v1/oauth/tokens \
   -d "grant_type=client_credentials&client_id=${POLARIS_ROOT_CLIENT_ID}&client_secret=${POLARIS_ROOT_CLIENT_SECRET}&scope=PRINCIPAL_ROLE:ALL" \
   | jq -r .access_token)
 
+if [ -z "${TOKEN}" ] || [ "${TOKEN}" = "null" ]; then
+  echo "Failed to obtain OAuth token from Polaris" >&2
+  exit 1
+fi
+
 PAYLOAD=$(cat <<JSON
 {
   "catalog": {
