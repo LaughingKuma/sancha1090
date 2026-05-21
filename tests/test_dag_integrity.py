@@ -42,6 +42,11 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"sync_r2_to_garage"},
     },
+    "register_bronze_in_polaris": {
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"register"},
+    },
 }
 
 
