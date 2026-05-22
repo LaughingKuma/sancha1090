@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import random
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 from pyiceberg.catalog.rest import RestCatalog
@@ -117,3 +119,77 @@ def load_polaris_snapshot(token: Optional[str] = None) -> int:
     if table is None:
         raise RuntimeError("bronze.opensky_states not registered in Polaris")
     return table["metadata"]["current-snapshot-id"]
+
+
+def _s3_properties() -> dict:
+    return {
+        "s3.endpoint": f"http://{os.environ['S3_ENDPOINT']}",
+        "s3.access-key-id": os.environ["S3_ACCESS_KEY"],
+        "s3.secret-access-key": os.environ["S3_SECRET_KEY"],
+        "s3.region": "garage",
+    }
+
+
+def _verify_data_files_intact(metadata_location: str, sample_size: int = 3) -> None:
+    # Spike acceptance #7 step 4: HEAD a few data files from the new metadata
+    # chain to prove the prior DELETE didn't touch Garage bytes. INC-side: must
+    # compare info.type against FileType.File directly, not via str().
+    from pyarrow.fs import FileType, S3FileSystem
+    from pyiceberg.table import StaticTable
+
+    table = StaticTable.from_metadata(metadata_location, properties=_s3_properties())
+    data_files = [task.file.file_path for task in table.scan().plan_files()]
+    if not data_files:
+        raise RuntimeError(f"no data files referenced by {metadata_location}")
+
+    fs = S3FileSystem(
+        endpoint_override=f"http://{os.environ['S3_ENDPOINT']}",
+        access_key=os.environ["S3_ACCESS_KEY"],
+        secret_key=os.environ["S3_SECRET_KEY"],
+        region="garage",
+        scheme="http",
+    )
+    sampled = random.sample(data_files, min(sample_size, len(data_files)))
+    bad: list[str] = []
+    for uri in sampled:
+        parsed = urlparse(uri)
+        info = fs.get_file_info(f"{parsed.netloc}{parsed.path}")
+        size = info.size or 0
+        if info.type != FileType.File or size <= 0:
+            bad.append(f"{uri} type={info.type} size={size}")
+    if bad:
+        raise RuntimeError(f"data files missing or zero-size: {bad}")
+
+
+def sync_polaris_pointer(metadata_location: str) -> dict:
+    # Spike acceptance #7's verified API path (promotion doc § "Verified API
+    # path"). registerTable+overwrite and commitTable+set-snapshot-ref both
+    # fail empirically; the working sequence is drop(purgeRequested=false) +
+    # re-register. Snapshot parity GET is raw requests, not RestCatalog —
+    # pyiceberg sends X-Iceberg-Access-Delegation: vended-credentials, which
+    # Polaris can't honor under stsUnavailable=true (INC-5).
+    token = polaris_token()
+    ensure_bronze_namespace(token)
+
+    current = load_polaris_table(token)
+    if current is not None and current["metadata-location"] == metadata_location:
+        return {
+            "action": "noop",
+            "metadata_location": metadata_location,
+            "snapshot_id": current["metadata"]["current-snapshot-id"],
+        }
+
+    _verify_data_files_intact(metadata_location)
+    drop_bronze_table(token)
+    registered_snap = register_bronze_table(metadata_location, token)
+    parity_snap = load_polaris_snapshot(token)
+    if parity_snap != registered_snap:
+        raise RuntimeError(
+            f"parity check failed: register returned {registered_snap} "
+            f"but GET returned {parity_snap}"
+        )
+    return {
+        "action": "repointed",
+        "metadata_location": metadata_location,
+        "snapshot_id": registered_snap,
+    }
