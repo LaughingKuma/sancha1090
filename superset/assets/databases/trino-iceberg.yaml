@@ -2,7 +2,7 @@ database_name: trino-iceberg
 sqlalchemy_uri: trino://superset@trino-coordinator:8080/iceberg
 cache_timeout: null
 expose_in_sqllab: true
-allow_run_async: true
+allow_run_async: false
 allow_ctas: false
 allow_cvas: false
 allow_dml: false
