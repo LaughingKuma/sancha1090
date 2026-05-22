@@ -1,0 +1,14 @@
+database_name: trino-iceberg
+sqlalchemy_uri: trino://superset@trino-coordinator:8080/iceberg
+cache_timeout: null
+expose_in_sqllab: true
+allow_run_async: true
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+allow_file_upload: false
+extra: {}
+impersonate_user: false
+configuration_method: sqlalchemy_form
+uuid: 01234567-0000-0000-0000-000000000002
+version: 1.0.0
