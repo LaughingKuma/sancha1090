@@ -80,16 +80,24 @@ def register_bronze_table(
         headers={"Authorization": f"Bearer {tok}", "Polaris-Realm": REALM},
         timeout=30,
     )
-    if r.status_code == 409:
-        return {"status": "already_registered", "snapshot_id": load_polaris_snapshot(tok)}
     r.raise_for_status()
-    return {
-        "status": "registered",
-        "snapshot_id": r.json()["metadata"]["current-snapshot-id"],
-    }
+    return r.json()["metadata"]["current-snapshot-id"]
 
 
-def load_polaris_snapshot(token: Optional[str] = None) -> int:
+def drop_bronze_table(token: Optional[str] = None) -> None:
+    # purgeRequested=false leaves Garage data files untouched (spike acceptance #7).
+    tok = token or polaris_token()
+    r = requests.delete(
+        f"{_base()}/api/catalog/v1/{CATALOG}/namespaces/{NAMESPACE}/tables/{TABLE}",
+        params={"purgeRequested": "false"},
+        headers={"Authorization": f"Bearer {tok}", "Polaris-Realm": REALM},
+        timeout=30,
+    )
+    if r.status_code not in (204, 404):
+        r.raise_for_status()
+
+
+def load_polaris_table(token: Optional[str] = None) -> Optional[dict]:
     # INC-5: pyiceberg RestCatalog.load_table sends X-Iceberg-Access-Delegation:
     # vended-credentials, which Polaris cannot honor with stsUnavailable=true.
     tok = token or polaris_token()
@@ -98,5 +106,14 @@ def load_polaris_snapshot(token: Optional[str] = None) -> int:
         headers={"Authorization": f"Bearer {tok}", "Polaris-Realm": REALM},
         timeout=30,
     )
+    if r.status_code == 404:
+        return None
     r.raise_for_status()
-    return r.json()["metadata"]["current-snapshot-id"]
+    return r.json()
+
+
+def load_polaris_snapshot(token: Optional[str] = None) -> int:
+    table = load_polaris_table(token)
+    if table is None:
+        raise RuntimeError("bronze.opensky_states not registered in Polaris")
+    return table["metadata"]["current-snapshot-id"]
