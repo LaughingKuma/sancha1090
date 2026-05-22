@@ -120,8 +120,12 @@ def tableize_states():
         from include import iceberg_rest as rest
 
         sql_table = ib.get_catalog().load_table(ib.QUALIFIED)
+        # Fresh table or manual no-op trigger: nothing to mirror into Polaris yet.
+        current = sql_table.current_snapshot()
+        if current is None:
+            return {"action": "skipped", "reason": "sqlcatalog has no snapshot yet"}
         sql_meta = sql_table.metadata_location
-        sql_snap = sql_table.current_snapshot().snapshot_id
+        sql_snap = current.snapshot_id
 
         result = rest.sync_polaris_pointer(sql_meta)
 
