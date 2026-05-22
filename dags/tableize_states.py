@@ -114,7 +114,33 @@ def tableize_states():
 
         return {"committed": committed, "rows": df.height, "files": len(pending)}
 
-    load_pending_to_iceberg()
+    @task(outlets=[])
+    def sync_polaris() -> dict:
+        from include import iceberg as ib
+        from include import iceberg_rest as rest
+
+        sql_table = ib.get_catalog().load_table(ib.QUALIFIED)
+        # Fresh table or manual no-op trigger: nothing to mirror into Polaris yet.
+        current = sql_table.current_snapshot()
+        if current is None:
+            return {"action": "skipped", "reason": "sqlcatalog has no snapshot yet"}
+        sql_meta = sql_table.metadata_location
+        sql_snap = current.snapshot_id
+
+        result = rest.sync_polaris_pointer(sql_meta)
+
+        # INC-5: pyiceberg RestCatalog.load_table sets X-Iceberg-Access-Delegation,
+        # which Polaris can't honor under stsUnavailable=true — use raw REST.
+        pol_snap = rest.load_polaris_snapshot()
+        if pol_snap != sql_snap:
+            raise RuntimeError(
+                f"snapshot mismatch after {result['action']}: "
+                f"sql={sql_snap} polaris={pol_snap}"
+            )
+
+        return {**result, "sql_snapshot_id": sql_snap}
+
+    load_pending_to_iceberg() >> sync_polaris()
 
 
 tableize_states()
