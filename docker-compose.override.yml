@@ -13,3 +13,6 @@ services:
   superset:
     ports:
       - "127.0.0.1:38088:8088"
+  trino-coordinator:
+    ports:
+      - "127.0.0.1:38090:8080"
