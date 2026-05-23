@@ -131,9 +131,7 @@ def _s3_properties() -> dict:
 
 
 def _verify_data_files_intact(metadata_location: str, sample_size: int = 3) -> None:
-    # Spike acceptance #7 step 4: HEAD a few data files from the new metadata
-    # chain to prove the prior DELETE didn't touch Garage bytes. INC-side: must
-    # compare info.type against FileType.File directly, not via str().
+    # info.type must be compared against FileType.File directly, not via str() (spike INC).
     from pyarrow.fs import FileType, S3FileSystem
     from pyiceberg.table import StaticTable
 
@@ -162,12 +160,8 @@ def _verify_data_files_intact(metadata_location: str, sample_size: int = 3) -> N
 
 
 def sync_polaris_pointer(metadata_location: str) -> dict:
-    # Spike acceptance #7's verified API path (promotion doc § "Verified API
-    # path"). registerTable+overwrite and commitTable+set-snapshot-ref both
-    # fail empirically; the working sequence is drop(purgeRequested=false) +
-    # re-register. Snapshot parity GET is raw requests, not RestCatalog —
-    # pyiceberg sends X-Iceberg-Access-Delegation: vended-credentials, which
-    # Polaris can't honor under stsUnavailable=true (INC-5).
+    # Drop+re-register is the only path that works; registerTable+overwrite and
+    # commitTable+set-snapshot-ref both fail empirically (spike acceptance #7).
     token = polaris_token()
     ensure_bronze_namespace(token)
 
@@ -179,8 +173,9 @@ def sync_polaris_pointer(metadata_location: str) -> dict:
             "snapshot_id": current["metadata"]["current-snapshot-id"],
         }
 
-    _verify_data_files_intact(metadata_location)
     drop_bronze_table(token)
+    # Sample-check after the drop; only post-drop validates purgeRequested=false's no-purge contract.
+    _verify_data_files_intact(metadata_location)
     registered_snap = register_bronze_table(metadata_location, token)
     parity_snap = load_polaris_snapshot(token)
     if parity_snap != registered_snap:
