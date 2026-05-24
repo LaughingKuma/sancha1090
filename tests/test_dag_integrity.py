@@ -29,7 +29,7 @@ EXPECTED_DAGS = {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"load_pending_to_iceberg", "sync_polaris"},
+        "task_ids": {"load_pending_to_iceberg"},
     },
     "maintain_iceberg_states": {
         "schedule": "30 3 * * *",
@@ -46,6 +46,11 @@ EXPECTED_DAGS = {
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {"register"},
+    },
+    "migrate_drop_sqlcatalog_tables": {
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"drop_sqlcatalog_tables"},
     },
 }
 

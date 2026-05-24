@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import os
-import random
 from typing import Optional
-from urllib.parse import urlparse
 
 import requests
 from pyiceberg.catalog.rest import RestCatalog
@@ -30,6 +28,12 @@ def polaris_catalog_properties() -> dict:
         "header.Polaris-Realm": REALM,
         # Explicit OAuth endpoint silences pyiceberg's deprecation fallback warning.
         "oauth2-server-uri": f"{_base()}/api/catalog/v1/oauth/tokens",
+        # Polaris rejects token requests without an explicit scope.
+        "scope": "PRINCIPAL_ROLE:ALL",
+        # INC-5: empty pre-empts pyiceberg's setdefault of "vended-credentials",
+        # which Polaris cannot honor under stsUnavailable=true. Client-side s3.* below feeds FileIO.
+        "header.X-Iceberg-Access-Delegation": "",
+        **_s3_properties(),
     }
 
 
@@ -100,8 +104,8 @@ def drop_bronze_table(token: Optional[str] = None) -> None:
 
 
 def load_polaris_table(token: Optional[str] = None) -> Optional[dict]:
-    # INC-5: pyiceberg RestCatalog.load_table sends X-Iceberg-Access-Delegation:
-    # vended-credentials, which Polaris cannot honor with stsUnavailable=true.
+    # Raw GET sidesteps pyiceberg entirely — useful for register_bronze_in_polaris recovery
+    # paths where we want metadata-location without instantiating a Table object.
     tok = token or polaris_token()
     r = requests.get(
         f"{_base()}/api/catalog/v1/{CATALOG}/namespaces/{NAMESPACE}/tables/{TABLE}",
@@ -127,64 +131,4 @@ def _s3_properties() -> dict:
         "s3.access-key-id": os.environ["S3_ACCESS_KEY"],
         "s3.secret-access-key": os.environ["S3_SECRET_KEY"],
         "s3.region": "garage",
-    }
-
-
-def _verify_data_files_intact(metadata_location: str, sample_size: int = 3) -> None:
-    # info.type must be compared against FileType.File directly, not via str() (spike INC).
-    from pyarrow.fs import FileType, S3FileSystem
-    from pyiceberg.table import StaticTable
-
-    table = StaticTable.from_metadata(metadata_location, properties=_s3_properties())
-    data_files = [task.file.file_path for task in table.scan().plan_files()]
-    if not data_files:
-        raise RuntimeError(f"no data files referenced by {metadata_location}")
-
-    fs = S3FileSystem(
-        endpoint_override=f"http://{os.environ['S3_ENDPOINT']}",
-        access_key=os.environ["S3_ACCESS_KEY"],
-        secret_key=os.environ["S3_SECRET_KEY"],
-        region="garage",
-        scheme="http",
-    )
-    sampled = random.sample(data_files, min(sample_size, len(data_files)))
-    bad: list[str] = []
-    for uri in sampled:
-        parsed = urlparse(uri)
-        info = fs.get_file_info(f"{parsed.netloc}{parsed.path}")
-        size = info.size or 0
-        if info.type != FileType.File or size <= 0:
-            bad.append(f"{uri} type={info.type} size={size}")
-    if bad:
-        raise RuntimeError(f"data files missing or zero-size: {bad}")
-
-
-def sync_polaris_pointer(metadata_location: str) -> dict:
-    # Drop+re-register is the only path that works; registerTable+overwrite and
-    # commitTable+set-snapshot-ref both fail empirically (spike acceptance #7).
-    token = polaris_token()
-    ensure_bronze_namespace(token)
-
-    current = load_polaris_table(token)
-    if current is not None and current["metadata-location"] == metadata_location:
-        return {
-            "action": "noop",
-            "metadata_location": metadata_location,
-            "snapshot_id": current["metadata"]["current-snapshot-id"],
-        }
-
-    drop_bronze_table(token)
-    # Sample-check after the drop; only post-drop validates purgeRequested=false's no-purge contract.
-    _verify_data_files_intact(metadata_location)
-    registered_snap = register_bronze_table(metadata_location, token)
-    parity_snap = load_polaris_snapshot(token)
-    if parity_snap != registered_snap:
-        raise RuntimeError(
-            f"parity check failed: register returned {registered_snap} "
-            f"but GET returned {parity_snap}"
-        )
-    return {
-        "action": "repointed",
-        "metadata_location": metadata_location,
-        "snapshot_id": registered_snap,
     }
