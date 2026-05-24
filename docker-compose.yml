@@ -271,6 +271,10 @@ services:
       AWS_REGION: garage
       AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
       AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+      # AWS SDK v2 (>=2.30, ~2025) defaults request checksums to aws-chunked CRC32, which
+      # Garage rejects ("Invalid payload signature") on Polaris's server-side metadata writes.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
       polaris.features."ALLOW_INSECURE_STORAGE_TYPES": "true"
       polaris.features."SUPPORTED_CATALOG_STORAGE_TYPES": '["FILE","S3"]'
       polaris.features."ALLOW_TABLE_LOCATION_OVERLAP": "true"

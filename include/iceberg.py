@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import os
 from typing import Optional
 
-from pyiceberg.catalog.sql import SqlCatalog
-from pyiceberg.exceptions import NamespaceAlreadyExistsError, TableAlreadyExistsError
+from pyiceberg.catalog.rest import RestCatalog
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.transforms import DayTransform
@@ -16,6 +14,8 @@ from pyiceberg.types import (
     StringType,
     TimestamptzType,
 )
+
+from include.iceberg_rest import get_polaris_catalog
 
 
 NAMESPACE = "bronze"
@@ -53,49 +53,11 @@ PARTITION_SPEC = PartitionSpec(
 )
 
 
-def get_catalog() -> SqlCatalog:
-    uri = (
-        f"postgresql+psycopg2://"
-        f"{os.environ['ANALYTICS_PG_USER']}:{os.environ['ANALYTICS_PG_PASSWORD']}"
-        f"@{os.environ['ANALYTICS_PG_HOST']}:{os.environ['ANALYTICS_PG_PORT']}"
-        f"/{os.environ['ANALYTICS_PG_DB']}"
-    )
-    bucket = os.environ.get("S3_BUCKET", "opensky")
-    return SqlCatalog(
-        "default",
-        **{
-            "uri": uri,
-            "warehouse": f"s3://{bucket}/warehouse",
-            "py-io-impl": "pyiceberg.io.pyarrow.PyArrowFileIO",
-            "s3.endpoint": f"http://{os.environ['S3_ENDPOINT']}",
-            "s3.access-key-id": os.environ["S3_ACCESS_KEY"],
-            "s3.secret-access-key": os.environ["S3_SECRET_KEY"],
-            # Garage's configured region; pyarrow validates SigV4 region, s3fs doesn't.
-            "s3.region": "garage",
-        },
-    )
+def get_catalog() -> RestCatalog:
+    return get_polaris_catalog()
 
 
-def ensure_namespace_and_table(catalog: Optional[SqlCatalog] = None) -> None:
-    cat = catalog or get_catalog()
-    try:
-        cat.create_namespace(NAMESPACE)
-    except NamespaceAlreadyExistsError:
-        pass
-    try:
-        cat.create_table(
-            identifier=QUALIFIED,
-            schema=SCHEMA,
-            partition_spec=PARTITION_SPEC,
-        )
-    except TableAlreadyExistsError:
-        pass
-
-    # Schema evolution: add columns present in SCHEMA but missing on disk.
-    table = cat.load_table(QUALIFIED)
-    existing = {f.name for f in table.schema().fields}
-    missing = [f for f in SCHEMA.fields if f.name not in existing]
-    if missing:
-        with table.update_schema() as update:
-            for f in missing:
-                update.add_column(f.name, f.field_type, required=f.required)
+def ensure_namespace_and_table(catalog: Optional[RestCatalog] = None) -> None:
+    # bronze namespace + table are pre-registered in Polaris (v2.1 bootstrap +
+    # v2.3 sync_polaris); keep the call site contract but no-op here.
+    return None
