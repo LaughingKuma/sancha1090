@@ -10,6 +10,8 @@ RUN pip install --no-cache-dir \
     psycopg2-binary==2.9.12 \
     s3fs==2026.4.0 \
     dbt-postgres==1.10.0 \
+    dbt-trino==1.10.2 \
+    apache-airflow-providers-trino==6.6.0 \
     pytest==9.0.3 \
     respx==0.23.1 \
     "pyiceberg[sql-postgres,pyiceberg-core]==0.11.1"

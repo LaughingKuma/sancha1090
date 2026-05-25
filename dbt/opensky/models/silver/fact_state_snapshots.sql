@@ -1,4 +1,15 @@
+{% if target.type == 'trino' %}
+{{ config(
+    materialized='table',
+    properties={
+        'format': "'PARQUET'",
+        'partitioning': "ARRAY['day(snapshot_time)']",
+        'sorted_by': "ARRAY['snapshot_time DESC']"
+    }
+) }}
+{% else %}
 {{ config(materialized='table') }}
+{% endif %}
 
 select
     icao24,
@@ -16,7 +27,11 @@ select
     -- Derived time dimensions for fast grouping
     date_trunc('hour', snapshot_time) as snapshot_hour,
     date_trunc('day', snapshot_time)  as snapshot_day,
+{% if target.type == 'trino' %}
+    cast(to_unixtime(snapshot_time) as bigint) as snapshot_epoch
+{% else %}
     extract(epoch from snapshot_time)::bigint as snapshot_epoch
+{% endif %}
 from {{ ref('stg_states') }}
 where latitude is not null
   and longitude is not null

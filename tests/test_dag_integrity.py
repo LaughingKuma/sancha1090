@@ -23,7 +23,10 @@ EXPECTED_DAGS = {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"load_states_to_pg", "dbt_deps", "dbt_run", "dbt_test"},
+        "task_ids": {
+            "load_states_to_pg", "dbt_deps",
+            "dbt_run_pg", "dbt_test_pg", "dbt_run_trino", "dbt_test_trino",
+        },
     },
     "tableize_states": {
         "schedule_is_asset_triggered": True,
@@ -36,6 +39,15 @@ EXPECTED_DAGS = {
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {"expire_snapshots"},
+    },
+    "maintain_iceberg_marts": {
+        "schedule": "30 4 * * *",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {
+            "optimize_silver", "expire_silver", "orphans_silver",
+            "optimize_gold", "expire_gold", "orphans_gold",
+        },
     },
     "backfill_from_buffer": {
         "catchup": False,

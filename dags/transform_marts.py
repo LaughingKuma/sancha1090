@@ -106,24 +106,42 @@ def transform_marts():
         ),
     )
 
-    dbt_run = BashOperator(
-        task_id="dbt_run",
+    dbt_run_pg = BashOperator(
+        task_id="dbt_run_pg",
         bash_command=(
             "cd /opt/airflow/dbt/opensky && "
-            "dbt run --profiles-dir . --no-use-colors"
+            "dbt run --profiles-dir . --target dev --no-use-colors"
         ),
     )
 
-    dbt_test = BashOperator(
-        task_id="dbt_test",
+    dbt_test_pg = BashOperator(
+        task_id="dbt_test_pg",
         bash_command=(
             "cd /opt/airflow/dbt/opensky && "
-            "dbt test --profiles-dir . --no-use-colors"
+            "dbt test --profiles-dir . --target dev --no-use-colors"
+        ),
+    )
+
+    dbt_run_trino = BashOperator(
+        task_id="dbt_run_trino",
+        bash_command=(
+            "cd /opt/airflow/dbt/opensky && "
+            "dbt run --profiles-dir . --target trino --no-use-colors"
+        ),
+    )
+
+    dbt_test_trino = BashOperator(
+        task_id="dbt_test_trino",
+        bash_command=(
+            "cd /opt/airflow/dbt/opensky && "
+            "dbt test --profiles-dir . --target trino --no-use-colors"
         ),
     )
 
     load_count = load_states_to_pg()
-    load_count >> dbt_deps >> dbt_run >> dbt_test
+    load_count >> dbt_deps
+    dbt_deps >> dbt_run_pg >> dbt_test_pg
+    dbt_deps >> dbt_run_trino >> dbt_test_trino
 
 
 transform_marts()

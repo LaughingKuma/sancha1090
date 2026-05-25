@@ -1,3 +1,16 @@
+{% if target.type == 'trino' %}
+{{ config(
+    materialized='table',
+    properties={
+        'format': "'PARQUET'",
+        'partitioning': "ARRAY['day(snapshot_time)']",
+        'sorted_by': "ARRAY['snapshot_time DESC']"
+    }
+) }}
+{% else %}
+{{ config(materialized='table') }}
+{% endif %}
+
 select
     icao24,
     callsign,
