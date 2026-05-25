@@ -39,6 +39,8 @@ x-airflow-common:
     R2_BUCKET: ${R2_BUCKET:-opensky-vps-buffer}
     POLARIS_ROOT_CLIENT_ID: ${POLARIS_ROOT_CLIENT_ID:-root}
     POLARIS_ROOT_CLIENT_SECRET: ${POLARIS_ROOT_CLIENT_SECRET:?POLARIS_ROOT_CLIENT_SECRET must be set in .env}
+    # Airflow connection for maintain_iceberg_marts' TrinoOperator tasks
+    AIRFLOW_CONN_TRINO_DEFAULT: trino://root@trino-coordinator:8080/iceberg
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
