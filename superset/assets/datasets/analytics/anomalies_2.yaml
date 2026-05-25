@@ -1,3 +1,4 @@
+# repointed to trino-iceberg in v2.7
 table_name: anomalies
 main_dttm_col: snapshot_time
 currency_code_column: null
@@ -5,8 +6,8 @@ description: null
 default_endpoint: null
 offset: 0
 cache_timeout: null
-catalog: analytics
-schema: marts
+catalog: iceberg
+schema: gold
 sql: null
 params: null
 template_params: null
@@ -146,4 +147,4 @@ columns:
   datetime_format: null
   extra: {}
 version: 1.0.0
-database_uuid: 01234567-0000-0000-0000-000000000001
+database_uuid: 01234567-0000-0000-0000-000000000002
