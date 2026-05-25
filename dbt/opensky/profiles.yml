@@ -1,5 +1,5 @@
 opensky:
-  target: dev
+  target: dev   # postgres by default; transform_marts overrides --target per branch
   outputs:
     dev:
       type: postgres
@@ -10,3 +10,16 @@ opensky:
       dbname: "{{ env_var('ANALYTICS_PG_DB', 'analytics') }}"
       schema: marts
       threads: 4
+    trino:
+      type: trino
+      method: none
+      user: root
+      password: ""
+      host: trino-coordinator
+      port: 8080
+      http_scheme: http
+      catalog: iceberg
+      schema: gold
+      threads: 4
+      session_properties:
+        query_max_run_time: 5m

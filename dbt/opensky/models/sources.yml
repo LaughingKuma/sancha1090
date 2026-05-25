@@ -4,6 +4,9 @@ sources:
   - name: staging
     description: "Raw landing tables loaded by Airflow from Garage bronze parquet"
     schema: staging
+    # Postgres-only mirror; disabled under the trino target where models read bronze.
+    config:
+      enabled: "{{ target.type != 'trino' }}"
     tables:
       - name: raw_states
         description: "Aircraft state vectors snapshotted every 12 minutes"
@@ -14,5 +17,23 @@ sources:
               - not_null
           - name: snapshot_time
             description: "Epoch second when this snapshot was taken"
+            tests:
+              - not_null
+
+  - name: bronze
+    description: "Polaris-backed Iceberg bronze table; read directly by the dbt-trino target"
+    database: iceberg
+    schema: bronze
+    # Iceberg source only exists under the trino target.
+    config:
+      enabled: "{{ target.type == 'trino' }}"
+    tables:
+      - name: opensky_states
+        description: "Aircraft state vectors; Polaris-backed Iceberg table"
+        columns:
+          - name: icao24
+            tests:
+              - not_null
+          - name: snapshot_time
             tests:
               - not_null
