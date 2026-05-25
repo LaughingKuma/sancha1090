@@ -1,4 +1,4 @@
-database_name: analytics
+database_name: analytics-legacy
 sqlalchemy_uri: postgresql+psycopg2://analytics:XXXXXXXXXX@postgres-analytics:5432/analytics
 cache_timeout: null
 expose_in_sqllab: true
