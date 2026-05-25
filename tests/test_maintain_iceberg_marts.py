@@ -62,7 +62,6 @@ def test_maintenance_ops_compact_and_run_clean():
             _run(cur, f"INSERT INTO {TABLE} VALUES ({i})")
 
         files_before = _meta_count(cur, "$files")
-        snaps_before = _meta_count(cur, "$snapshots")
         assert files_before >= 4, f"expected >=4 small files, got {files_before}"
 
         # optimize compacts the small files into fewer.
@@ -72,12 +71,13 @@ def test_maintenance_ops_compact_and_run_clean():
             f"optimize did not compact: before={files_before} after={files_after}"
         )
 
-        # expire + orphans must run cleanly; fresh snapshots can't drop (7d min
-        # retention), so assert non-increasing rather than a strict decrease.
+        # Measure snapshots after optimize: expire must be non-increasing here,
+        # since fresh snapshots can't drop under the 7d min retention.
+        snaps_pre_expire = _meta_count(cur, "$snapshots")
         _run(cur, f"ALTER TABLE {TABLE} EXECUTE expire_snapshots(retention_threshold => '7d')")
         snaps_after = _meta_count(cur, "$snapshots")
-        assert snaps_after <= snaps_before + 1, (
-            f"snapshot count grew unexpectedly: before={snaps_before} after={snaps_after}"
+        assert snaps_after <= snaps_pre_expire, (
+            f"expire increased snapshot count: before={snaps_pre_expire} after={snaps_after}"
         )
         _run(cur, f"ALTER TABLE {TABLE} EXECUTE remove_orphan_files(retention_threshold => '7d')")
 

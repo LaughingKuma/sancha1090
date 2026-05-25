@@ -45,6 +45,7 @@ def maintain_iceberg_marts():
                 f"ALTER TABLE iceberg.{ns}.{t} EXECUTE remove_orphan_files(retention_threshold => '{RETENTION}')"
                 for t in tables
             ]
+        raise ValueError(f"unsupported op {op!r} for ns {ns!r}")
 
     def _task(task_id: str, ns: str, tables: list[str], op: str) -> SQLExecuteQueryOperator:
         return SQLExecuteQueryOperator(task_id=task_id, conn_id="trino_default", sql=_ops(ns, tables, op))
