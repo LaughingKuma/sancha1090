@@ -1,12 +1,4 @@
-"""v2.8 Trino/Superset timestamp contract for the Iceberg marts.
-
-v2.8 retired the dbt-postgres mart build, so there is no postgres side left to
-compare against — the old pg-vs-trino parity gate is gone. What survives is the
-one invariant Superset still depends on: each dataset's main_dttm_col must be
-TIMESTAMP WITH TIME ZONE on iceberg.gold/silver, the type Superset's Trino
-dialect DATEADDs against for time-range filters. Skips when Trino/the marts are
-unreachable, like the other integration tests.
-"""
+# v2.8: pg parity gate retired; guards the surviving invariant — Superset's main_dttm_col stays tz-aware on iceberg.gold/silver.
 
 from __future__ import annotations
 
@@ -15,8 +7,7 @@ import os
 import pytest
 
 
-# main_dttm_col per dataset — these MUST be TIMESTAMP WITH TIME ZONE on Trino,
-# the type Superset's Trino dialect macros DATEADD against.
+# Superset's Trino dialect DATEADDs against these, so they MUST be TIMESTAMP WITH TIME ZONE.
 MAIN_DTTM_COL = {
     "agg_country_traffic": "snapshot_ts",
     "agg_hourly_traffic": "snapshot_hour",
@@ -46,7 +37,6 @@ def _trino_query(sql: str, params: tuple = ()):  # skips if trino unreachable
 
 
 def _canonical_type(dtype: str) -> str:
-    """Collapse Trino timestamp spellings to one canonical token."""
     d = dtype.lower().strip()
     if d.startswith("timestamp") and "with time zone" in d:
         return "timestamp with time zone"
