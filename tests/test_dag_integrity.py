@@ -25,7 +25,7 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {
             "load_states_to_pg", "dbt_deps",
-            "dbt_run_pg", "dbt_test_pg", "dbt_run_trino", "dbt_test_trino",
+            "dbt_run_trino", "dbt_test_trino",
         },
     },
     "tableize_states": {
