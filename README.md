@@ -21,8 +21,8 @@ A few things that don't always show up in tutorial-grade pipelines:
 - **Three-DAG asset chain.** `ingest_states` lands raw parquet and emits
   `raw_states_landed`. `tableize_states` triggers off that, appends to an
   Apache Iceberg table, and emits `bronze_states_table` on successful
-  commit. `transform_marts` triggers off *that*, reads the Iceberg delta
-  since its watermark, and rebuilds dbt marts. No polling, no cron
+  commit. `transform_marts` triggers off *that* and rebuilds the dbt
+  marts straight from the Iceberg table. No polling, no cron
   coupling between DAGs.
 - Per-task retry strategy. Ingestion retries fast with exponential backoff
   (network errors are transient); the transform retries once with a longer
@@ -33,8 +33,8 @@ A few things that don't always show up in tutorial-grade pipelines:
   budget consciously.
 - Bronze raw (parquet in Garage as immutable audit evidence), bronze
   table (Iceberg, the canonical analytical layer), silver (typed dbt
-  views on a rolling 30-day Postgres window driven by a watermark), gold
-  (Postgres mart tables), with dbt tests in the DAG path so bad data
+  models over a rolling 30-day Iceberg window), gold (Iceberg mart
+  tables, built by dbt-trino), with dbt tests in the DAG path so bad data
   fails the run instead of landing silently.
 - **Declarative Superset.** Datasets, charts, and the dashboard live as YAML
   in `superset/assets/` and get re-imported on every container start.
@@ -156,27 +156,21 @@ OpenSky REST API (live, global aircraft state)
                  ▼
    ┌──────────────────────────────────┐
    │  transform_marts (Airflow)       │
-   │  Iceberg delta > watermark       │
-   │  → append to Postgres staging    │
-   │  → trim retention                │
-   │  → advance watermark             │
-   │  → dbt run + dbt test            │
+   │  dbt deps → dbt run → dbt test   │
+   │  (dbt-trino, --target trino)     │
    └─────────────┬────────────────────┘
                  │
                  ▼
-       Postgres analytics
-         public.ingestion_manifest  (audit + Iceberg load queue)
-         public.pipeline_watermarks (incremental load cursors)
-         staging.raw_states         (rolling 30-day window)
-         staging.stg_states         (dbt view: typed, deduped)
-         marts.fact_state_snapshots (per-aircraft positions, airborne only)
-         marts.agg_country_traffic  (latest snapshot, by country)
-         marts.agg_hourly_traffic   (time series, by hour)
-         marts.agg_status_breakdown (airborne vs on-ground)
-         marts.anomalies            (data-quality outliers)
+       Iceberg silver + gold  (Polaris-backed, built via Trino)
+         iceberg.silver.stg_states           (view: typed, deduped)
+         iceberg.silver.fact_state_snapshots (per-aircraft positions)
+         iceberg.gold.agg_country_traffic    (latest snapshot, by country)
+         iceberg.gold.agg_hourly_traffic     (time series, by hour)
+         iceberg.gold.agg_status_breakdown   (airborne vs on-ground)
+         iceberg.gold.anomalies              (data-quality outliers)
                  │
                  ▼
-       Superset (BI)
+       Superset (BI)  — reads Trino
          OpenSky Live Global Aircraft Tracking dashboard
          Three tabs: Live (KPI, top-15 bar, world map),
          Trends (hourly line, altitude histogram, speed-vs-altitude scatter),
@@ -303,14 +297,13 @@ downstream. The split makes audit trivial (every raw file is in
 `public.ingestion_manifest` with its Iceberg commit timestamp) and lets
 us evolve the analytical schema without touching the raw files.
 
-**Watermark-based incremental loads, no TRUNCATE+reload.**
-`transform_marts` keeps a per-pipeline cursor in
-`public.pipeline_watermarks` and only reads Iceberg rows newer than the
-cursor. Each run advances the watermark in the same Postgres transaction
-as the data insert. Old rows beyond a 30-day retention window get
-deleted in the same transaction. dbt deduplicates by `(icao24,
-snapshot_time)` in `stg_states`, so any append-side overlap is invisible
-to marts.
+**Trino-only mart builds, straight off Iceberg.**
+`transform_marts` triggers on the `bronze_states_table` asset and runs
+`dbt run`/`dbt test` against the Trino `iceberg` catalog. `stg_states`
+reads `bronze.opensky_states` directly with a rolling 30-day filter and
+deduplicates by `(icao24, snapshot_time)`; the silver/gold marts are
+rebuilt (REPLACE) each run. No Postgres staging table and no watermark
+cursor — Iceberg snapshots are the incremental boundary.
 
 **Three Postgres instances, not one.**
 Detailed in [Storage layout](#storage-layout). Scheduler metadata,
@@ -356,8 +349,7 @@ opensky-airflow/
 │   ├── regions.py                   # Geographic bbox config
 │   ├── assets.py                    # Centralized Asset URIs
 │   ├── iceberg.py                   # PyIceberg catalog + schema bootstrap
-│   ├── manifest.py                  # Ingestion manifest + Iceberg load queue
-│   └── watermark.py                 # Per-pipeline incremental cursors
+│   └── manifest.py                  # Ingestion manifest + Iceberg load queue
 ├── scripts/                         # One-shot operational helpers
 │   └── backfill_legacy_bronze_states.py
 ├── dbt/opensky/                     # dbt project
@@ -416,10 +408,9 @@ instead of one developer's curiosity:
 - **Kubernetes executor in Airflow.** LocalExecutor is fine here.
   Per-task isolation via Kubernetes pods would be the production move.
 - **Incremental dbt models.** The marts currently rebuild fully on
-  every run from a 30-day Postgres window. At scale, switch to
-  `materialized='incremental'` with partition pruning, and have dbt-
-  duckdb read the Iceberg table directly for the long-tail queries
-  instead of going through Postgres at all.
+  every run from a 30-day Iceberg window. At scale, switch to
+  `materialized='incremental'` with partition pruning instead of a
+  full REPLACE each run.
 - **Iceberg compaction.** Tracked in [#9](../../issues/9). Deferred until we actually have small-file pain.
 - **Cosmos for dbt.** Right now `dbt run` is one BashOperator. Cosmos
   would split it into one Airflow task per dbt model, for per-model
