@@ -162,7 +162,7 @@ OpenSky REST API (live, global aircraft state)
                  │
                  ▼
        Iceberg silver + gold  (Polaris-backed, built via Trino)
-         iceberg.silver.stg_states           (view: typed, deduped)
+         iceberg.silver.stg_states           (table: typed, deduped)
          iceberg.silver.fact_state_snapshots (per-aircraft positions)
          iceberg.gold.agg_country_traffic    (latest snapshot, by country)
          iceberg.gold.agg_hourly_traffic     (time series, by hour)
