@@ -1,4 +1,3 @@
-{% if target.type == 'trino' %}
 {{ config(
     materialized='table',
     properties={
@@ -7,9 +6,6 @@
         'sorted_by': "ARRAY['snapshot_time DESC']"
     }
 ) }}
-{% else %}
-{{ config(materialized='table') }}
-{% endif %}
 
 select
     icao24,

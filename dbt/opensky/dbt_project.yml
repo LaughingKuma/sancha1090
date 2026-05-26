@@ -17,14 +17,12 @@ clean-targets:
 
 models:
   opensky:
-    # Trino target lands silver/gold; postgres stays staging/marts so Superset
-    # keeps reading analytics.marts.* until v2.7 re-points it.
     staging:
       +materialized: view
-      +schema: "{{ 'silver' if target.type == 'trino' else 'staging' }}"
+      +schema: silver
     silver:
       +materialized: table
-      +schema: "{{ 'silver' if target.type == 'trino' else 'marts' }}"
+      +schema: silver
     marts:
       +materialized: table
-      +schema: "{{ 'gold' if target.type == 'trino' else 'marts' }}"
+      +schema: gold
