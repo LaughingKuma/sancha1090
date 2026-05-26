@@ -11,5 +11,8 @@ dbt/opensky/.user.yml
 
 .playwright-mcp/
 
+# Local superpowers skill output (plans/handover); handover docs live in opensky-docs/relevant/
+docs/superpowers/
+
 # Garage config carries RPC secret + admin tokens
 config/garage.toml
