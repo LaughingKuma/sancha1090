@@ -51,6 +51,8 @@ x-airflow-common:
     - ./scripts:/opt/airflow/scripts:ro
     - ./tests:/opt/airflow/tests:ro
     - ./pytest.ini:/opt/airflow/pytest.ini:ro
+    # ro: lets test_superset_bundle validate the dataset YAMLs in the container run
+    - ./superset:/opt/airflow/superset:ro
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres-airflow:
