@@ -12,7 +12,6 @@ SILVER_TABLES = ["stg_states", "fact_state_snapshots"]
 GOLD_TABLES = [
     "agg_country_traffic",
     "agg_hourly_traffic",
-    "agg_status_breakdown",
     "anomalies",
 ]
 
