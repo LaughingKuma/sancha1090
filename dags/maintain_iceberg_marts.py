@@ -8,7 +8,7 @@ from airflow.sdk import dag
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
 
-SILVER_TABLES = ["fact_state_snapshots"]
+SILVER_TABLES = ["stg_states", "fact_state_snapshots"]
 GOLD_TABLES = [
     "agg_country_traffic",
     "agg_hourly_traffic",
