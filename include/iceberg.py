@@ -44,7 +44,7 @@ SCHEMA = Schema(
     NestedField(17, "snapshot_time", TimestamptzType(), required=False),
     NestedField(18, "region", StringType(), required=False),
     NestedField(19, "ingested_at", TimestamptzType(), required=False),
-    # Iceberg-commit time — anchors transform_marts watermark so backfilled rows aren't skipped by snapshot_time-based filters.
+    # Iceberg-commit time, distinct from snapshot_time so late-committed backfilled rows stay identifiable.
     NestedField(20, "committed_at", TimestamptzType(), required=False),
 )
 

@@ -1,15 +1,6 @@
 opensky:
-  target: dev   # postgres by default; transform_marts overrides --target per branch
+  target: trino
   outputs:
-    dev:
-      type: postgres
-      host: "{{ env_var('ANALYTICS_PG_HOST', 'postgres-analytics') }}"
-      user: "{{ env_var('ANALYTICS_PG_USER', 'analytics') }}"
-      password: "{{ env_var('ANALYTICS_PG_PASSWORD', 'analytics') }}"
-      port: "{{ env_var('ANALYTICS_PG_PORT', '5432') | as_number }}"
-      dbname: "{{ env_var('ANALYTICS_PG_DB', 'analytics') }}"
-      schema: marts
-      threads: 4
     trino:
       type: trino
       method: none
