@@ -1,4 +1,4 @@
-# OpenSky Live: a local-first data platform
+# sancha1090: a local-first data platform
 
 A local data pipeline that pulls live aircraft state from the
 [OpenSky Network](https://opensky-network.org), shapes it through
@@ -220,7 +220,7 @@ connection passwords.
 
 ```bash
 git clone <this-repo>
-cd opensky-airflow
+cd sancha1090
 cp .env.example .env
 # Fill in the blank secrets in .env. Each has a "Generate with:" hint
 # in the example file. MAPBOX_API_KEY is optional; without it, the
@@ -333,7 +333,7 @@ start if a required secret is unset. This prevents the
 ## Project layout
 
 ```
-opensky-airflow/
+sancha1090/
 ├── Dockerfile                       # Airflow image with project deps
 ├── docker-compose.yml               # Full stack
 ├── docker-compose.override.yml      # Host port bindings (loopback only)
