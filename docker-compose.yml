@@ -7,7 +7,7 @@
 x-airflow-common:
   &airflow-common
   build: .
-  image: opensky-airflow:latest
+  image: sancha1090-airflow:latest
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -131,7 +131,7 @@ services:
 
   superset:
     build: ./superset
-    image: opensky-superset:latest
+    image: sancha1090-superset:latest
     depends_on:
       postgres-superset:
         condition: service_healthy
@@ -358,9 +358,16 @@ services:
     restart: unless-stopped
 
 volumes:
+  # Pin existing names so renaming COMPOSE_PROJECT_NAME doesn't orphan data.
   postgres-airflow-data:
+    name: opensky_postgres-airflow-data
   postgres-analytics-data:
+    name: opensky_postgres-analytics-data
   postgres-superset-data:
+    name: opensky_postgres-superset-data
   garage-meta:
+    name: opensky_garage-meta
   garage-data:
+    name: opensky_garage-data
   superset-home:
+    name: opensky_superset-home

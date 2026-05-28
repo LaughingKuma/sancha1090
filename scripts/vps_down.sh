@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tear down the opensky-collector VPS and trigger the backfill DAG to drain
+# Tear down the sancha1090-collector VPS and trigger the backfill DAG to drain
 # anything it captured into Garage. Auto-sources ../.env if needed.
 set -euo pipefail
 
@@ -13,9 +13,9 @@ if [ -z "${R2_ENDPOINT:-}" ] && [ -f "$ENV_FILE" ]; then
     set +a
 fi
 
-SERVER_NAME="${SERVER_NAME:-opensky-collector}"
+SERVER_NAME="${SERVER_NAME:-${COMPOSE_PROJECT_NAME:-sancha1090}-collector}"
 BACKFILL_DAG="${BACKFILL_DAG:-backfill_from_buffer}"
-SCHEDULER_CONTAINER="${SCHEDULER_CONTAINER:-opensky-airflow-scheduler-1}"
+SCHEDULER_CONTAINER="${SCHEDULER_CONTAINER:-${COMPOSE_PROJECT_NAME:-sancha1090}-airflow-scheduler-1}"
 
 if hcloud server describe "$SERVER_NAME" >/dev/null 2>&1; then
     hcloud server delete "$SERVER_NAME"
