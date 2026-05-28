@@ -116,7 +116,7 @@ dominate. Recent partitions, via `rclone lsl garage:opensky`:
     21925 2026-05-19 07:12:03.359000000 bronze/states_raw/dt=2026-05-19/hr=07/min=12/region=south_asia.parquet
 ```
 
-dbt tests in the DAG path. After `dbt_run`, `dbt_test` runs all 14
+dbt tests in the DAG path. After `dbt_run_trino`, `dbt_test_trino` runs all 12
 schema and source tests. If any fail, the DAG fails. The pytest suite
 in `tests/` adds DAG-structure and credit-budget checks on top.
 
@@ -149,7 +149,7 @@ OpenSky REST API (live, global aircraft state)
                  ▼
        Iceberg bronze.opensky_states (canonical analytical truth)
          warehouse: s3://opensky/warehouse/bronze.db/opensky_states/
-         catalog:   Postgres SQL catalog (public.iceberg_*)
+         catalog:   Polaris REST catalog (metastore in postgres-analytics)
          partition: days(snapshot_time)
                  │
                  │  Asset event: bronze_states_table
@@ -166,7 +166,6 @@ OpenSky REST API (live, global aircraft state)
          iceberg.silver.fact_state_snapshots (per-aircraft positions)
          iceberg.gold.agg_country_traffic    (latest snapshot, by country)
          iceberg.gold.agg_hourly_traffic     (time series, by hour)
-         iceberg.gold.agg_status_breakdown   (airborne vs on-ground)
          iceberg.gold.anomalies              (data-quality outliers)
                  │
                  ▼
@@ -182,10 +181,10 @@ OpenSky REST API (live, global aircraft state)
 - Apache Airflow 3.2 for orchestration. TaskFlow API, dynamic task mapping,
   asset-driven scheduling across a three-DAG chain.
 - Apache Iceberg (via PyIceberg) for the bronze analytical table.
-  Postgres-backed SQL catalog, day-partitioned by snapshot_time, written
+  Polaris-backed REST catalog, day-partitioned by snapshot_time, written
   exclusively by `tableize_states` (single canonical writer).
-- dbt on Postgres for the silver/gold layers. A custom
-  `generate_schema_name` macro keeps schemas named `staging` and `marts`
+- dbt-trino for the silver/gold layers. A custom
+  `generate_schema_name` macro keeps schemas named `silver` and `gold`
   rather than the doubled-up form dbt produces by default.
 - Garage as a local S3-compatible object store for raw landing
   (`bronze/states_raw/`) and the Iceberg warehouse (`warehouse/`).
@@ -207,7 +206,7 @@ Three Postgres instances, by design, plus Garage:
 | Service                | Role                                                    | Why separate                                    |
 |------------------------|---------------------------------------------------------|--------------------------------------------------|
 | `postgres-airflow`     | Airflow metadata: DAG runs, XCom, etc.                  | Latency-sensitive; scheduler heartbeat depends on it |
-| `postgres-analytics`   | Warehouse: staging + marts + Iceberg catalog + manifest | Bursty heavy queries; mustn't threaten scheduler |
+| `postgres-analytics`   | Analytics support DB: Polaris metastore + manifest      | Bursty heavy queries; mustn't threaten scheduler |
 | `postgres-superset`    | Superset metadata: dashboards, charts                   | Different upgrade cadence; recoverable from YAML in repo |
 | `garage` (object store) | Raw parquet + Iceberg warehouse                        | Cheap, append-only, partitioned for query pruning |
 
@@ -307,13 +306,13 @@ cursor — Iceberg snapshots are the incremental boundary.
 
 **Three Postgres instances, not one.**
 Detailed in [Storage layout](#storage-layout). Scheduler metadata,
-warehouse data, and BI metadata have different latency profiles, backup
+Polaris/manifest metadata, and BI metadata have different latency profiles, backup
 needs, and failure semantics. Mixing them creates a single point of
 failure that isn't worth the saved overhead.
 
 **Custom dbt `generate_schema_name`.**
 By default dbt concatenates the profile schema with the per-folder
-schema config, producing names like `marts_staging` and `marts_marts`.
+schema config, producing names like `gold_silver` and `gold_gold`.
 The override in `dbt/opensky/macros/generate_schema_name.sql` uses the
 per-folder name as-is. Cleaner names; the standard fix for
 single-environment setups.
@@ -343,13 +342,16 @@ opensky-airflow/
 ├── dags/                            # Airflow DAG definitions (thin)
 │   ├── ingest_states.py
 │   ├── tableize_states.py           # Iceberg loader (asset-triggered)
-│   └── transform_marts.py
+│   ├── transform_marts.py
+│   ├── maintain_iceberg_states.py
+│   ├── maintain_iceberg_marts.py
+│   └── backup_polaris.py            # Polaris metastore backup to Garage
 ├── include/                         # Logic imported by DAGs
 │   ├── opensky_client.py            # API client with auth + retries
 │   ├── s3_helpers.py                # Parquet IO via s3fs
 │   ├── regions.py                   # Geographic bbox config
 │   ├── assets.py                    # Centralized Asset URIs
-│   ├── iceberg.py                   # PyIceberg catalog + schema bootstrap
+│   ├── iceberg.py                   # PyIceberg table contract + Polaris catalog
 │   └── manifest.py                  # Ingestion manifest + Iceberg load queue
 ├── scripts/                         # One-shot operational helpers
 │   └── backfill_legacy_bronze_states.py
@@ -361,11 +363,10 @@ opensky-airflow/
 │   └── models/
 │       ├── sources.yml
 │       ├── staging/stg_states.sql
+│       ├── silver/fact_state_snapshots.sql
 │       └── marts/
-│           ├── fact_state_snapshots.sql
 │           ├── agg_country_traffic.sql
 │           ├── agg_hourly_traffic.sql
-│           ├── agg_status_breakdown.sql
 │           └── anomalies.sql
 ├── superset/                        # Superset image, bootstrap, asset bundle
 │   ├── Dockerfile
@@ -373,7 +374,7 @@ opensky-airflow/
 │   ├── superset_config.py
 │   └── assets/                      # Round-trippable YAML
 │       ├── metadata.yaml
-│       ├── databases/analytics.yaml
+│       ├── databases/trino-iceberg.yaml
 │       ├── datasets/analytics/
 │       ├── charts/
 │       └── dashboards/
