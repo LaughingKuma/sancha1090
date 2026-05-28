@@ -87,7 +87,7 @@ The raw landing zone in Garage. Each snapshot writes 8 parquet files under
 are the immutable ingestion evidence — they're never rewritten or
 compacted; the Iceberg layer above handles that. Sizes range from ~12 to
 ~180 KiB depending on how busy the region is — Europe and North America
-dominate. Recent partitions, via `rclone lsl garage:opensky`:
+dominate. Recent partitions, via `rclone lsl garage:sancha1090`:
 
 ```
     16767 2026-05-19 06:48:04.841000000 bronze/states_raw/dt=2026-05-19/hr=06/min=48/region=africa.parquet
@@ -148,7 +148,7 @@ OpenSky REST API (live, global aircraft state)
                  │
                  ▼
        Iceberg bronze.opensky_states (canonical analytical truth)
-         warehouse: s3://opensky/warehouse/bronze.db/opensky_states/
+         warehouse: s3://sancha1090/warehouse/bronze.db/opensky_states/
          catalog:   Polaris REST catalog (metastore in postgres-analytics)
          partition: days(snapshot_time)
                  │

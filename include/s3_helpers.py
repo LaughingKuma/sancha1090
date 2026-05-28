@@ -28,7 +28,7 @@ def get_s3fs() -> s3fs.S3FileSystem:
 
 
 def get_bucket() -> str:
-    return os.environ.get("S3_BUCKET", "opensky")
+    return os.environ.get("S3_BUCKET", "sancha1090")
 
 
 def write_parquet(df: pl.DataFrame, key: str) -> str:
