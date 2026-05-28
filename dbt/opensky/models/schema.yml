@@ -58,13 +58,3 @@ models:
         tests:
           - not_null
           - unique
-
-  - name: agg_status_breakdown
-    description: "Airborne vs on-ground breakdown for the latest snapshot"
-    columns:
-      - name: status
-        tests:
-          - not_null
-          - accepted_values:
-              arguments:
-                values: [airborne, on_ground]

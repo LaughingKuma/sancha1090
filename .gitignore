@@ -11,3 +11,6 @@ dbt/opensky/.user.yml
 
 # Garage config carries RPC secret + admin tokens
 config/garage.toml
+
+# Host-specific compose overrides (e.g. LAN port exposure); loaded via COMPOSE_FILE
+docker-compose.local.yml
