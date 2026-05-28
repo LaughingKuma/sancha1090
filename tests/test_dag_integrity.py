@@ -48,6 +48,12 @@ EXPECTED_DAGS = {
             "optimize_gold", "expire_gold", "orphans_gold",
         },
     },
+    "backup_polaris": {
+        "schedule": "0 2 * * *",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"dump_to_garage"},
+    },
     "backfill_from_buffer": {
         "catchup": False,
         "max_active_runs": 1,

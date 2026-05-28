@@ -338,6 +338,7 @@ opensky-airflow/
 ├── Dockerfile                       # Airflow image with project deps
 ├── docker-compose.yml               # Full stack
 ├── docker-compose.override.yml      # Host port bindings (loopback only)
+├── docker-compose.local.yml         # Host-specific overrides (gitignored; via COMPOSE_FILE)
 ├── .env.example                     # Secrets template
 ├── dags/                            # Airflow DAG definitions (thin)
 │   ├── ingest_states.py
