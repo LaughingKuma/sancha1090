@@ -1,6 +1,6 @@
 networks:
   default:
-    name: opensky_net
+    name: sancha1090_net
     driver: bridge
 
 services:

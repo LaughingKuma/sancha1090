@@ -1,5 +1,5 @@
 #!/bin/bash
-# Spin up the opensky-collector VPS on Hetzner with cloud-init.
+# Spin up the sancha1090-collector VPS on Hetzner with cloud-init.
 # Auto-sources ../.env if R2_ENDPOINT isn't already set in the environment.
 set -euo pipefail
 
@@ -15,7 +15,8 @@ if [ -z "${R2_ENDPOINT:-}" ] && [ -f "$ENV_FILE" ]; then
     set +a
 fi
 
-SERVER_NAME="${SERVER_NAME:-opensky-collector}"
+PROJECT_NAME="${COMPOSE_PROJECT_NAME:-sancha1090}"
+SERVER_NAME="${SERVER_NAME:-${PROJECT_NAME}-collector}"
 SERVER_TYPE="${SERVER_TYPE:-cx23}"
 IMAGE="${IMAGE:-debian-12}"
 LOCATION="${LOCATION:-nbg1}"
@@ -47,8 +48,8 @@ ENV_EOF
 )
 COLLECTOR_PAYLOAD=$(cat "$COLLECTOR")
 
-USER_DATA=$(ENV_FILE_CONTENTS="$ENV_FILE_CONTENTS" COLLECTOR_PAYLOAD="$COLLECTOR_PAYLOAD" \
-    envsubst '${ENV_FILE_CONTENTS} ${COLLECTOR_PAYLOAD}' <"$INIT_TMPL")
+USER_DATA=$(ENV_FILE_CONTENTS="$ENV_FILE_CONTENTS" COLLECTOR_PAYLOAD="$COLLECTOR_PAYLOAD" PROJECT_NAME="$PROJECT_NAME" \
+    envsubst '${ENV_FILE_CONTENTS} ${COLLECTOR_PAYLOAD} ${PROJECT_NAME}' <"$INIT_TMPL")
 
 TMPFILE=$(mktemp)
 trap 'rm -f "$TMPFILE"' EXIT
@@ -69,4 +70,4 @@ hcloud server create \
 
 echo
 echo "server $SERVER_NAME created. cloud-init takes ~60s to install + first collection."
-echo "watch progress: hcloud server ssh $SERVER_NAME -- journalctl -fu opensky-collector"
+echo "watch progress: hcloud server ssh $SERVER_NAME -- journalctl -fu ${PROJECT_NAME}-collector"
