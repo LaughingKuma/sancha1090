@@ -40,7 +40,7 @@ from include.assets import raw_states_landed
         "retry_exponential_backoff": True,
         "max_retry_delay": timedelta(minutes=10),
     },
-    tags=["opensky", "bronze", "stage-9"],
+    tags=["sancha1090", "bronze"],
 )
 def ingest_states():
 

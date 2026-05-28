@@ -19,14 +19,14 @@ from include.assets import bronze_states_table
         "retries": 1,
         "retry_delay": timedelta(minutes=2),
     },
-    tags=["opensky", "silver", "gold", "stage-12"],
+    tags=["sancha1090", "silver", "gold"],
 )
 def transform_marts():
 
     dbt_deps = BashOperator(
         task_id="dbt_deps",
         bash_command=(
-            "cd /opt/airflow/dbt/opensky && "
+            "cd /opt/airflow/dbt/sancha1090 && "
             "dbt deps --profiles-dir . --no-use-colors"
         ),
     )
@@ -34,7 +34,7 @@ def transform_marts():
     dbt_run_trino = BashOperator(
         task_id="dbt_run_trino",
         bash_command=(
-            "cd /opt/airflow/dbt/opensky && "
+            "cd /opt/airflow/dbt/sancha1090 && "
             "dbt run --profiles-dir . --target trino --no-use-colors"
         ),
     )
@@ -42,7 +42,7 @@ def transform_marts():
     dbt_test_trino = BashOperator(
         task_id="dbt_test_trino",
         bash_command=(
-            "cd /opt/airflow/dbt/opensky && "
+            "cd /opt/airflow/dbt/sancha1090 && "
             "dbt test --profiles-dir . --target trino --no-use-colors"
         ),
     )

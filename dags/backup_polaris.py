@@ -19,7 +19,7 @@ from airflow.sdk import dag, task
         "retries": 2,
         "retry_delay": timedelta(minutes=5),
     },
-    tags=["opensky", "polaris", "backup", "v2"],
+    tags=["sancha1090", "polaris", "backup", "v2"],
 )
 def backup_polaris():
 

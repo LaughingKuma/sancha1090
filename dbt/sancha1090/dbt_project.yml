@@ -1,8 +1,8 @@
-name: 'opensky'
+name: 'sancha1090'
 version: '1.0.0'
 config-version: 2
 
-profile: 'opensky'
+profile: 'sancha1090'
 
 test-paths: ["tests"]
 macro-paths: ["macros"]
@@ -16,7 +16,7 @@ clean-targets:
   - "dbt_packages"
 
 models:
-  opensky:
+  sancha1090:
     staging:
       +materialized: table
       +schema: silver

@@ -313,7 +313,7 @@ failure that isn't worth the saved overhead.
 **Custom dbt `generate_schema_name`.**
 By default dbt concatenates the profile schema with the per-folder
 schema config, producing names like `gold_silver` and `gold_gold`.
-The override in `dbt/opensky/macros/generate_schema_name.sql` uses the
+The override in `dbt/sancha1090/macros/generate_schema_name.sql` uses the
 per-folder name as-is. Cleaner names; the standard fix for
 single-environment setups.
 
@@ -355,7 +355,7 @@ sancha1090/
 │   └── manifest.py                  # Ingestion manifest + Iceberg load queue
 ├── scripts/                         # One-shot operational helpers
 │   └── backfill_legacy_bronze_states.py
-├── dbt/opensky/                     # dbt project
+├── dbt/sancha1090/                  # dbt project
 │   ├── dbt_project.yml
 │   ├── profiles.yml
 │   ├── macros/

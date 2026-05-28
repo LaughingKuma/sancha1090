@@ -5,9 +5,9 @@ logs/
 __pycache__/
 *.pyc 
 .pytest_cache/
-dbt/opensky/target/
-dbt/opensky/dbt_packages/
-dbt/opensky/.user.yml
+dbt/sancha1090/target/
+dbt/sancha1090/dbt_packages/
+dbt/sancha1090/.user.yml
 
 # Garage config carries RPC secret + admin tokens
 config/garage.toml

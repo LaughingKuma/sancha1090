@@ -26,7 +26,7 @@ RETENTION = "7d"
     catchup=False,
     max_active_runs=1,
     default_args={"owner": "amit", "retries": 1, "retry_delay": timedelta(minutes=5)},
-    tags=["opensky", "iceberg", "maintenance", "v2"],
+    tags=["sancha1090", "iceberg", "maintenance", "v2"],
 )
 def maintain_iceberg_marts():
     # One statement per list entry: the Trino DBAPI runs a single statement per

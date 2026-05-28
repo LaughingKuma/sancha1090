@@ -21,7 +21,7 @@ _SQLCATALOG_TABLES = ("public.iceberg_tables", "public.iceberg_namespace_propert
         "owner": "amit",
         "retries": 0,
     },
-    tags=["opensky", "iceberg", "migration", "stage-12"],
+    tags=["sancha1090", "iceberg", "migration"],
 )
 def migrate_drop_sqlcatalog_tables():
 
