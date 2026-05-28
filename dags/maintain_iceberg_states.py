@@ -22,7 +22,7 @@ SNAPSHOT_RETENTION = timedelta(days=7)
         "retries": 1,
         "retry_delay": timedelta(minutes=5),
     },
-    tags=["opensky", "iceberg", "maintenance", "stage-12"],
+    tags=["sancha1090", "iceberg", "maintenance"],
 )
 def maintain_iceberg_states():
 

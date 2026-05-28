@@ -19,7 +19,7 @@ from airflow.sdk import dag, task
         "retries": 1,
         "retry_delay": timedelta(minutes=2),
     },
-    tags=["opensky", "polaris", "v2", "manual"],
+    tags=["sancha1090", "polaris", "v2", "manual"],
 )
 def register_bronze_in_polaris():
 

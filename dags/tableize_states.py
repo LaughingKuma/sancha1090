@@ -21,7 +21,7 @@ from include.assets import bronze_states_table, raw_states_landed
         "retries": 1,
         "retry_delay": timedelta(minutes=2),
     },
-    tags=["opensky", "bronze", "iceberg", "stage-12"],
+    tags=["sancha1090", "bronze", "iceberg"],
 )
 def tableize_states():
 
