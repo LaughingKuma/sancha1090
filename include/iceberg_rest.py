@@ -59,7 +59,7 @@ def polaris_token() -> str:
 
 def ensure_bronze_namespace(token: Optional[str] = None) -> None:
     tok = token or polaris_token()
-    bucket = os.environ.get("S3_BUCKET", "opensky")
+    bucket = os.environ.get("S3_BUCKET", "sancha1090")
     # INC-3: Polaris validates `location`, not `default-base-location` — set both.
     base = f"s3://{bucket}/warehouse/bronze.db/"
     r = requests.post(

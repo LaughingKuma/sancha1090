@@ -14,7 +14,7 @@ def test_get_bucket_reads_s3_bucket(monkeypatch):
 
 def test_get_bucket_default(monkeypatch):
     monkeypatch.delenv("S3_BUCKET", raising=False)
-    assert s3_helpers.get_bucket() == "opensky"
+    assert s3_helpers.get_bucket() == "sancha1090"
 
 
 def test_get_s3fs_requires_endpoint(monkeypatch):

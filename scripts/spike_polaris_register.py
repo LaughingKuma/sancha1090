@@ -55,7 +55,7 @@ def polaris_token() -> str:
 
 
 def ensure_namespace(token: str) -> None:
-    base = f"s3://{os.environ.get('S3_BUCKET', 'opensky')}/warehouse/bronze.db/"
+    base = f"s3://{os.environ.get('S3_BUCKET', 'sancha1090')}/warehouse/bronze.db/"
     r = requests.post(
         f"{POLARIS_BASE}/api/catalog/v1/{CATALOG}/namespaces",
         json={
@@ -93,7 +93,7 @@ def load_sqlcatalog_snapshot() -> int:
             f"{os.environ['ANALYTICS_PG_HOST']}:{os.environ['ANALYTICS_PG_PORT']}/"
             f"{os.environ['ANALYTICS_PG_DB']}"
         ),
-        warehouse=f"s3://{os.environ.get('S3_BUCKET', 'opensky')}/warehouse",
+        warehouse=f"s3://{os.environ.get('S3_BUCKET', 'sancha1090')}/warehouse",
         **{
             "s3.endpoint": f"http://{os.environ['S3_ENDPOINT']}",
             "s3.access-key-id": os.environ["S3_ACCESS_KEY"],
