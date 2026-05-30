@@ -57,7 +57,7 @@ def get_catalog() -> RestCatalog:
     return get_polaris_catalog()
 
 
-def ensure_namespace_and_table(catalog: Optional[RestCatalog] = None) -> None:
+def ensure_namespace_and_table(catalog: Optional[RestCatalog] = None) -> None:  # noqa: ARG001
     # bronze namespace + table are pre-registered in Polaris (v2.1 bootstrap +
-    # v2.3 sync_polaris); keep the call site contract but no-op here.
+    # v2.3 sync_polaris); keep the call site contract but no-op here (catalog unused by design).
     return None
