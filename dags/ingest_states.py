@@ -21,7 +21,7 @@ from typing import Any
 
 import pendulum
 
-from airflow.sdk import dag, task, Asset
+from airflow.sdk import dag, task
 
 from include.assets import raw_states_landed
 

@@ -1,0 +1,14 @@
+{
+  "hostname": "sangenjaya-edge",
+  "process_uuid": "5f3b0bb5-7da1-48d5-be0c-9cff1808a86f",
+  "process_start_ts": "2026-05-28T05:34:05Z",
+  "schema_version": 1,
+  "filename": "sangenjaya-edge_adsb_state_2026-05-29T00_5f3b.parquet",
+  "stream": "adsb_state",
+  "complete": true,
+  "rotation_start_ts": "2026-05-29T00:00:00Z",
+  "rotation_end_ts": "2026-05-29T01:00:00Z",
+  "first_capture_ts": 1780012800.0590873,
+  "last_capture_ts": 1780016399.9479222,
+  "row_count": 45800
+}

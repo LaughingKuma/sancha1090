@@ -27,7 +27,6 @@ def backfill_from_buffer():
 
     @task(outlets=[raw_states_landed])
     def sync_r2_to_garage() -> dict:
-        import io
         import os
         import sqlalchemy as sa
         from pyarrow.fs import S3FileSystem, FileSelector
