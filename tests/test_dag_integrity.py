@@ -48,6 +48,12 @@ EXPECTED_DAGS = {
             "optimize_gold", "expire_gold", "orphans_gold",
         },
     },
+    "maintain_adsb_schema": {
+        "schedule": "35 4 * * 1",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"scan_drift"},
+    },
     "backup_polaris": {
         "schedule": "0 2 * * *",
         "catchup": False,
