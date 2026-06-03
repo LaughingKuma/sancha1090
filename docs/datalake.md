@@ -57,7 +57,7 @@ flowchart TD
     %% ---- conformed dim seeds (rooftop DAG seeds them) ----
     SEED["seeds: dim_airlines · dim_airports · dim_hex_country"]:::seed
     SEED -. "callsign / hex / nearest-airport" .-> FAS
-    SEED -. .-> FFL
+    SEED -.-> FFL
 
     classDef feed fill:#1f2937,color:#fff,stroke:#111;
     classDef seed fill:#fde68a,color:#000,stroke:#b45309;
