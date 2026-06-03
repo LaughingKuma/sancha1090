@@ -31,11 +31,13 @@ def transform_marts():
         ),
     )
 
+    # Builds fct_flight_legs, which refs tag:adsb relations (seeds + dim_aircraft + fct_adsb_state)
+    # built by transform_adsb_silver — on a fresh deploy, run that DAG once before this one.
     dbt_run_trino = BashOperator(
         task_id="dbt_run_trino",
         bash_command=(
             "cd /opt/airflow/dbt/sancha1090 && "
-            "dbt run --profiles-dir . --target trino --no-use-colors"
+            "dbt run --profiles-dir . --target trino --no-use-colors --exclude tag:adsb"
         ),
     )
 
@@ -43,7 +45,7 @@ def transform_marts():
         task_id="dbt_test_trino",
         bash_command=(
             "cd /opt/airflow/dbt/sancha1090 && "
-            "dbt test --profiles-dir . --target trino --no-use-colors"
+            "dbt test --profiles-dir . --target trino --no-use-colors --exclude tag:adsb"
         ),
     )
 

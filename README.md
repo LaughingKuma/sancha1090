@@ -1,50 +1,26 @@
 # sancha1090: a local-first data platform
 
-Local Airflow 3 platform that pulls live aircraft state from the
-[OpenSky Network](https://opensky-network.org), shapes it through
-bronze/silver/gold layers in an Iceberg lakehouse (Garage S3 + Polaris
-catalog + Trino query engine), all in Docker Compose. No cloud accounts.
+Local Airflow 3 platform that fuses **two live aircraft-state feeds** — the global
+[OpenSky Network](https://opensky-network.org) REST API and a local **rooftop ADS-B
+antenna** — and shapes them through bronze/silver/gold layers in an Iceberg lakehouse
+(Garage S3 + Polaris catalog + Trino query engine), all in Docker Compose. No cloud
+accounts.
 
-> Post-v3.0 (sancha1090 rebrand), this README is intentionally minimal —
-> the previous screenshots and narrative were stale. A proper rewrite is
-> planned alongside the v3.x edge-ingest work.
+> **Data model:** the full column-level schema, lineage, and entity map for every
+> bronze/silver/gold table live in **[`docs/datalake.md`](docs/datalake.md)**.
 
 ## Architecture
 
-```
-OpenSky REST API  (live, global aircraft state)
-                │
-                ▼
-   ┌──────────────────────────────────┐
-   │  ingest_states (Airflow)         │
-   │  every 12 min, dynamic mapping   │
-   │  over 8 geographic regions       │
-   └─────────────┬────────────────────┘
-                 │  asset event: raw_states_landed
-                 ▼
-       Garage bronze/states_raw/dt=.../hr=.../min=.../region={X}.parquet
-       Postgres public.ingestion_manifest (one row per landed file)
-                 │
-                 ▼
-   ┌──────────────────────────────────┐
-   │  tableize_states (Airflow)       │
-   │  drain manifest → PyIceberg      │
-   │  append (single canonical writer)│
-   └─────────────┬────────────────────┘
-                 │  asset event: bronze_states_table
-                 ▼
-       Iceberg bronze.opensky_states (Polaris-backed REST catalog)
-                 │
-                 ▼
-   ┌──────────────────────────────────┐
-   │  transform_marts (Airflow)       │
-   │  dbt-trino: silver + gold marts  │
-   └──────────────────────────────────┘
-                 │
-                 ▼
-       iceberg.silver.{stg_states, fact_state_snapshots}
-       iceberg.gold.{agg_country_traffic, agg_hourly_traffic, anomalies}
-```
+Two independent feeds land in Iceberg bronze and stay on separate refresh tracks
+(partitioned by dbt tag so they never race), fusing only in `gold.fct_flight_legs`:
+
+<p align="center">
+  <img src="docs/architecture.svg" alt="sancha1090 dual-feed medallion lakehouse: OpenSky global + rooftop ADS-B feeds flow through bronze → silver → gold to Trino + Superset" width="520">
+</p>
+
+Provenance for both feeds lives in Postgres (`public.ingestion_manifest` for global,
+`public.adsb_ingestion_manifest` for rooftop) — one row per landed file. See
+[`docs/datalake.md`](docs/datalake.md) for the full lineage, entity map, and per-table schema.
 
 ## Quickstart
 
@@ -100,6 +76,7 @@ sancha1090/
 ├── dags/                            # Thin Airflow DAGs
 ├── include/                         # Logic imported by DAGs
 ├── dbt/sancha1090/                  # dbt project (silver + gold marts)
+├── docs/                            # Data-model reference (datalake.md)
 ├── scripts/                         # Operational helpers
 └── tests/                           # pytest: DAG integrity + credit budget
 ```

@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: fct_flight_legs
+    description: "Inferred flight legs from the global states feed: sessionized + altitude-gated airport snap (route_inferred is approximate, v5.2 reconciles)"
+    columns:
+      - name: icao24
+        tests:
+          - not_null
+
+  - name: agg_route_traffic
+    description: "Top inferred origin-dest routes (both endpoints resolved, origin != dest) for the deck.gl arc map"
+    columns:
+      - name: route_inferred
+        tests:
+          - not_null
+
+  - name: agg_airline_traffic
+    description: "Hourly distinct airframes by airline from the global feed (callsign -> dim_airlines)"
+
+  - name: agg_country_traffic_adsb
+    description: "Rooftop ADS-B feed by registration country (mirror of the global agg_country_traffic)"
+    columns:
+      - name: reg_country
+        tests:
+          - not_null
+          - unique

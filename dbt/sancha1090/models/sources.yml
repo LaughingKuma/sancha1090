@@ -15,3 +15,9 @@ sources:
           - name: snapshot_time
             tests:
               - not_null
+      - name: adsb_states
+        description: "Byte-faithful readsb ADS-B state vectors; _raw_json holds the verbatim record"
+        columns:
+          - name: hex
+            tests:
+              - not_null

@@ -1,0 +1,42 @@
+version: 2
+
+models:
+  - name: dim_aircraft
+    description: "Type-1 airframe dimension keyed by ICAO 24-bit hex; bronze-derived (v5.1 adds registry)"
+    columns:
+      - name: icao24
+        description: "Lowercase ICAO 24-bit hex; one row per airframe"
+        tests:
+          - not_null
+          - unique
+
+  - name: fct_adsb_state
+    description: "Enriched ADS-B observations: dbFlags decode + airframe/airline/country dims (row-count preserving)"
+    columns:
+      - name: hex
+        tests:
+          - not_null
+
+seeds:
+  - name: dim_airlines
+    description: "OpenFlights airlines keyed by ICAO 3-letter designator (type-1, active-wins)"
+    columns:
+      - name: icao
+        tests:
+          - not_null
+          - unique
+
+  - name: dim_hex_country
+    description: "Disjoint ICAO 24-bit address blocks -> country (range lookup, specific-wins flattened)"
+    columns:
+      - name: country
+        tests:
+          - not_null
+
+  - name: dim_airports
+    description: "OpenFlights airports keyed by ICAO 4-letter code (lat/lon for nearest-airport snapping)"
+    columns:
+      - name: icao
+        tests:
+          - not_null
+          - unique
