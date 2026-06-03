@@ -15,7 +15,10 @@ Two independent feeds land in Iceberg bronze and stay on separate refresh tracks
 (partitioned by dbt tag so they never race), fusing only in `gold.fct_flight_legs`:
 
 <p align="center">
-  <img src="docs/architecture.svg" alt="sancha1090 dual-feed medallion lakehouse: OpenSky global + rooftop ADS-B feeds flow through bronze → silver → gold to Trino + Superset" width="520">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/architecture-dark.svg">
+    <img src="docs/architecture.svg" alt="sancha1090 dual-feed medallion lakehouse: OpenSky global + rooftop ADS-B feeds flow through bronze → silver → gold to Trino + Superset" width="520">
+  </picture>
 </p>
 
 Provenance for both feeds lives in Postgres (`public.ingestion_manifest` for global,
