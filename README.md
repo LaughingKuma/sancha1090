@@ -44,6 +44,35 @@ Airflow UI at <http://localhost:38080> (admin / admin).
 Trigger `ingest_states` in Airflow to start populating; `tableize_states`
 and `transform_marts` cascade automatically via asset events.
 
+### Live hot path (v4)
+
+A single-node **Redpanda** broker (`redpanda` service) carries the live ADS-B feed:
+the rooftop antenna edge unit publishes readsb state to topic `adsb.live` over the
+LAN, advertised at `REDPANDA_EXTERNAL_HOST:19092` (set to the main PC's LAN IP in
+`.env`). The `redpanda-init` one-shot creates the topic and enforces its ~10-min
+retention. The external listener's host port is **not** published by default — to
+expose it on the LAN for the edge, add it to the gitignored `docker-compose.local.yml`
+(same pattern as Garage's `:3900`) and make sure that file is in `COMPOSE_FILE` (see
+`.env.example`):
+
+```yaml
+# docker-compose.local.yml
+services:
+  redpanda:
+    ports:
+      - "0.0.0.0:19092:19092"
+```
+
+Verify:
+
+```bash
+docker compose exec redpanda rpk cluster info   # broker healthy, lists brokers
+docker compose exec redpanda rpk topic list     # shows adsb.live
+# from the edge host, prove the advertised listener is reachable
+# (<main-pc-ip> = REDPANDA_EXTERNAL_HOST from the main PC's .env):
+nc -vz <main-pc-ip> 19092
+```
+
 ## Tech stack
 
 - Apache Airflow 3.2 — TaskFlow, dynamic task mapping, asset chains
@@ -53,6 +82,7 @@ and `transform_marts` cascade automatically via asset events.
 - Garage as a local S3-compatible object store
 - polars + pyarrow for in-memory transforms
 - Three Postgres instances (Airflow metadata, Polaris+manifest, Superset metadata)
+- Redpanda — single-node Kafka broker carrying the v4 ADS-B live hot path (edge → `adsb.live`)
 - Docker Compose for the whole stack
 
 ## Storage layout
