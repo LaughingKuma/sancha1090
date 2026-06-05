@@ -94,6 +94,16 @@ def test_skips_data_without_manifest():
     assert list(ad.list_remote_bundles(fs, BUCKET)) == []
 
 
+def test_skips_manifest_not_marked_complete():
+    stem = "sangenjaya-edge_adsb_state_2026-05-29T00_5f3b"
+    fs = FakeFS({
+        _key("adsb_state", f"{stem}.parquet"): b"X",
+        _key("adsb_state", f"{stem}.manifest.json"): _manifest_bytes(
+            f"{stem}.parquet", "adsb_state", complete=False, row_count=1),
+    })
+    assert list(ad.list_remote_bundles(fs, BUCKET)) == []
+
+
 def test_skips_inprogress_data():
     stem = "sangenjaya-edge_adsb_state_2026-05-29T00_5f3b"
     # An .inprogress file with no manifest must never be yielded.

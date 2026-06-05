@@ -18,6 +18,12 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"list_regions", "fetch_region", "summarize"},
     },
+    "ingest_adsb": {
+        "schedule": "5 * * * *",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"list_remote_bundles", "select_new", "validate_and_record", "summarize_emit_asset"},
+    },
     "transform_marts": {
         # Asset-triggered: schedule is a list of Asset objects, not a cron string.
         "schedule_is_asset_triggered": True,
@@ -27,11 +33,23 @@ EXPECTED_DAGS = {
             "dbt_deps", "dbt_run_trino", "dbt_test_trino",
         },
     },
+    "transform_adsb_silver": {
+        "schedule_is_asset_triggered": True,
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"dbt_deps", "dbt_seed", "dbt_run", "dbt_test"},
+    },
     "tableize_states": {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {"load_pending_to_iceberg"},
+    },
+    "tableize_adsb": {
+        "schedule_is_asset_triggered": True,
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"add_pending_to_iceberg"},
     },
     "maintain_iceberg_states": {
         "schedule": "30 3 * * *",
@@ -54,6 +72,12 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"scan_drift"},
     },
+    "refresh_risingwave_dims": {
+        "schedule": "15 5 * * 1",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"reload"},
+    },
     "backup_polaris": {
         "schedule": "0 2 * * *",
         "catchup": False,
@@ -64,6 +88,11 @@ EXPECTED_DAGS = {
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {"sync_r2_to_garage"},
+    },
+    "backfill_adsb": {
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"run_backfill", "run_beast_backfill"},
     },
     "register_bronze_in_polaris": {
         "catchup": False,
@@ -87,14 +116,19 @@ def test_dagbag_has_no_import_errors(dagbag):
 
 def test_all_expected_dags_present(dagbag):
     """Every DAG we expect is actually registered."""
-    missing = set(EXPECTED_DAGS) - set(dagbag.dag_ids)
-    assert not missing, f"Missing DAGs: {missing}"
+    actual = set(dagbag.dag_ids)
+    expected = set(EXPECTED_DAGS)
+    assert actual == expected, (
+        f"DAG registry mismatch.\n"
+        f"  Missing:    {sorted(expected - actual)}\n"
+        f"  Unexpected: {sorted(actual - expected)}"
+    )
 
 
 @pytest.mark.parametrize("dag_id, expected", list(EXPECTED_DAGS.items()))
 def test_dag_structure(dagbag, dag_id, expected):
     """Each DAG matches its expected schedule, options, and task set."""
-    dag = dagbag.get_dag(dag_id)
+    dag = dagbag.dags.get(dag_id)
     assert dag is not None, f"DAG {dag_id} not found"
 
     if "schedule" in expected:

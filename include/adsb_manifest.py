@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Optional
 
 import sqlalchemy as sa
+
+from include.db import analytics_engine
 
 
 # Seam: tests point this at a schema-less sqlite mirror; production uses the public schema.
@@ -47,13 +48,7 @@ def _engine() -> sa.Engine:
     # Memoized: an Engine owns a connection pool and is meant to be a long-lived singleton.
     global _default_engine
     if _default_engine is None:
-        url = (
-            f"postgresql+psycopg2://"
-            f"{os.environ['ANALYTICS_PG_USER']}:{os.environ['ANALYTICS_PG_PASSWORD']}"
-            f"@{os.environ['ANALYTICS_PG_HOST']}:{os.environ['ANALYTICS_PG_PORT']}"
-            f"/{os.environ['ANALYTICS_PG_DB']}"
-        )
-        _default_engine = sa.create_engine(url)
+        _default_engine = analytics_engine()
     return _default_engine
 
 

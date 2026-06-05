@@ -31,6 +31,7 @@ def backfill_from_buffer():
         import sqlalchemy as sa
         from pyarrow.fs import S3FileSystem, FileSelector
         from include import manifest
+        from include.db import analytics_engine
         from include.s3_helpers import get_bucket, get_s3fs
 
         r2 = S3FileSystem(
@@ -43,12 +44,7 @@ def backfill_from_buffer():
         r2_bucket = os.environ.get("R2_BUCKET", "opensky-vps-buffer")
 
         manifest.ensure_table()
-        eng = sa.create_engine(
-            f"postgresql+psycopg2://"
-            f"{os.environ['ANALYTICS_PG_USER']}:{os.environ['ANALYTICS_PG_PASSWORD']}"
-            f"@{os.environ['ANALYTICS_PG_HOST']}:{os.environ['ANALYTICS_PG_PORT']}"
-            f"/{os.environ['ANALYTICS_PG_DB']}"
-        )
+        eng = analytics_engine()
         with eng.begin() as conn:
             existing = {
                 row[0] for row in conn.execute(

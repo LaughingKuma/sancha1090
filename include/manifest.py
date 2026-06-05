@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import os
 from typing import Optional
 
 import sqlalchemy as sa
+
+from include.db import analytics_engine
 
 
 _DDL = """
@@ -21,13 +22,7 @@ _table_ready = False
 
 
 def _engine() -> sa.Engine:
-    url = (
-        f"postgresql+psycopg2://"
-        f"{os.environ['ANALYTICS_PG_USER']}:{os.environ['ANALYTICS_PG_PASSWORD']}"
-        f"@{os.environ['ANALYTICS_PG_HOST']}:{os.environ['ANALYTICS_PG_PORT']}"
-        f"/{os.environ['ANALYTICS_PG_DB']}"
-    )
-    return sa.create_engine(url)
+    return analytics_engine()
 
 
 def ensure_table(engine: Optional[sa.Engine] = None) -> None:

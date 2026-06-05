@@ -44,6 +44,8 @@ def list_remote_bundles(fs, bucket: str, prefix: str = "bronze") -> Iterable[Rem
         data_name = manifest.get("filename")
         if stream not in _STREAMS or not data_name:
             continue
+        if manifest.get("complete") is not True:
+            continue
         if data_name.endswith(".inprogress"):
             continue
 
