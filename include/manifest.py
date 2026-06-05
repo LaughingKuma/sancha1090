@@ -19,10 +19,15 @@ CREATE TABLE IF NOT EXISTS public.ingestion_manifest (
 """
 
 _table_ready = False
+_default_engine: Optional[sa.Engine] = None
 
 
 def _engine() -> sa.Engine:
-    return analytics_engine()
+    # Memoized: an Engine owns a connection pool and is meant to be a long-lived singleton.
+    global _default_engine
+    if _default_engine is None:
+        _default_engine = analytics_engine()
+    return _default_engine
 
 
 def ensure_table(engine: Optional[sa.Engine] = None) -> None:

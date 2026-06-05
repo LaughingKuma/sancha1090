@@ -125,7 +125,7 @@ def test_all_expected_dags_present(dagbag):
     )
 
 
-@pytest.mark.parametrize("dag_id, expected", list(EXPECTED_DAGS.items()))
+@pytest.mark.parametrize(("dag_id", "expected"), EXPECTED_DAGS.items())
 def test_dag_structure(dagbag, dag_id, expected):
     """Each DAG matches its expected schedule, options, and task set."""
     dag = dagbag.dags.get(dag_id)

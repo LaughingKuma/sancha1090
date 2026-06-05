@@ -47,6 +47,23 @@ def test_record_load_is_idempotent_on_uri():
     assert row_count == 42
 
 
+def test_engine_memoizes_default_engine(monkeypatch):
+    calls = 0
+    expected = object()
+
+    def fake_engine():
+        nonlocal calls
+        calls += 1
+        return expected
+
+    monkeypatch.setattr(manifest, "_default_engine", None)
+    monkeypatch.setattr(manifest, "analytics_engine", fake_engine)
+
+    assert manifest._engine() is expected
+    assert manifest._engine() is expected
+    assert calls == 1
+
+
 def test_ensure_table_runs_postgres_ddl_against_real_engine(monkeypatch):
     # ensure_table issues the DDL string verbatim; exercise it against sqlite
     # by translating just enough — sqlite tolerates the schema-less DDL.
