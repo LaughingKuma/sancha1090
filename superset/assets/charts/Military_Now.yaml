@@ -1,0 +1,30 @@
+slice_name: Military Now
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 0__table
+  viz_type: big_number_total
+  metric: aircraft_total
+  adhoc_filters:
+  - clause: WHERE
+    subject: dim
+    operator: ==
+    comparator: military
+    expressionType: SIMPLE
+  header_font_size: 0.4
+  subtitle: dbFlags military bit
+  subtitle_font_size: 0.15
+  show_metric_name: false
+  y_axis_format: SMART_NUMBER
+  time_format: smart_date
+  force_timestamp_formatting: false
+  conditional_formatting: []
+  extra_form_data: {}
+  dashboards: []
+query_context: null
+cache_timeout: -1
+uuid: 4ebbcdab-4bd9-45a1-af2f-b9145dbb99a8
+version: 1.0.0
+dataset_uuid: 2600005e-3395-4c53-9b9b-c1bb8d81a4bb

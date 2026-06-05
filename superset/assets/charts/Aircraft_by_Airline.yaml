@@ -1,0 +1,55 @@
+slice_name: Aircraft by Airline
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  datasource: 0__table
+  viz_type: echarts_timeseries_bar
+  x_axis: val
+  time_grain_sqla: null
+  x_axis_sort: aircraft_total
+  x_axis_sort_asc: false
+  x_axis_sort_series: name
+  x_axis_sort_series_ascending: true
+  metrics:
+  - aircraft_total
+  groupby: []
+  adhoc_filters:
+  - clause: WHERE
+    subject: dim
+    operator: ==
+    comparator: airline
+    expressionType: SIMPLE
+  order_desc: true
+  row_limit: 25
+  truncate_metric: true
+  show_empty_columns: true
+  comparison_type: values
+  annotation_layers: []
+  forecastPeriods: 10
+  forecastInterval: 0.8
+  orientation: horizontal
+  x_axis_title_margin: 15
+  y_axis_title_margin: 15
+  y_axis_title_position: Left
+  sort_series_type: sum
+  color_scheme: supersetColors
+  only_total: true
+  show_legend: false
+  show_value: true
+  stack: null
+  y_axis_format: SMART_NUMBER
+  truncateXAxis: true
+  y_axis_bounds:
+  - null
+  - null
+  rich_tooltip: true
+  tooltipTimeFormat: smart_date
+  extra_form_data: {}
+  dashboards: []
+query_context: null
+cache_timeout: -1
+uuid: 37a52e59-c5a9-4356-ab25-d8e6c11e4bb3
+version: 1.0.0
+dataset_uuid: 2600005e-3395-4c53-9b9b-c1bb8d81a4bb

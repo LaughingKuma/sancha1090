@@ -16,3 +16,6 @@ services:
   trino-coordinator:
     ports:
       - "127.0.0.1:38090:8080"
+  risingwave:
+    ports:
+      - "127.0.0.1:34566:4566"

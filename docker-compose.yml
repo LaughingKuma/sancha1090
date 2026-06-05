@@ -424,6 +424,74 @@ services:
         rpk topic list
     restart: "no"
 
+  risingwave:
+    image: risingwavelabs/risingwave:v2.8.4
+    # v4.1 live hot path consumer: enriched MVs over adsb.live, read by Superset on PG-wire.
+    # single_node embeds meta + state on one volume — no MinIO/extra-Postgres sidecars.
+    command:
+      - single_node
+      - --store-directory=/var/lib/risingwave
+      # defaults self-size to a large host-RAM fraction and all 28 cores — cap both
+      - --total-memory-bytes=4294967296
+      - --parallelism=4
+      # compactor floor fix — see config/risingwave.toml
+      - --config-path=/risingwave.toml
+    environment:
+      ENABLE_TELEMETRY: "false"
+    volumes:
+      - ./config/risingwave.toml:/risingwave.toml:ro
+      - risingwave-data:/var/lib/risingwave
+    expose:
+      - "4566"   # PG-wire (Superset + psql; loopback host port via override)
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '> /dev/tcp/127.0.0.1/4566'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  risingwave-init:
+    image: postgres:15
+    depends_on:
+      risingwave:
+        condition: service_healthy
+      # CREATE SOURCE validates the topic exists — racing redpanda-init loses the source/MVs
+      redpanda-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./risingwave/sql:/sql:ro
+    # Apply the RisingWave DDL (source/dims/MVs) in lexical order; every statement is
+    # IF NOT EXISTS so re-runs are no-ops — same one-shot pattern as redpanda-init.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        for f in /sql/*.sql; do
+          echo "applying $$f"
+          psql -v ON_ERROR_STOP=1 -h risingwave -p 4566 -U root -d dev -f "$$f"
+        done
+    restart: "no"
+
+  risingwave-seed:
+    image: sancha1090-airflow:latest
+    depends_on:
+      risingwave-init:
+        condition: service_completed_successfully
+    environment:
+      PYTHONPATH: /opt/airflow
+    volumes:
+      - ./include:/opt/airflow/include:ro
+      - ./dbt:/opt/airflow/dbt:ro
+    # First-boot dim seed via the SAME loader the weekly DAG runs (no drift); no-op when
+    # dims hold rows — else a fresh install serves null enrichment until the DAG first fires.
+    entrypoint: ["python", "-m", "include.risingwave_dims"]
+    command: ["--if-empty"]
+    restart: "no"
+
 volumes:
   # Pin existing names so renaming COMPOSE_PROJECT_NAME doesn't orphan data.
   postgres-airflow-data:
@@ -440,3 +508,5 @@ volumes:
     name: opensky_superset-home
   redpanda-data:
     name: opensky_redpanda-data
+  risingwave-data:
+    name: opensky_risingwave-data

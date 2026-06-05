@@ -1,0 +1,71 @@
+-- Latest state per airframe within the last 60 s, enriched with silver's decode
+-- (fct_adsb_state) ported predicate-for-predicate. Silver is canonical: if this and the
+-- batch numbers disagree, fix THIS side (the v4 design's Lambda-trap guard).
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_current_aircraft AS
+WITH typed AS (
+    SELECT
+        to_timestamp((j ->> 'now')::double precision) AS capture_ts,
+        j ->> 'hex'                                   AS hex,
+        j ->> 'flight'                                AS flight,
+        (j ->> 'lat')::double precision               AS lat,
+        (j ->> 'lon')::double precision               AS lon,
+        j ->> 'alt_baro'                              AS alt_baro,  -- varchar like bronze: carries 'ground'
+        (j ->> 'gs')::double precision                AS gs,
+        (j ->> 'track')::double precision             AS track,
+        j ->> 'category'                              AS category,
+        j ->> 'r'                                     AS registration,
+        j ->> 't'                                     AS typecode,
+        j ->> 'squawk'                                AS squawk,
+        -- silver: dbFlags are exception flags — absence means FALSE, not unknown
+        coalesce((j ->> 'dbFlags')::int, 0)           AS db_flags,
+        coalesce(jsonb_array_length(j -> 'mlat'), 0) > 0 AS from_mlat,
+        -- silver: try(from_base(lower(hex),16)); the regex guard stands in for try() on
+        -- readsb's '~'-prefixed non-ICAO (TIS-B/ADS-R) addresses
+        CASE WHEN lower(j ->> 'hex') ~ '^[0-9a-f]{6}$'
+             THEN get_byte(decode(lower(j ->> 'hex'), 'hex'), 0) * 65536
+                + get_byte(decode(lower(j ->> 'hex'), 'hex'), 1) * 256
+                + get_byte(decode(lower(j ->> 'hex'), 'hex'), 2)
+        END                                           AS icao_addr
+    FROM (SELECT convert_from(data, 'utf-8')::jsonb AS j FROM adsb_live) raw
+),
+latest AS (
+    SELECT * FROM (
+        SELECT *, row_number() OVER (PARTITION BY hex ORDER BY capture_ts DESC) AS rn
+        FROM typed
+        -- temporal filter: rows expire on their own. 60 s = tar1090's "tracked" semantics;
+        -- fringe aircraft decode positions >15 s apart, so tighter windows undercount.
+        WHERE capture_ts > now() - interval '60 seconds'
+    ) ranked
+    WHERE rn = 1
+)
+SELECT
+    l.capture_ts,
+    l.hex,
+    l.flight,
+    l.lat,
+    l.lon,
+    l.alt_baro,
+    l.gs,
+    l.track,
+    l.category,
+    l.registration,
+    l.typecode,
+    l.squawk,
+    (l.db_flags & 1) <> 0 AS is_military,
+    (l.db_flags & 2) <> 0 AS is_interesting,
+    (l.db_flags & 4) <> 0 AS is_pia,
+    (l.db_flags & 8) <> 0 AS is_ladd,
+    l.category = 'A7'     AS is_helicopter,
+    CASE WHEN l.from_mlat THEN 'mlat' ELSE 'adsb' END AS position_source,
+    al.name      AS airline_name,
+    al.country   AS airline_country,
+    ctry.country AS reg_country
+FROM latest l
+-- Airline of THIS flight (callsign), a different question than the airframe owner (leasing/codeshare).
+LEFT JOIN dim_airlines al
+       ON al.icao = substr(trim(l.flight), 1, 3)
+      AND trim(l.flight) ~ '^[A-Z]{3}[0-9]'  -- guard: skip GA/registration tails like JA45KA
+-- bucket equi-join (RW can't stream non-equi joins); BETWEEN stays as silver's residual predicate
+LEFT JOIN dim_hex_country_buckets ctry
+       ON ctry.bucket = l.icao_addr / 4096
+      AND l.icao_addr BETWEEN ctry.block_lo AND ctry.block_hi;

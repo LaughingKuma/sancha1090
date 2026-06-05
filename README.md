@@ -73,6 +73,26 @@ docker compose exec redpanda rpk topic list     # shows adsb.live
 nc -vz <main-pc-ip> 19092
 ```
 
+**RisingWave** (`risingwave` service, v4.1) consumes `adsb.live` from the internal
+listener (`redpanda:9092`) and maintains the enriched live materialized views that
+Superset's "Live" dashboard reads over PG-wire. Single-node mode: meta + state live
+on one local volume, no extra sidecars.
+
+The live views use a **60 s staleness window**: `mv_current_aircraft` means "aircraft
+with a position update in the last 60 s", matching readsb/tar1090's "tracked" semantics
+— fringe aircraft (>60 nmi, weak signal) decode positions tens of seconds apart, so a
+tighter window undercounts aircraft the antenna is still tracking. Expect the count to
+sit **1–2 below tar1090's total**: tar1090 also lists aircraft heard without a position
+fix, which never enter the position feed the hot path consumes.
+
+Verify:
+
+```bash
+docker compose exec postgres-airflow psql -h risingwave -p 4566 -U root -d dev -c 'SELECT version();'
+# or from the host (loopback port from docker-compose.override.yml):
+psql -h 127.0.0.1 -p 34566 -U root -d dev -c 'SELECT version();'
+```
+
 ## Tech stack
 
 - Apache Airflow 3.2 — TaskFlow, dynamic task mapping, asset chains
@@ -83,6 +103,7 @@ nc -vz <main-pc-ip> 19092
 - polars + pyarrow for in-memory transforms
 - Three Postgres instances (Airflow metadata, Polaris+manifest, Superset metadata)
 - Redpanda — single-node Kafka broker carrying the v4 ADS-B live hot path (edge → `adsb.live`)
+- RisingWave — streaming engine materializing the live enriched views off `adsb.live` (v4.1)
 - Docker Compose for the whole stack
 
 ## Storage layout

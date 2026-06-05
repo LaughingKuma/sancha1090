@@ -1,0 +1,61 @@
+slice_name: Live Aircraft Map
+description: null
+certified_by: null
+certification_details: null
+viz_type: deck_scatter
+params:
+  datasource: 0__table
+  viz_type: deck_scatter
+  spatial:
+    type: latlong
+    latCol: lat
+    lonCol: lon
+  row_limit: 5000
+  filter_nulls: true
+  adhoc_filters: []
+  tooltip_contents:
+  - flight
+  - hex
+  - typecode
+  - alt_baro
+  - gs
+  - airline_name
+  tooltip_template: ''
+  mapbox_style: mapbox://styles/mapbox/dark-v9
+  autozoom: false
+  viewport:
+    longitude: 139.65
+    latitude: 35.6
+    zoom: 8.2
+    bearing: 0
+    pitch: 0
+  point_radius_fixed:
+    type: fix
+    value: '1500'
+  point_unit: square_m
+  min_radius: 2
+  max_radius: 250
+  multiplier: 1.5
+  legend_position: tr
+  legend_format: SMART_NUMBER
+  color_scheme_type: categorical_palette
+  color_picker:
+    r: 0
+    g: 122
+    b: 135
+    a: 1
+  dimension: is_military
+  color_scheme: d3Category10
+  js_columns: []
+  js_data_mutator: ''
+  js_tooltip: ''
+  js_onclick_href: ''
+  time_grain_sqla: null
+  granularity: null
+  extra_form_data: {}
+  dashboards: []
+query_context: null
+cache_timeout: -1
+uuid: 53e03c38-09bf-452b-abdb-64286aee8713
+version: 1.0.0
+dataset_uuid: 817bbcc7-8091-4b38-829d-4b2a25ec16ba
