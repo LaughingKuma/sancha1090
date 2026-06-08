@@ -8,17 +8,63 @@ const AMBER = [255, 176, 0];
 const MIL = [255, 59, 48];
 const KT_TO_MS = 0.514444;
 
-// North-pointing silhouette, baked as an SVG data-URI; mask:true lets deck tint it per-aircraft.
-const PLANE_SVG =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">' +
-  '<path fill="#fff" d="M32 3c-2.4 0-3.7 3-3.9 8.6l-.3 11.2-22.5 13.3c-.8.5-1.3 1.4-1.3 2.4v3.3' +
-  'c0 .9.9 1.6 1.8 1.3l22-6.6.4 12.6-6.7 5c-.5.4-.8 1-.8 1.6v2.4c0 .8.7 1.4 1.5 1.2l10.2-2.7' +
-  '10.2 2.7c.8.2 1.5-.4 1.5-1.2v-2.4c0-.6-.3-1.2-.8-1.6l-6.7-5 .4-12.6 22 6.6c.9.3 1.8-.4 1.8-1.3' +
-  'v-3.3c0-1-.5-1.9-1.3-2.4L36.2 22.8l-.3-11.2C35.7 6 34.4 3 32 3z"/></svg>';
-const ICON = {
-  url: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(PLANE_SVG),
-  width: 64, height: 64, anchorX: 32, anchorY: 32, mask: true,
+// North-pointing top-down silhouettes (64×64, nose up), baked as SVG data-URIs. mask:true means
+// deck ignores the white fill and tints by getColor, so the age-fade + mil-red still apply.
+const _svg = (inner) =>
+  "data:image/svg+xml;charset=utf-8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="#fff">${inner}</svg>`,
+  );
+const _icon = (inner) => ({ url: _svg(inner), width: 64, height: 64, anchorX: 32, anchorY: 32, mask: true });
+
+// Swept-wing twin (used for narrowbody/widebody/generic — size carries the wide/narrow difference).
+const _AIRLINER =
+  '<polygon points="32,3 35,10 34,24 60,39 60,43 34,31 33,48 39,52 39,55 32,52 25,55 25,52 31,48 30,31 4,43 4,39 30,24 29,10"/>';
+// wider fuselage + broader span than the narrowbody — reads as a heavy twin (777/787/A350)
+const _WIDEBODY =
+  '<polygon points="32,3 37,12 36,23 61,38 61,43 36,31 35,48 42,53 42,56 32,53 22,56 22,53 29,48 28,31 3,43 3,38 28,23 27,12"/>';
+const SIL = {
+  airliner: _icon(_AIRLINER),
+  widebody: _icon(_WIDEBODY),
+  // four engine nacelles on the wings — reads as a jumbo
+  quad: _icon(
+    _AIRLINER +
+      '<ellipse cx="20" cy="33" rx="2.3" ry="3.6"/><ellipse cx="27" cy="30" rx="2.3" ry="3.6"/>' +
+      '<ellipse cx="44" cy="33" rx="2.3" ry="3.6"/><ellipse cx="37" cy="30" rx="2.3" ry="3.6"/>',
+  ),
+  // straighter wings + two prop discs — turboprop regional
+  regional: _icon(
+    '<polygon points="32,7 34,13 33,24 55,30 55,33 33,28 32,48 37,52 37,54 32,51 27,54 27,52 31,48 31,28 9,33 9,30 31,24 30,13"/>' +
+      '<circle cx="16" cy="26" r="4" opacity="0.8"/><circle cx="48" cy="26" r="4" opacity="0.8"/>',
+  ),
+  // light GA: nose prop disc + slim fuselage + STRAIGHT (unswept) high wing — reads as a Cessna, not a jet
+  ga: _icon(
+    '<ellipse cx="32" cy="11" rx="9" ry="1.8" opacity="0.7"/>' +
+      '<rect x="30.4" y="10" width="3.2" height="42" rx="1.6"/>' +
+      '<rect x="7" y="25" width="50" height="3.6" rx="1.8"/>' +
+      '<rect x="22" y="46" width="20" height="3" rx="1.5"/>',
+  ),
+  // rotor disc + crossed blades + tail boom — helicopter
+  heli: _icon(
+    '<circle cx="32" cy="27" r="12" opacity="0.22"/>' +
+      '<rect x="30.5" y="27" width="3" height="28" rx="1.5"/><rect x="28" y="51" width="8" height="3" rx="1.5"/>' +
+      '<ellipse cx="32" cy="27" rx="5.5" ry="7.5"/>' +
+      '<rect x="9" y="25.5" width="46" height="3" rx="1.5" transform="rotate(35 32 27)"/>' +
+      '<rect x="9" y="25.5" width="46" height="3" rx="1.5" transform="rotate(-35 32 27)"/>',
+  ),
 };
+// body_class → which silhouette + on-screen size (heavies bigger). Unknown class → generic airliner.
+const ICON_FOR = {
+  quad: SIL.quad, widebody: SIL.widebody, narrowbody: SIL.airliner,
+  regional: SIL.regional, ga: SIL.ga, heli: SIL.heli, airliner: SIL.airliner,
+};
+const SIZE_FOR = {
+  quad: 30, widebody: 27, narrowbody: 22, regional: 19, ga: 16, heli: 22, airliner: 21,
+};
+function silClass(a) {
+  if (a.is_helicopter === true) return "heli";
+  return ICON_FOR[a.body_class] ? a.body_class : "airliner";
+}
 
 const map = new maplibregl.Map({
   container: "map",
@@ -60,7 +106,7 @@ function frameData() {
     const age = Math.max(0, t - (a.capture_ts ?? t));
     const fade = Math.min(1, age / WINDOW_S);
     const alpha = Math.max(0.12, 1 - 0.85 * fade); // fresh = bright, fringe = dim
-    return { a, pos: deadReckon(a, age), alpha, mil: a.is_military === true };
+    return { a, pos: deadReckon(a, age), alpha, mil: a.is_military === true, cls: silClass(a) };
   });
 }
 
@@ -72,7 +118,7 @@ function buildLayers() {
       id: "glow",
       data,
       getPosition: (d) => d.pos,
-      getRadius: (d) => (d.mil ? 15 : 9),
+      getRadius: (d) => (d.mil ? 15 : Math.max(8, SIZE_FOR[d.cls] * 0.42)), // bigger airframe, bigger glow
       radiusUnits: "pixels",
       getFillColor: (d) => [...(d.mil ? MIL : AMBER), Math.round(d.alpha * (d.mil ? 130 : 70))],
       stroked: false,
@@ -81,11 +127,11 @@ function buildLayers() {
     new IconLayer({
       id: "planes",
       data,
-      getIcon: () => ICON,
+      getIcon: (d) => ICON_FOR[d.cls], // silhouette per aircraft class
       getPosition: (d) => d.pos,
       getAngle: (d) => -(d.a.track ?? 0), // deck angle is CCW; heading is CW from north
       getColor: (d) => [...(d.mil ? MIL : AMBER), Math.round(d.alpha * 255)],
-      getSize: (d) => (d.mil ? 26 : 21),
+      getSize: (d) => SIZE_FOR[d.cls],
       sizeUnits: "pixels",
       billboard: true,
       pickable: true,
@@ -125,6 +171,9 @@ function getTooltip(info) {
     `<div class="flight ${mil ? "mil" : ""}">${esc(a.flight || a.hex || "UNKNOWN")}${badges}</div>` +
     `<div class="org">${esc(a.airline_name || "Unregistered callsign")}</div>` +
     "<dl>" +
+    `<dt>Type</dt><dd>${esc(a.aircraft_desc || a.typecode || "—")}</dd>` +
+    `<dt>Code</dt><dd>${esc(a.typecode || "—")}</dd>` +
+    `<dt>Reg</dt><dd>${esc(a.registration || "—")}</dd>` +
     `<dt>ICAO</dt><dd>${esc((a.hex || "—").toUpperCase())}</dd>` +
     `<dt>Origin</dt><dd>${esc(a.reg_country || "—")}</dd>` +
     `<dt>Alt</dt><dd>${esc(alt)}</dd>` +

@@ -8,11 +8,14 @@ import psycopg2
 from psycopg2.extras import execute_values
 
 # the same dbt seed CSVs that feed silver — one data source, no live/batch dim drift
+# dim_hex_country stays LAST: it expands into dim_hex_country_buckets, and the --if-empty guard
+# treats bucket rows as proof a prior seed fully completed — so every other table must load first.
 SEEDS = {
     "dim_airlines": ("dim_airlines.csv", ("icao", "iata", "name", "callsign", "country", "active")),
+    "dim_aircraft_types": ("dim_aircraft_types.csv", ("typecode", "engines", "body_class")),
     "dim_hex_country": ("dim_hex_country.csv", ("block_lo", "block_hi", "country")),
 }
-INT_COLS = {"block_lo", "block_hi"}
+INT_COLS = {"block_lo", "block_hi", "engines"}
 BUCKET_BITS = 12  # 4096-address buckets; must match the /4096 in mv_current_aircraft's join
 SEEDS_DIR = "/opt/airflow/dbt/sancha1090/seeds"
 

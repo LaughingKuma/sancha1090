@@ -22,7 +22,8 @@ DB_STATEMENT_TIMEOUT_MS = int(os.environ.get("LIVEMAP_DB_STATEMENT_TIMEOUT_MS", 
 # recv rides the payload end-to-end (the P2 multi-receiver seam); rendered uniformly today.
 QUERY = """
     SELECT capture_ts, hex, flight, lat, lon, alt_baro, gs, track,
-           is_military, is_helicopter, airline_name, reg_country, recv
+           typecode, aircraft_desc, registration, body_class, is_military, is_helicopter,
+           airline_name, reg_country, recv
     FROM mv_current_aircraft
     WHERE lat IS NOT NULL AND lon IS NOT NULL
 """
@@ -70,6 +71,10 @@ def _fetch() -> dict:
                 "alt_baro": r["alt_baro"],
                 "gs": r["gs"],
                 "track": r["track"],
+                "typecode": r["typecode"],
+                "aircraft_desc": r["aircraft_desc"],
+                "registration": r["registration"],
+                "body_class": r["body_class"],
                 "is_military": r["is_military"],
                 "is_helicopter": r["is_helicopter"],
                 "airline_name": r["airline_name"],

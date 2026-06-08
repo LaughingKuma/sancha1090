@@ -117,8 +117,11 @@
     clip-path: polygon(0 0, 100% 0, 100% 100%, 11px 100%, 0 calc(100% - 11px));
   }
   .legend-row { display: flex; gap: 16px; align-items: center; }
+  .legend-row.fleet { gap: 11px; }
   .key { display: flex; align-items: center; gap: 7px; font-size: 10.5px; letter-spacing: 0.08em; color: var(--ink-dim); }
+  .legend-row.fleet .key { gap: 5px; font-size: 9.5px; }
   .glyph { width: 11px; height: 11px; }
+  .glyph.lg { width: 15px; height: 15px; }
   .glyph.amber { color: var(--amber); }
   .glyph.mil { color: var(--mil); filter: drop-shadow(0 0 4px rgba(255,59,48,0.8)); }
   .fade-bar {
@@ -182,8 +185,16 @@
 
   <div class="hud console">
     <div class="legend-row">
-      <span class="key"><svg class="glyph amber" viewBox="0 0 64 64"><use href="#plane"/></svg>Civil</span>
-      <span class="key"><svg class="glyph mil" viewBox="0 0 64 64"><use href="#plane"/></svg>Military</span>
+      <span class="key"><svg class="glyph amber" viewBox="0 0 64 64"><use href="#sil-airliner"/></svg>Civil</span>
+      <span class="key"><svg class="glyph mil" viewBox="0 0 64 64"><use href="#sil-airliner"/></svg>Military</span>
+    </div>
+    <div class="legend-row fleet">
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-quad"/></svg>Quad</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-widebody"/></svg>Wide</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-airliner"/></svg>Narrow</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-regional"/></svg>Prop</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-ga"/></svg>GA</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-heli"/></svg>Heli</span>
     </div>
     <div class="legend-row">
       <span class="key">Fresh<span class="fade-bar"></span>60&nbsp;s</span>
@@ -192,11 +203,37 @@
   </div>
 </div>
 
-<!-- North-pointing aircraft glyph, reused by deck.gl icons and the legend -->
+<!-- North-pointing silhouettes — same shapes as map.js, reused by the fleet legend -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
-    <path id="plane" fill="currentColor"
-      d="M32 3c-2.4 0-3.7 3-3.9 8.6l-.3 11.2-22.5 13.3c-.8.5-1.3 1.4-1.3 2.4v3.3c0 .9.9 1.6 1.8 1.3l22-6.6.4 12.6-6.7 5c-.5.4-.8 1-.8 1.6v2.4c0 .8.7 1.4 1.5 1.2l10.2-2.7 10.2 2.7c.8.2 1.5-.4 1.5-1.2v-2.4c0-.6-.3-1.2-.8-1.6l-6.7-5 .4-12.6 22 6.6c.9.3 1.8-.4 1.8-1.3v-3.3c0-1-.5-1.9-1.3-2.4L36.2 22.8l-.3-11.2C35.7 6 34.4 3 32 3z"/>
+    <g id="sil-airliner" fill="currentColor">
+      <polygon points="32,3 35,10 34,24 60,39 60,43 34,31 33,48 39,52 39,55 32,52 25,55 25,52 31,48 30,31 4,43 4,39 30,24 29,10"/>
+    </g>
+    <g id="sil-widebody" fill="currentColor">
+      <polygon points="32,3 37,12 36,23 61,38 61,43 36,31 35,48 42,53 42,56 32,53 22,56 22,53 29,48 28,31 3,43 3,38 28,23 27,12"/>
+    </g>
+    <g id="sil-quad" fill="currentColor">
+      <polygon points="32,3 35,10 34,24 60,39 60,43 34,31 33,48 39,52 39,55 32,52 25,55 25,52 31,48 30,31 4,43 4,39 30,24 29,10"/>
+      <ellipse cx="20" cy="33" rx="2.3" ry="3.6"/><ellipse cx="27" cy="30" rx="2.3" ry="3.6"/>
+      <ellipse cx="44" cy="33" rx="2.3" ry="3.6"/><ellipse cx="37" cy="30" rx="2.3" ry="3.6"/>
+    </g>
+    <g id="sil-regional" fill="currentColor">
+      <polygon points="32,7 34,13 33,24 55,30 55,33 33,28 32,48 37,52 37,54 32,51 27,54 27,52 31,48 31,28 9,33 9,30 31,24 30,13"/>
+      <circle cx="16" cy="26" r="4" opacity="0.8"/><circle cx="48" cy="26" r="4" opacity="0.8"/>
+    </g>
+    <g id="sil-ga" fill="currentColor">
+      <ellipse cx="32" cy="11" rx="9" ry="1.8" opacity="0.7"/>
+      <rect x="30.4" y="10" width="3.2" height="42" rx="1.6"/>
+      <rect x="7" y="25" width="50" height="3.6" rx="1.8"/>
+      <rect x="22" y="46" width="20" height="3" rx="1.5"/>
+    </g>
+    <g id="sil-heli" fill="currentColor">
+      <circle cx="32" cy="27" r="12" opacity="0.22"/>
+      <rect x="30.5" y="27" width="3" height="28" rx="1.5"/><rect x="28" y="51" width="8" height="3" rx="1.5"/>
+      <ellipse cx="32" cy="27" rx="5.5" ry="7.5"/>
+      <rect x="9" y="25.5" width="46" height="3" rx="1.5" transform="rotate(35 32 27)"/>
+      <rect x="9" y="25.5" width="46" height="3" rx="1.5" transform="rotate(-35 32 27)"/>
+    </g>
   </defs>
 </svg>
 

@@ -1,15 +1,16 @@
--- Migrate pre-recv deployments: CREATE ... IF NOT EXISTS can't change column shape, so an
--- existing risingwave-data volume keeps the old MV and livemap then polls a missing `recv`
--- column forever. When the MV exists but lacks recv, drop it (+ its dependent mv_live_counts,
--- which 04 recreates after this file). Fresh / already-migrated volumes skip the drop.
+-- Migrate older deployments: CREATE ... IF NOT EXISTS can't change column shape, so an
+-- existing risingwave-data volume keeps the old MV and livemap then polls a missing column
+-- forever. Sentinel = the newest column added (body_class); when the MV exists but lacks
+-- it, drop it (+ its dependent mv_live_counts, which 04 recreates after this file). Bump the
+-- sentinel whenever this SELECT gains a column. Fresh / current volumes skip the drop.
 SELECT (
     EXISTS (SELECT 1 FROM information_schema.columns
             WHERE table_schema = 'public' AND table_name = 'mv_current_aircraft')
     AND NOT EXISTS (SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = 'mv_current_aircraft'
-                      AND column_name = 'recv')
-)::text AS needs_recv_migration \gset
-\if :needs_recv_migration
+                      AND column_name = 'body_class')
+)::text AS needs_schema_migration \gset
+\if :needs_schema_migration
 DROP MATERIALIZED VIEW IF EXISTS mv_live_counts;
 DROP MATERIALIZED VIEW IF EXISTS mv_current_aircraft;
 \endif
@@ -31,6 +32,7 @@ WITH typed AS (
         j ->> 'category'                              AS category,
         j ->> 'r'                                     AS registration,
         j ->> 't'                                     AS typecode,
+        j ->> 'desc'                                  AS aircraft_desc,  -- readsb's resolved type name, e.g. 'BOEING 737-800'
         j ->> 'squawk'                                AS squawk,
         -- multi-receiver seam: edge stamps a receiver id later; absent today → 'rooftop'
         coalesce(j ->> 'recv', 'rooftop')             AS recv,
@@ -68,6 +70,7 @@ SELECT
     l.category,
     l.registration,
     l.typecode,
+    l.aircraft_desc,
     l.squawk,
     (l.db_flags & 1) <> 0 AS is_military,
     (l.db_flags & 2) <> 0 AS is_interesting,
@@ -78,6 +81,7 @@ SELECT
     al.name      AS airline_name,
     al.country   AS airline_country,
     ctry.country AS reg_country,
+    atype.body_class AS body_class,  -- silhouette class for livemap's per-type icons
     l.recv
 FROM latest l
 -- Airline of THIS flight (callsign), a different question than the airframe owner (leasing/codeshare).
@@ -87,4 +91,7 @@ LEFT JOIN dim_airlines al
 -- bucket equi-join (RW can't stream non-equi joins); BETWEEN stays as silver's residual predicate
 LEFT JOIN dim_hex_country_buckets ctry
        ON ctry.bucket = l.icao_addr / 4096
-      AND l.icao_addr BETWEEN ctry.block_lo AND ctry.block_hi;
+      AND l.icao_addr BETWEEN ctry.block_lo AND ctry.block_hi
+-- type → silhouette class (ICAO Doc 8643 seed); equi-join on typecode, RW-safe
+LEFT JOIN dim_aircraft_types atype
+       ON atype.typecode = l.typecode;
