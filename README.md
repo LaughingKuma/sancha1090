@@ -38,6 +38,9 @@ docker compose up -d
 docker compose exec airflow-scheduler bash -c "cd /opt/airflow && pytest tests/ -v"
 ```
 
+Common tasks are wrapped in a `Makefile` — `make` lists them (`make up`, `make test`,
+`make lint`, `make parse`, `make check`).
+
 First boot: ~3–5 min for image builds + initial Postgres migrations.
 Airflow UI at <http://localhost:38080> (admin / admin).
 
@@ -93,6 +96,13 @@ docker compose exec postgres-airflow psql -h risingwave -p 4566 -U root -d dev -
 psql -h 127.0.0.1 -p 34566 -U root -d dev -c 'SELECT version();'
 ```
 
+The **`livemap`** service (v4.3) is a small FastAPI sidecar that polls
+`mv_current_aircraft` once a second into an in-memory snapshot and serves a dark
+maplibre + deck.gl map of live aircraft over Tokyo at **<http://localhost:38100>**.
+The server-side cache is the point: every browser tab shares that one query/second,
+so N viewers never become N queries against RisingWave. Aircraft dead-reckon between
+polls (track/groundspeed) and fade with position age over the 60 s window.
+
 ## Tech stack
 
 - Apache Airflow 3.2 — TaskFlow, dynamic task mapping, asset chains
@@ -104,6 +114,7 @@ psql -h 127.0.0.1 -p 34566 -U root -d dev -c 'SELECT version();'
 - Three Postgres instances (Airflow metadata, Polaris+manifest, Superset metadata)
 - Redpanda — single-node Kafka broker carrying the v4 ADS-B live hot path (edge → `adsb.live`)
 - RisingWave — streaming engine materializing the live enriched views off `adsb.live` (v4.1)
+- FastAPI + maplibre + deck.gl — the `livemap` live aircraft map over RisingWave (v4.3)
 - Docker Compose for the whole stack
 
 ## Storage layout
@@ -130,6 +141,8 @@ sancha1090/
 ├── dags/                            # Thin Airflow DAGs
 ├── include/                         # Logic imported by DAGs
 ├── dbt/sancha1090/                  # dbt project (silver + gold marts)
+├── risingwave/sql/                  # Live MV DDL (source/dims/enriched views)
+├── livemap/                         # FastAPI + maplibre/deck.gl live aircraft map
 ├── docs/                            # Data-model reference (datalake.md)
 ├── scripts/                         # Operational helpers
 └── tests/                           # pytest: DAG integrity + credit budget

@@ -492,6 +492,26 @@ services:
     command: ["--if-empty"]
     restart: "no"
 
+  livemap:
+    build: ./livemap
+    image: sancha1090-livemap:latest
+    # Server-side cache: one background poll/s into the MV, fanned out to every browser tab.
+    depends_on:
+      risingwave:
+        condition: service_healthy
+      # the MV is created by risingwave-init — wait for it or first-boot polls hit a missing relation
+      risingwave-init:
+        condition: service_completed_successfully
+    expose:
+      - "8000"   # served on loopback via override (127.0.0.1:38100)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
 volumes:
   # Pin existing names so renaming COMPOSE_PROJECT_NAME doesn't orphan data.
   postgres-airflow-data:

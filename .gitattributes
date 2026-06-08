@@ -1,0 +1,4 @@
+# Vendored third-party browser libraries (maplibre-gl, deck.gl): treat as binary
+# blobs — no textual diff noise, no `git diff --check` whitespace failures on the
+# minified bundles, and excluded from GitHub language stats.
+livemap/static/vendor/** -text -diff linguist-vendored

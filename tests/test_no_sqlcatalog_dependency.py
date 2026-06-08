@@ -14,7 +14,8 @@ def test_iceberg_module_has_no_sqlcatalog_import():
 
 
 def test_tableize_states_has_single_task(dagbag):
-    dag = dagbag.get_dag("tableize_states")
+    # .dags reads the parsed bag (DB-free); get_dag() would hit the metadata DB and need a live stack.
+    dag = dagbag.dags.get("tableize_states")
     assert dag is not None, "tableize_states DAG not found"
     task_ids = {t.task_id for t in dag.tasks}
     assert task_ids == {"load_pending_to_iceberg"}, (

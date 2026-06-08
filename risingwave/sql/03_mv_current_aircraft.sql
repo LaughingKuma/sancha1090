@@ -1,3 +1,19 @@
+-- Migrate pre-recv deployments: CREATE ... IF NOT EXISTS can't change column shape, so an
+-- existing risingwave-data volume keeps the old MV and livemap then polls a missing `recv`
+-- column forever. When the MV exists but lacks recv, drop it (+ its dependent mv_live_counts,
+-- which 04 recreates after this file). Fresh / already-migrated volumes skip the drop.
+SELECT (
+    EXISTS (SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'mv_current_aircraft')
+    AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'mv_current_aircraft'
+                      AND column_name = 'recv')
+)::text AS needs_recv_migration \gset
+\if :needs_recv_migration
+DROP MATERIALIZED VIEW IF EXISTS mv_live_counts;
+DROP MATERIALIZED VIEW IF EXISTS mv_current_aircraft;
+\endif
+
 -- Latest state per airframe within the last 60 s, enriched with silver's decode
 -- (fct_adsb_state) ported predicate-for-predicate. Silver is canonical: if this and the
 -- batch numbers disagree, fix THIS side (the v4 design's Lambda-trap guard).
@@ -16,6 +32,8 @@ WITH typed AS (
         j ->> 'r'                                     AS registration,
         j ->> 't'                                     AS typecode,
         j ->> 'squawk'                                AS squawk,
+        -- multi-receiver seam: edge stamps a receiver id later; absent today → 'rooftop'
+        coalesce(j ->> 'recv', 'rooftop')             AS recv,
         -- silver: dbFlags are exception flags — absence means FALSE, not unknown
         coalesce((j ->> 'dbFlags')::int, 0)           AS db_flags,
         coalesce(jsonb_array_length(j -> 'mlat'), 0) > 0 AS from_mlat,
@@ -59,7 +77,8 @@ SELECT
     CASE WHEN l.from_mlat THEN 'mlat' ELSE 'adsb' END AS position_source,
     al.name      AS airline_name,
     al.country   AS airline_country,
-    ctry.country AS reg_country
+    ctry.country AS reg_country,
+    l.recv
 FROM latest l
 -- Airline of THIS flight (callsign), a different question than the airframe owner (leasing/codeshare).
 LEFT JOIN dim_airlines al

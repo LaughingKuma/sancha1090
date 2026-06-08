@@ -19,3 +19,6 @@ services:
   risingwave:
     ports:
       - "127.0.0.1:34566:4566"
+  livemap:
+    ports:
+      - "127.0.0.1:38100:8000"
