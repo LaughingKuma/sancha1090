@@ -78,6 +78,12 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"reload"},
     },
+    "refresh_range_outline": {
+        "schedule": "40 5 * * *",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"refresh"},
+    },
     "backup_polaris": {
         "schedule": "0 2 * * *",
         "catchup": False,

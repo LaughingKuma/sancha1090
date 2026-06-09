@@ -22,6 +22,9 @@ x-airflow-common:
     PYTHONPATH: /opt/airflow
     OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID}
     OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET}
+    # Receiver location for the range-outline compute — secret, set in .env; default = Carrot Tower.
+    LIVEMAP_FEEDER_LAT: ${LIVEMAP_FEEDER_LAT:-35.6434}
+    LIVEMAP_FEEDER_LON: ${LIVEMAP_FEEDER_LON:-139.6692}
     # Object storage (Garage, S3-compatible).
     S3_ENDPOINT: ${S3_ENDPOINT:-garage:3900}
     S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
@@ -502,6 +505,11 @@ services:
       # the MV is created by risingwave-init — wait for it or first-boot polls hit a missing relation
       risingwave-init:
         condition: service_completed_successfully
+    environment:
+      # Real antenna coords are a secret — set in the gitignored .env; default is the public
+      # Carrot Tower landmark so the showcase never carries the rooftop location.
+      LIVEMAP_FEEDER_LAT: ${LIVEMAP_FEEDER_LAT:-35.6434}
+      LIVEMAP_FEEDER_LON: ${LIVEMAP_FEEDER_LON:-139.6692}
     expose:
       - "8000"   # served on loopback via override (127.0.0.1:38100)
     healthcheck:

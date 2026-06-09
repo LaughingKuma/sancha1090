@@ -1,6 +1,6 @@
 "use strict";
 
-const { MapboxOverlay, IconLayer, ScatterplotLayer } = deck;
+const { MapboxOverlay, IconLayer, ScatterplotLayer, PolygonLayer } = deck;
 
 // 60 s is the MV's data contract — fade-by-age visually recovers freshness within it.
 const WINDOW_S = 60;
@@ -110,9 +110,37 @@ function frameData() {
   });
 }
 
+// Receiver coverage outline + dot — slow-changing, fetched separately from the 1 Hz aircraft poll.
+let outlineData = [];
+let feederCenter = null;
+async function loadOutline() {
+  try {
+    const j = await (await fetch("/range-outline", { cache: "no-store" })).json();
+    feederCenter = j.center || null;
+    outlineData = j.ring && j.ring.length ? [{ ring: j.ring }] : [];
+  } catch (e) {
+    /* outline is optional — absent until the batch job has run */
+  }
+}
+loadOutline();
+setInterval(loadOutline, 300000);
+
 function buildLayers() {
   const data = frameData();
   return [
+    // coverage polygon, beneath everything — terrain-shaped reception envelope
+    new PolygonLayer({
+      id: "range-outline",
+      data: outlineData,
+      getPolygon: (d) => d.ring,
+      stroked: true,
+      filled: true,
+      getFillColor: [24, 116, 130, 20],
+      getLineColor: [78, 162, 174, 130],
+      getLineWidth: 1.3,
+      lineWidthUnits: "pixels",
+      parameters: { depthTest: false },
+    }),
     // Soft phosphor glow under each contact — military burns hotter and wider.
     new ScatterplotLayer({
       id: "glow",
@@ -135,6 +163,20 @@ function buildLayers() {
       sizeUnits: "pixels",
       billboard: true,
       pickable: true,
+      parameters: { depthTest: false },
+    }),
+    // the receiver itself — small bright dot with a dark ring (tar1090-style)
+    new ScatterplotLayer({
+      id: "receiver",
+      data: feederCenter ? [feederCenter] : [],
+      getPosition: (d) => d,
+      getRadius: 4.5,
+      radiusUnits: "pixels",
+      getFillColor: [232, 238, 245, 235],
+      stroked: true,
+      getLineColor: [5, 9, 14, 255],
+      lineWidthUnits: "pixels",
+      getLineWidth: 1.6,
       parameters: { depthTest: false },
     }),
   ];

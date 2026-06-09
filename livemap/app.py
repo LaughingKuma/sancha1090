@@ -19,6 +19,10 @@ RW_DSN = os.environ.get(
 DB_CONNECT_TIMEOUT = int(os.environ.get("LIVEMAP_DB_CONNECT_TIMEOUT", "3"))
 DB_STATEMENT_TIMEOUT_MS = int(os.environ.get("LIVEMAP_DB_STATEMENT_TIMEOUT_MS", "3000"))
 
+# Real antenna is a secret (home rooftop) — from .env; default is the public Carrot Tower landmark.
+FEEDER_LAT = float(os.environ.get("LIVEMAP_FEEDER_LAT", "35.6434"))
+FEEDER_LON = float(os.environ.get("LIVEMAP_FEEDER_LON", "139.6692"))
+
 # recv rides the payload end-to-end (the P2 multi-receiver seam); rendered uniformly today.
 QUERY = """
     SELECT capture_ts, hex, flight, lat, lon, alt_baro, gs, track,
@@ -43,6 +47,8 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 _snapshot: dict = {"server_ts": 0.0, "aircraft": []}
+# Receiver coverage polygon — batch-computed from Trino history, loaded into RW; changes slowly.
+_outline: list = []
 
 
 def _fetch() -> dict:
@@ -85,20 +91,56 @@ def _fetch() -> dict:
     return {"server_ts": time.time(), "aircraft": aircraft}
 
 
+def _fetch_outline() -> list:
+    conn = psycopg2.connect(
+        RW_DSN,
+        connect_timeout=DB_CONNECT_TIMEOUT,
+        options=f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",
+    )
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            # latest complete generation only (max gen) — never a half-written polygon; table may not exist yet
+            cur.execute(
+                "SELECT lon, lat FROM range_outline "
+                "WHERE gen = (SELECT max(gen) FROM range_outline) ORDER BY bin"
+            )
+            ring = [[float(lon), float(lat)] for lon, lat in cur.fetchall()]
+    finally:
+        conn.close()
+    if ring:
+        ring.append(ring[0])  # close the polygon
+    return ring
+
+
 async def _poller() -> None:
-    global _snapshot
+    global _snapshot, _outline
+    n = 0
     while True:
         try:
             # psycopg2 is sync; offload so the ~1s query never blocks the event loop
             _snapshot = await asyncio.to_thread(_fetch)
+            # the outline changes slowly — refresh on first tick, then every ~5 min
+            if n % 300 == 0:
+                try:
+                    _outline = await asyncio.to_thread(_fetch_outline)
+                except Exception as exc:
+                    print(f"livemap outline refresh skipped: {exc}", flush=True)
         except Exception as exc:  # keep serving the last good snapshot on a blip
             print(f"livemap poll error: {exc}", flush=True)
+        n += 1
         await asyncio.sleep(POLL_SECONDS)
 
 
 @app.get("/aircraft")
 async def aircraft() -> JSONResponse:
     return JSONResponse(_snapshot)
+
+
+@app.get("/range-outline")
+async def range_outline() -> JSONResponse:
+    # center = receiver (Carrot Tower default in public; real antenna from .env); ring = coverage polygon
+    return JSONResponse({"center": [FEEDER_LON, FEEDER_LAT], "ring": _outline})
 
 
 @app.get("/healthz")
