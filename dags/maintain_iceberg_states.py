@@ -10,7 +10,7 @@ from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
 # bronze.adsb_states is excluded: that lane registers external files via add_files
 # and has its own maintenance story (maintain_adsb_schema).
-BRONZE_TABLES = ["opensky_states", "opensky_flights", "archive_states"]
+BRONZE_TABLES = ["opensky_states", "opensky_flights", "archive_states", "aircraft_db"]
 
 RETENTION = "7d"
 
@@ -40,6 +40,7 @@ def maintain_iceberg_states():
 
         archive_iceberg.ensure_archive_table()
         fib.ensure_flights_table()
+        fib.ensure_aircraft_db_table()
 
     # One statement per list entry: the Trino DBAPI runs a single statement per
     # execute, so SQLExecuteQueryOperator iterates the list rather than splitting.

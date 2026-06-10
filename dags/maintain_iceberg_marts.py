@@ -8,14 +8,36 @@ from airflow.sdk import dag
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
 
-SILVER_TABLES = ["stg_states", "fact_state_snapshots", "stg_states_history"]
+# Every dbt-rebuilt Iceberg table across all lanes, seeds included — the hourly
+# adsb REPLACE cycle (:05) clears the 04:30 maintenance window by 25 minutes, and
+# the REPLACE-vs-OPTIMIZE race is the existing retry-absorbed exposure.
+SILVER_TABLES = [
+    "dim_aircraft",
+    "dim_aircraft_registry",
+    "dim_aircraft_types",
+    "dim_airlines",
+    "dim_airports",
+    "dim_hex_country",
+    "fact_state_snapshots",
+    "fct_adsb_state",
+    "stg_states",
+    "stg_states_history",
+]
 GOLD_TABLES = [
+    "agg_airline_traffic",
     "agg_airport_daily",
     "agg_country_traffic",
+    "agg_country_traffic_adsb",
+    "agg_flight_routes",
     "agg_hourly_traffic",
     "agg_hourly_traffic_history",
     "agg_hourly_traffic_live_archive",
+    "agg_operator_traffic",
+    "agg_route_traffic",
     "anomalies",
+    "fact_flights",
+    "fct_flight_legs",
+    "longest_flights",
 ]
 
 RETENTION = "7d"

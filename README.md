@@ -171,6 +171,23 @@ schedule and task set. `tests/test_credit_budget.py` computes the daily
 OpenSky credit cost from the live region config + ingest schedule and
 asserts it stays under the 8,000/day active-feeder quota.
 
+## Acknowledgements
+
+This project stands on two community networks that choose to keep aviation
+data open:
+
+- **[The OpenSky Network](https://opensky-network.org)** — the wide-context
+  ring around the antenna: every state vector beyond the receiver's horizon and
+  every flight narrative in the backstory ring comes from their crowdsourced
+  receiver network, run as a non-profit for research since 2013. This platform
+  also feeds back into it.
+- **[adsb.lol](https://adsb.lol)** — the deep history: their daily
+  `globe_history` releases are one of the very few genuinely open archives of
+  global aircraft traces, published under ODbL with no gatekeeping. The entire
+  pre-pipeline backfill exists because they publish what others paywall.
+
+If you run an ADS-B receiver, feed these networks.
+
 ## License & data attribution
 
 Code: MIT.
