@@ -37,7 +37,7 @@ def transform_marts():
         task_id="dbt_run_trino",
         bash_command=(
             "cd /opt/airflow/dbt/sancha1090 && "
-            "dbt run --profiles-dir . --target trino --no-use-colors --exclude tag:adsb"
+            "dbt run --profiles-dir . --target trino --no-use-colors --exclude tag:adsb tag:flights"
         ),
     )
 
@@ -45,7 +45,7 @@ def transform_marts():
         task_id="dbt_test_trino",
         bash_command=(
             "cd /opt/airflow/dbt/sancha1090 && "
-            "dbt test --profiles-dir . --target trino --no-use-colors --exclude tag:adsb"
+            "dbt test --profiles-dir . --target trino --no-use-colors --exclude tag:adsb tag:flights"
         ),
     )
 

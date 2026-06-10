@@ -49,6 +49,8 @@ app = FastAPI(lifespan=lifespan)
 _snapshot: dict = {"server_ts": 0.0, "aircraft": []}
 # Receiver coverage polygon — batch-computed from Trino history, loaded into RW; changes slowly.
 _outline: list = []
+# callsign → latest known route (v5.1 backstory ring) — batch-computed daily, loaded into RW.
+_routes: dict = {}
 
 
 def _fetch() -> dict:
@@ -67,11 +69,13 @@ def _fetch() -> dict:
     aircraft = []
     for r in rows:
         ct = r["capture_ts"]
+        flight = (r["flight"] or "").strip() or None
         aircraft.append(
             {
                 "capture_ts": ct.timestamp() if ct is not None else None,
                 "hex": r["hex"],
-                "flight": (r["flight"] or "").strip() or None,
+                "flight": flight,
+                "route": _routes.get(flight),
                 "lat": r["lat"],
                 "lon": r["lon"],
                 "alt_baro": r["alt_baro"],
@@ -113,19 +117,50 @@ def _fetch_outline() -> list:
     return ring
 
 
+def _fetch_routes() -> dict:
+    conn = psycopg2.connect(
+        RW_DSN,
+        connect_timeout=DB_CONNECT_TIMEOUT,
+        options=f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",
+    )
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            # latest complete generation only (max gen); table may not exist yet
+            cur.execute(
+                "SELECT callsign, origin_code, origin_city, dest_code, dest_city, departed_epoch "
+                "FROM dim_flight_routes "
+                "WHERE gen = (SELECT max(gen) FROM dim_flight_routes)"
+            )
+            return {
+                cs: {
+                    "origin": oc, "origin_city": ocity,
+                    "dest": dc, "dest_city": dcity,
+                    "departed_epoch": dep,
+                }
+                for cs, oc, ocity, dc, dcity, dep in cur.fetchall()
+            }
+    finally:
+        conn.close()
+
+
 async def _poller() -> None:
-    global _snapshot, _outline
+    global _snapshot, _outline, _routes
     n = 0
     while True:
         try:
             # psycopg2 is sync; offload so the ~1s query never blocks the event loop
             _snapshot = await asyncio.to_thread(_fetch)
-            # the outline changes slowly — refresh on first tick, then every ~5 min
+            # outline + routes change slowly — refresh on first tick, then every ~5 min
             if n % 300 == 0:
                 try:
                     _outline = await asyncio.to_thread(_fetch_outline)
                 except Exception as exc:
                     print(f"livemap outline refresh skipped: {exc}", flush=True)
+                try:
+                    _routes = await asyncio.to_thread(_fetch_routes)
+                except Exception as exc:
+                    print(f"livemap routes refresh skipped: {exc}", flush=True)
         except Exception as exc:  # keep serving the last good snapshot on a blip
             print(f"livemap poll error: {exc}", flush=True)
         n += 1

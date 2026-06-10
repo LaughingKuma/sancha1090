@@ -7,6 +7,9 @@ import sqlalchemy as sa
 from include.db import analytics_engine
 
 
+# Seam: tests point this at a schema-less sqlite mirror; production uses the public schema.
+_TABLE = "public.ingestion_manifest"
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS public.ingestion_manifest (
     object_uri            TEXT PRIMARY KEY,
@@ -39,20 +42,28 @@ def ensure_table(engine: Optional[sa.Engine] = None) -> None:
         _table_ready = True
 
 
-def pending_uris(engine: Optional[sa.Engine] = None) -> list[dict]:
+def pending_uris(uri_prefix: str, engine: Optional[sa.Engine] = None) -> list[dict]:
+    # Prefix-scoped: the manifest is shared by the states and flights lanes, and each
+    # tableize DAG must only drain its own URIs (v5.1).
     eng = engine or _engine()
     if engine is None and not _table_ready:
         ensure_table(eng)
     stmt = sa.text(
-        """
+        f"""
         SELECT object_uri, snapshot_min, snapshot_max, row_count
-          FROM public.ingestion_manifest
+          FROM {_TABLE}
          WHERE iceberg_committed_at IS NULL
+           AND object_uri LIKE :prefix ESCAPE '\\'
          ORDER BY loaded_at
         """
     )
+    # Escape LIKE wildcards so e.g. the _ in "flights_raw" matches literally, not any char.
+    escaped = uri_prefix.strip("/").replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
     with eng.begin() as conn:
-        return [dict(r._mapping) for r in conn.execute(stmt).fetchall()]
+        return [
+            dict(r._mapping)
+            for r in conn.execute(stmt, {"prefix": f"%/{escaped}/%"}).fetchall()
+        ]
 
 
 def mark_iceberg_committed(uris: list[str], engine: Optional[sa.Engine] = None) -> int:
@@ -60,8 +71,8 @@ def mark_iceberg_committed(uris: list[str], engine: Optional[sa.Engine] = None) 
         return 0
     eng = engine or _engine()
     stmt = sa.text(
-        """
-        UPDATE public.ingestion_manifest
+        f"""
+        UPDATE {_TABLE}
            SET iceberg_committed_at = CURRENT_TIMESTAMP
          WHERE object_uri IN :uris
            AND iceberg_committed_at IS NULL
@@ -83,8 +94,8 @@ def record_load(
     if engine is None and not _table_ready:
         ensure_table(eng)
     stmt = sa.text(
-        """
-        INSERT INTO public.ingestion_manifest
+        f"""
+        INSERT INTO {_TABLE}
             (object_uri, snapshot_min, snapshot_max, row_count)
         VALUES (:uri, :smin, :smax, :rows)
         ON CONFLICT (object_uri) DO NOTHING

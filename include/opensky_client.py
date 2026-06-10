@@ -145,6 +145,26 @@ class OpenSkyClient:
             f"OpenSky request to {path} failed after {self.max_retries} retries"
         )
 
+    def _get_flights(self, path: str, airport: str, begin: int, end: int) -> list[dict[str, Any]]:
+        if end <= begin:
+            raise ValueError(f"end ({end}) must be after begin ({begin})")
+        # OpenSky rejects windows over 2 days on the flights endpoints.
+        if end - begin > 2 * 86400:
+            raise ValueError(f"window {end - begin}s exceeds the 2-day /flights maximum")
+        try:
+            return self._request(path, params={"airport": airport, "begin": begin, "end": end})
+        except httpx.HTTPStatusError as exc:
+            # OpenSky returns 404 for an empty window (verified 2026-06-10), not an error.
+            if exc.response.status_code == 404:
+                return []
+            raise
+
+    def get_flights_arrival(self, airport: str, begin: int, end: int) -> list[dict[str, Any]]:
+        return self._get_flights("/flights/arrival", airport, begin, end)
+
+    def get_flights_departure(self, airport: str, begin: int, end: int) -> list[dict[str, Any]]:
+        return self._get_flights("/flights/departure", airport, begin, end)
+
     def get_states(
         self,
         bbox: tuple[float, float, float, float] | None = None,

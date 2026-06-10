@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+import os
+
+import psycopg2
+import trino
+from psycopg2.extras import execute_values
+
+# Route memory horizon: callsigns map to stable scheduled legs, so the latest flight
+# within a week is a reliable backstory for an aircraft flying that callsign today.
+LOOKBACK_DAYS = int(os.environ.get("FLIGHT_ROUTES_LOOKBACK_DAYS", "7"))
+
+
+def _compute() -> list[tuple]:
+    # Latest known route per callsign; both endpoints resolved so the tooltip line
+    # always reads "XXX → YYY".
+    sql = f"""
+    WITH ranked AS (
+      SELECT
+        callsign,
+        origin_icao,
+        coalesce(origin_iata, origin_icao) AS origin_code,
+        origin_city,
+        dest_icao,
+        coalesce(dest_iata, dest_icao) AS dest_code,
+        dest_city,
+        cast(to_unixtime(first_seen) AS bigint) AS departed_epoch,
+        row_number() OVER (PARTITION BY callsign ORDER BY first_seen DESC) AS rn
+      FROM gold.fact_flights
+      WHERE callsign IS NOT NULL
+        AND origin_icao IS NOT NULL
+        AND dest_icao IS NOT NULL
+        AND origin_icao <> dest_icao
+        AND first_seen > current_timestamp - INTERVAL '{LOOKBACK_DAYS}' DAY
+    )
+    SELECT callsign, origin_icao, origin_code, origin_city,
+           dest_icao, dest_code, dest_city, departed_epoch
+    FROM ranked WHERE rn = 1
+    """
+    conn = trino.dbapi.connect(
+        host=os.environ.get("TRINO_HOST", "trino-coordinator"),
+        port=int(os.environ.get("TRINO_PORT", "8080")),
+        user=os.environ.get("TRINO_USER", "airflow"),
+        catalog="iceberg",
+        schema="gold",
+    )
+    try:
+        cur = conn.cursor()
+        cur.execute(sql)
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def refresh_flight_routes() -> int:
+    rows = _compute()
+    conn = psycopg2.connect(
+        host=os.environ.get("RISINGWAVE_HOST", "risingwave"),
+        port=int(os.environ.get("RISINGWAVE_PORT", "4566")),
+        user="root",
+        dbname="dev",
+    )
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS dim_flight_routes ("
+                " callsign varchar, origin_icao varchar, origin_code varchar, origin_city varchar,"
+                " dest_icao varchar, dest_code varchar, dest_city varchar,"
+                " departed_epoch bigint, gen bigint)"
+            )
+            # Versioned publish (RW has no read-write txns): write a new gen, FLUSH, then
+            # drop older gens — readers select max(gen) so a failed load keeps serving the
+            # last complete route set. An empty compute means an upstream gap (the 7-day
+            # fact_flights lookback can't legitimately be empty once the lane is live), so
+            # we deliberately DON'T advance gen on empty — same stale-over-blank choice as
+            # range_outline; map.js already downgrades old rows to "usual route".
+            cur.execute("SELECT coalesce(max(gen), 0) + 1 FROM dim_flight_routes")
+            new_gen = cur.fetchone()[0]
+            if rows:
+                tagged = [tuple(r) + (new_gen,) for r in rows]
+                execute_values(
+                    cur,
+                    "INSERT INTO dim_flight_routes "
+                    "(callsign, origin_icao, origin_code, origin_city,"
+                    " dest_icao, dest_code, dest_city, departed_epoch, gen) VALUES %s",
+                    tagged,
+                    template="(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    page_size=max(len(tagged), 1),
+                )
+                cur.execute("FLUSH")
+                cur.execute("DELETE FROM dim_flight_routes WHERE gen IS NULL OR gen <> %s", (new_gen,))
+                cur.execute("FLUSH")
+    finally:
+        conn.close()
+    print(f"loaded {len(rows)} flight routes (gen {new_gen}) into RisingWave")
+    return len(rows)
+
+
+if __name__ == "__main__":
+    refresh_flight_routes()

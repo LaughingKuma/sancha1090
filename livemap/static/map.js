@@ -209,9 +209,22 @@ function getTooltip(info) {
   const alt = a.alt_baro == null ? "—" : a.alt_baro === "ground" ? "GROUND" : `${a.alt_baro} ft`;
   const spd = a.gs == null ? "—" : `${Math.round(a.gs)} kt`;
   const hdg = a.track == null ? "—" : `${Math.round(a.track)}°`;
+  // Backstory ring (v5.1): latest known route for this callsign from the flights catalog.
+  // D-2-sourced rows carry an old departure time — show the clock only when it's today's leg.
+  let routeLine = "";
+  if (a.route) {
+    const dep = a.route.departed_epoch;
+    const ageH = dep ? (Date.now() / 1000 - dep) / 3600 : Infinity;
+    const when =
+      ageH < 24
+        ? ` · departed ${new Date(dep * 1000).toTimeString().slice(0, 5)}`
+        : " · usual route";
+    routeLine = `<div class="route">${esc(a.route.origin)} → ${esc(a.route.dest)}${esc(when)}</div>`;
+  }
   const html =
     `<div class="flight ${mil ? "mil" : ""}">${esc(a.flight || a.hex || "UNKNOWN")}${badges}</div>` +
     `<div class="org">${esc(a.airline_name || "Unregistered callsign")}</div>` +
+    routeLine +
     "<dl>" +
     `<dt>Type</dt><dd>${esc(a.aircraft_desc || a.typecode || "—")}</dd>` +
     `<dt>Code</dt><dd>${esc(a.typecode || "—")}</dd>` +

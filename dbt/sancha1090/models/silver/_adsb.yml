@@ -2,7 +2,7 @@ version: 2
 
 models:
   - name: dim_aircraft
-    description: "Type-1 airframe dimension keyed by ICAO 24-bit hex; bronze-derived (v5.1 adds registry)"
+    description: "Type-1 airframe dimension keyed by ICAO 24-bit hex; bronze-derived, registry-enriched (v5.1)"
     columns:
       - name: icao24
         description: "Lowercase ICAO 24-bit hex; one row per airframe"

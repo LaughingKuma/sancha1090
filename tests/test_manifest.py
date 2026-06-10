@@ -84,3 +84,28 @@ def test_ensure_table_runs_postgres_ddl_against_real_engine(monkeypatch):
             "SELECT name FROM sqlite_master WHERE type='table'"
         )).fetchall()]
     assert "ingestion_manifest" in tables
+
+
+def test_pending_uris_scoped_to_lane_prefix(monkeypatch):
+    # The manifest is shared by the states and flights lanes — each tableize DAG
+    # must only drain its own URIs.
+    eng = _fresh_engine()
+    monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
+    _insert(eng, "s3://o/bronze/states_raw/dt=2026-06-10/x.parquet", 100, 100, 1)
+    _insert(eng, "s3://o/bronze/flights_raw/dt=2026-06-10/airport=RJTT.parquet", 100, 200, 2)
+    _insert(eng, "s3://o/bronze/aircraft_db_raw/dt=2026-06-10/aircraft_db.parquet", None, None, 3)
+
+    states = manifest.pending_uris("bronze/states_raw", engine=eng)
+    flights = manifest.pending_uris("bronze/flights_raw", engine=eng)
+    aircraft = manifest.pending_uris("bronze/aircraft_db_raw", engine=eng)
+
+    assert [r["object_uri"] for r in states] == ["s3://o/bronze/states_raw/dt=2026-06-10/x.parquet"]
+    assert [r["object_uri"] for r in flights] == ["s3://o/bronze/flights_raw/dt=2026-06-10/airport=RJTT.parquet"]
+    assert [r["object_uri"] for r in aircraft] == ["s3://o/bronze/aircraft_db_raw/dt=2026-06-10/aircraft_db.parquet"]
+
+
+def test_pending_uris_tolerates_surrounding_slashes(monkeypatch):
+    eng = _fresh_engine()
+    monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
+    _insert(eng, "s3://o/bronze/flights_raw/dt=2026-06-10/airport=RJAA.parquet", 1, 2, 5)
+    assert len(manifest.pending_uris("/bronze/flights_raw/", engine=eng)) == 1

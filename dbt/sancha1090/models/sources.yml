@@ -21,3 +21,20 @@ sources:
           - name: hex
             tests:
               - not_null
+      - name: opensky_flights
+        description: "Flight summaries (arrivals/departures) for the tracked JP airports; a flight can surface in multiple capture windows — dedupe downstream"
+        tags: ['flights']
+        columns:
+          - name: icao24
+            tests:
+              - not_null
+          - name: first_seen
+            tests:
+              - not_null
+      - name: aircraft_db
+        description: "Weekly snapshots of OpenSky's aircraft registry CSV (identity/operator layer); latest as_of_date wins downstream"
+        tags: ['flights']
+        columns:
+          - name: icao24
+            tests:
+              - not_null

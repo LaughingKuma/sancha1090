@@ -100,6 +100,33 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"run_backfill", "run_beast_backfill"},
     },
+    "ingest_flights": {
+        "schedule": "30 14 * * *",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"list_airports", "fetch_airport", "summarize"},
+    },
+    "tableize_flights": {
+        "schedule_is_asset_triggered": True,
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"load_pending_to_iceberg"},
+    },
+    "ingest_aircraft_db": {
+        "schedule": "0 17 * * 0",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"download_and_land", "tableize"},
+    },
+    "transform_flights": {
+        "schedule_is_asset_triggered": True,
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {
+            "ensure_bronze_tables", "dbt_deps", "dbt_seed", "dbt_run", "dbt_test",
+            "push_flight_routes",
+        },
+    },
     "register_bronze_in_polaris": {
         "catchup": False,
         "max_active_runs": 1,

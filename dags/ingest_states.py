@@ -12,8 +12,9 @@ Design notes:
   region fails — we want the partial-success summary, not "skipped".
 - The bbox is >400 sq deg, the top tier of OpenSky's pricing, so the call
   costs 4 credits. 1 region x 4 credits x 120 runs/day = 480 credits/day,
-  ~6% of the 8,000/day active-feeder quota — deliberate headroom to raise
-  cadence later. See tests/test_credit_budget.py for the enforced version.
+  ~12% of the 4,000/day quota the API currently meters us at (8,000 only
+  once active-feeder uptime accrues) — don't raise cadence until the
+  header confirms promotion. See tests/test_credit_budget.py.
 """
 
 from __future__ import annotations
