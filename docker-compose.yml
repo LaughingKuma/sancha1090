@@ -267,8 +267,11 @@ services:
         condition: service_healthy
       garage:
         condition: service_healthy
+    mem_limit: 2g
     environment:
       POLARIS_PERSISTENCE_TYPE: relational-jdbc
+      # Heap below mem_limit so non-heap (metaspace/threads/direct) has room — heap==limit risks Docker OOM-kill.
+      JAVA_OPTS_APPEND: "-Xmx1536m"
       QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://postgres-analytics:5432/${ANALYTICS_PG_DB:-analytics}
       QUARKUS_DATASOURCE_USERNAME: ${ANALYTICS_PG_USER:-analytics}
       QUARKUS_DATASOURCE_PASSWORD: ${ANALYTICS_PG_PASSWORD:?ANALYTICS_PG_PASSWORD must be set in .env}
