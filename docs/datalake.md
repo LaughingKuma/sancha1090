@@ -10,7 +10,7 @@ in exactly one place (`gold.fct_flight_legs`):
 
 | Feed | Source | Bronze table | Coverage | Units |
 |------|--------|--------------|----------|-------|
-| **Global** | OpenSky Network `/states/all` REST API, 8 geographic regions, ~12-min cadence | `bronze.opensky_states` | ~global (minus oceans/poles) | metres, m/s |
+| **Context** (OpenSky) | OpenSky Network `/states/all` REST API, one Japan+ocean bbox, ~12-min cadence | `bronze.opensky_states` | Japan + surrounding ocean (beyond the antenna's horizon) | metres, m/s |
 | **Rooftop** | A local `readsb` ADS-B antenna, byte-faithful records | `bronze.adsb_states` | the antenna's reception footprint (Tokyo area) | feet, knots |
 
 This document is the authoritative, column-level reference for every table in the lake.
@@ -28,13 +28,13 @@ This document is the authoritative, column-level reference for every table in th
 
 ```mermaid
 flowchart TD
-    OSK["OpenSky REST /states/all<br/>global · 8 regions · ~12 min"]:::feed
+    OSK["OpenSky REST /states/all<br/>Japan+ocean box · ~12 min"]:::feed
     ANT["Rooftop readsb antenna<br/>byte-faithful ADS-B"]:::feed
 
     OSK -->|"ingest_states → tableize_states"| BOS[("bronze.opensky_states")]
     ANT -->|"edge push → ingest_adsb → tableize_adsb"| BAS[("bronze.adsb_states")]
 
-    %% ---- global track: transform_marts (--exclude tag:adsb) ----
+    %% ---- OpenSky context track: transform_marts (--exclude tag:adsb) ----
     BOS --> STG["silver.stg_states"]
     STG --> FSS["silver.fact_state_snapshots"]
     STG --> ACT["gold.agg_country_traffic"]
@@ -64,8 +64,8 @@ flowchart TD
 ```
 
 The two tracks are deliberately separate so they each refresh on their own feed and never
-race each other's writes. The only join point is `fct_flight_legs`, which reads the global
-fact for geometry and the rooftop tables for enrichment — see [fusion](#known-limitations).
+race each other's writes. The only join point is `fct_flight_legs`, which reads the OpenSky
+context fact for geometry and the rooftop tables for enrichment — see [fusion](#known-limitations).
 
 ## Entity map
 
@@ -98,7 +98,7 @@ by tag. `dim_*` seeds and rooftop models carry `tag:adsb`; everything else is un
 |--------|----------|---------------|---------------|
 | `bronze.opensky_states` | `ingest_states` → `tableize_states` | — (produces `bronze_states_table`) | — |
 | `bronze.adsb_states` | edge push → `ingest_adsb` → `tableize_adsb` | — (produces `adsb_bronze_table`) | — |
-| `silver.stg_states` | `transform_marts` | `bronze_states_table` (global) | `--exclude tag:adsb` |
+| `silver.stg_states` | `transform_marts` | `bronze_states_table` (OpenSky context) | `--exclude tag:adsb` |
 | `silver.fact_state_snapshots` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb` |
 | `gold.anomalies` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb` |
 | `gold.agg_country_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb` |
@@ -111,7 +111,7 @@ by tag. `dim_*` seeds and rooftop models carry `tag:adsb`; everything else is un
 | `silver.dim_airlines` / `dim_airports` / `dim_hex_country` (seeds) | `transform_adsb_silver` (`dbt seed`) | `adsb_bronze_table` | `tag:adsb` |
 | `gold.agg_country_traffic_adsb` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
 
-> **Bootstrap note.** `fct_flight_legs` is untagged (so it refreshes on the global feed) but
+> **Bootstrap note.** `fct_flight_legs` is untagged (so it refreshes on the OpenSky context feed) but
 > reads `tag:adsb` relations (the dim seeds, `dim_aircraft`, `fct_adsb_state`). On a fresh
 > deploy, run `transform_adsb_silver` once before `transform_marts`, or the build errors on a
 > missing relation.
@@ -123,13 +123,16 @@ by tag. `dim_*` seeds and rooftop models carry `tag:adsb`; everything else is un
 Raw, append-only, byte-faithful. Nothing is dropped here so silver/gold can re-derive
 anything. Every column is nullable in both bronze tables.
 
-### `bronze.opensky_states` — global feed
+### `bronze.opensky_states` — OpenSky context feed
 
-- **Grain:** one row per `(icao24, snapshot_time, region)`. Overlapping regions can yield the
-  same aircraft at the same snapshot under different `region` values; silver dedups this.
-- **Source:** OpenSky `/states/all`, fetched per geographic bounding box (`include/regions.py`).
-- **Built by:** `ingest_states` (every 12 min, dynamic-mapped over 8 regions) → `tableize_states`
-  (single canonical PyIceberg writer). Partitioned by `day(snapshot_time)`.
+- **Grain:** one row per `(icao24, snapshot_time, region)`. Since v5.0 there is a single
+  `region` (`japan`); the silver dedup that collapsed overlapping-region duplicates stays in
+  place (harmless with one box, and ready if sub-regions return).
+- **Source:** OpenSky `/states/all`, fetched per geographic bounding box (`include/regions.py`) —
+  one Japan+ocean box covering the airspace around the antenna and beyond its horizon.
+- **Built by:** `ingest_states` (every 12 min, dynamic-mapped over the region list — currently
+  one Japan+ocean box) → `tableize_states` (single canonical PyIceberg writer). Partitioned by
+  `day(snapshot_time)`.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -167,7 +170,7 @@ anything. Every column is nullable in both bronze tables.
   (zero-copy `add_files`, not a rewrite). Unpartitioned — always constrain `capture_ts` for pruning.
 - **Notes:** all 60 columns nullable (the byte-mirror path cannot promote a nullable Parquet
   column to required). `desc` is a **reserved word** — always double-quote it. `alt_baro`/`year`
-  are intentionally strings. `spi` is `bigint` here (vs `boolean` in the global feed). `_raw_json`
+  are intentionally strings. `spi` is `bigint` here (vs `boolean` in the OpenSky context feed). `_raw_json`
   holds the full verbatim record and is the source of truth for any field not promoted to a typed
   column (e.g. `dbFlags`).
 
@@ -218,7 +221,7 @@ anything. Every column is nullable in both bronze tables.
 | `gva` | `bigint` | Geometric Vertical Accuracy category. |
 | `sda` | `bigint` | System Design Assurance level. |
 | `alert` | `bigint` | Mode-S alert/ident flag. |
-| `spi` | `bigint` | Ident flag. **`bigint` (0/1)** here, vs boolean in the global feed. |
+| `spi` | `bigint` | Ident flag. **`bigint` (0/1)** here, vs boolean in the OpenSky context feed. |
 | `alt_geom` | `bigint` | Geometric (GNSS) altitude (feet). |
 | `ias` | `bigint` | Indicated airspeed (knots). |
 | `tas` | `bigint` | True airspeed (knots). |
@@ -246,9 +249,9 @@ anything. Every column is nullable in both bronze tables.
 Cleaned, typed, conformed. Facts are row-grain analytical tables; dims are conformed lookups
 shared across both feeds.
 
-### `silver.stg_states` — staging (global)
+### `silver.stg_states` — staging (OpenSky context)
 
-- **Grain:** one row per `(icao24, snapshot_time)` — deduped global state vector.
+- **Grain:** one row per `(icao24, snapshot_time)` — deduped OpenSky context state vector.
 - **Notes:** scans only the last **30 days** of bronze (retention mirror), so it is not full
   history. Dedup keeps the row with the latest `ingested_at` per grain. All measures nullable.
   Columns `geo_altitude_m`, `squawk`, `spi`, `position_source`, `time_position`, `last_contact`,
@@ -276,12 +279,12 @@ shared across both feeds.
 | `region` | `varchar` | Polling region label. |
 | `ingested_at` | `timestamp(6) with time zone` | Bronze landing time; dedup tiebreaker (latest wins). |
 
-### `silver.fact_state_snapshots` — global movement fact
+### `silver.fact_state_snapshots` — OpenSky context movement fact
 
 - **Grain:** one row per `(icao24, snapshot_time)`, **positioned only** (lat/lon non-null).
 - **Notes:** strict subset of `stg_states` (filters NULL position); inherits the 30-day window.
   Iceberg PARQUET, partitioned by `day(snapshot_time)`, sorted `snapshot_time DESC`. Base of the
-  global-feed gold marts.
+  OpenSky-context-feed gold marts.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -404,14 +407,14 @@ shared across both feeds.
 
 Consumer-facing marts. The four **v3.5** marts (`fct_flight_legs`, `agg_route_traffic`,
 `agg_airline_traffic`, `agg_country_traffic_adsb`) are documented first; three **legacy**
-global-states marts follow.
+OpenSky-context marts follow.
 
 ### `gold.fct_flight_legs` — inferred flight legs (headline)
 
 - **Grain:** one row per `(icao24, leg_id)` — one inferred flight leg per airframe.
-- **Source:** **cross-feed** — global `fact_state_snapshots` for geometry, fused with rooftop
+- **Source:** **cross-feed** — OpenSky context `fact_state_snapshots` for geometry, fused with rooftop
   `fct_adsb_state` + dims for enrichment.
-- **What it does:** sessionizes each airframe's global state stream into legs (a new leg on a
+- **What it does:** sessionizes each airframe's OpenSky context state stream into legs (a new leg on a
   `> 90-min` sample gap or an `on_ground` true-flip), then snaps low-altitude (`< 3000 m`)
   first/last fixes to the nearest airport (haversine `≤ 100 km`) to infer origin/dest.
 - **Notes:** `route_inferred` is **approximate, not authoritative** — the ~12-min cadence snaps
@@ -472,7 +475,7 @@ global-states marts follow.
 ### `gold.agg_airline_traffic` — hourly airline leaderboard
 
 - **Grain:** one row per `(snapshot_hour, airline_name, airline_country)`.
-- **Purpose:** distinct airframes per airline per hour, straight from the global-feed callsign.
+- **Purpose:** distinct airframes per airline per hour, straight from the OpenSky-context-feed callsign.
 - **Notes:** **inner** join to `dim_airlines` — only callsigns matching the GA-tail guard with a
   known ICAO prefix survive; GA/private and unresolved callsigns are excluded.
 
@@ -487,8 +490,8 @@ global-states marts follow.
 ### `gold.agg_country_traffic_adsb` — rooftop by registration country
 
 - **Grain:** one row per `reg_country`. **Built on the rooftop DAG** (`tag:adsb`), so it stays in
-  sync with the rooftop feed, not the global one.
-- **Purpose:** the deliberate rooftop-feed mirror of the global `agg_country_traffic`.
+  sync with the rooftop feed, not the OpenSky context feed.
+- **Purpose:** the deliberate rooftop-feed mirror of the OpenSky context `agg_country_traffic`.
 - **Notes:** coverage is the antenna footprint (Tokyo area), so Japan dominates.
 
 | Column | Type | Meaning |
@@ -498,14 +501,14 @@ global-states marts follow.
 | `observations` | `bigint` | Total rooftop ADS-B rows for this country. |
 | `military_observations` | `bigint` | Count of `is_military` observations. |
 
-### Legacy global-states marts
+### Legacy OpenSky-context marts
 
 These predate v3.5 and are listed in `maintain_iceberg_marts` for OPTIMIZE compaction.
 
 #### `gold.agg_country_traffic` — country leaderboard (latest snapshot)
 
 - **Grain:** one row per `origin_country`. **Latest ~5-min window only** (a point-in-time
-  snapshot that overwrites each global tick), not full history.
+  snapshot that overwrites each OpenSky context tick), not full history.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -561,7 +564,7 @@ These predate v3.5 and are listed in `maintain_iceberg_marts` for OPTIMIZE compa
 | `fct_flight_legs` (`icao24`) | `dim_hex_country` | `try(from_base(lower(icao24),16)) BETWEEN ...` | LEFT range |
 | `fct_flight_legs` (`icao24`) | `fct_adsb_state` (antenna rollup) | `hex = lower(icao24)` | LEFT (cross-feed fusion) |
 | `agg_route_traffic` | `fct_flight_legs` | grouped by `route_inferred` | derived 1:N |
-| **cross-feed identity** | | `fct_adsb_state.hex = lower(fact_state_snapshots.icao24)` | rooftop ↔ global |
+| **cross-feed identity** | | `fct_adsb_state.hex = lower(fact_state_snapshots.icao24)` | rooftop ↔ OpenSky |
 
 ## Known limitations
 
@@ -574,7 +577,7 @@ These predate v3.5 and are listed in `maintain_iceberg_marts` for OPTIMIZE compa
 - **Sparse airframe enrichment.** `dim_aircraft` is antenna-derived (~2,285 airframes), so
   `registration`/`typecode` are mostly NULL for aircraft outside the rooftop footprint until the
   v5.1 global registry.
-- **Cross-feed lag + bootstrap.** `fct_flight_legs` geometry is fresh every global tick, but its
-  rooftop enrichment (`is_military`, `crossed_antenna`) can lag by up to one global-tick interval;
+- **Cross-feed lag + bootstrap.** `fct_flight_legs` geometry is fresh every OpenSky context tick, but its
+  rooftop enrichment (`is_military`, `crossed_antenna`) can lag by up to one OpenSky-context-tick interval;
   and on a fresh deploy `transform_adsb_silver` must run once before `transform_marts`.
 - **Legacy `agg_country_traffic` is point-in-time** — a latest-5-min snapshot, not full history.

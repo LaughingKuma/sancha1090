@@ -1,4 +1,4 @@
--- Derives from fct_flight_legs (global feed), so it's untagged and built by transform_marts alongside it.
+-- Derives from fct_flight_legs (OpenSky context feed), so it's untagged and built by transform_marts alongside it.
 {{ config(materialized='table') }}
 
 -- Top INFERRED routes for the deck.gl arc map; both endpoints resolved only (see fct_flight_legs.route_inferred).

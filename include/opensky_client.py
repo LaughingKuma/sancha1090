@@ -28,7 +28,8 @@ class OpenSkyClient:
     """Lightweight OpenSky API client.
 
     Anonymous mode works (no client_id/secret) but is rate-limited to
-    400 credits/day. Authenticated mode gets 4000 credits/day.
+    400 credits/day. Authenticated mode gets 4000 credits/day, and an
+    active feeder (>=30% monthly receiver uptime) gets 8000 credits/day.
     """
 
     def __init__(

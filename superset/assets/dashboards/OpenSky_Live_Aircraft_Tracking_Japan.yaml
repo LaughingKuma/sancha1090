@@ -1,4 +1,4 @@
-dashboard_title: OpenSky Live Global Aircraft Tracking
+dashboard_title: OpenSky Live Aircraft Tracking — Japan
 description: null
 css: ''
 slug: null
@@ -45,7 +45,7 @@ position:
     meta:
       chartId: 12
       height: 50
-      sliceName: Anamoly Map
+      sliceName: Anomaly Map
       uuid: fe234934-2384-4abc-ae78-056276908c34
       width: 12
     parents:
@@ -77,7 +77,7 @@ position:
     meta:
       chartId: 8
       height: 50
-      sliceName: Live World Map
+      sliceName: OpenSky Live Map — Japan
       uuid: d930bd78-71a2-486b-a0b1-3e2b0117f4a3
       width: 12
     parents:
@@ -162,7 +162,7 @@ position:
   HEADER_ID:
     id: HEADER_ID
     meta:
-      text: OpenSky Live Global Aircraft Tracking
+      text: OpenSky Live Aircraft Tracking — Japan
     type: HEADER
   ROOT_ID:
     children:

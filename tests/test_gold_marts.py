@@ -113,10 +113,10 @@ def test_agg_airline_traffic_resolves_anchor_airlines(cur):
     # Contract (drift-proof): always populated, never a null/empty airline name.
     assert names, "agg_airline_traffic produced no airlines"
     assert all(n and n.strip() for n in names), "null/empty airline_name leaked into the agg"
-    # Anchors (deliberate live regression targets, cf. test_silver_adsb.py): the global feed always
+    # Anchors (deliberate live regression targets, cf. test_silver_adsb.py): the OpenSky context feed always
     # carries ANA + hundreds of carriers, so these are stable, not brittle.
     assert len(names) >= 20, f"too few airlines resolved: {len(names)}"
-    assert any("Nippon" in (n or "") for n in names), "expected an ANA/Nippon airline in the global feed"
+    assert any("Nippon" in (n or "") for n in names), "expected an ANA/Nippon airline in the OpenSky context feed"
 
 
 def test_agg_airline_traffic_is_hourly(cur):

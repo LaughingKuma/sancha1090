@@ -1,6 +1,6 @@
 {{ config(materialized='table', tags=['adsb']) }}
 
--- Rooftop feed by registration country; the deliberate mirror of the global states agg_country_traffic.
+-- Rooftop feed by registration country; the deliberate mirror of the OpenSky context agg_country_traffic.
 select
     reg_country,
     count(distinct hex) as distinct_aircraft,

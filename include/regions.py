@@ -1,15 +1,24 @@
-"""Geographic regions for splitting OpenSky requests.
+"""Geographic scope for the OpenSky states pull.
 
-Why split the world into regions?
-1. Pedagogically: dynamic task mapping needs an input list. Geographic
-   regions are a natural one.
-2. Operationally: smaller bboxes finish faster, give finer-grained retry
-   on failure (a 429 over Europe doesn't lose the data over Asia), and
-   parallelize across workers.
-3. Cost ceiling: each bbox is already in OpenSky's top per-call tier
-   (4 credits for area > 400 sq deg). Splitting them further would only
-   increase the number of calls without reducing per-call cost, so we
-   stay continent-sized.
+Why one Japan box, not a global sweep?
+1. The platform is antenna-centric: the rooftop receiver over Tokyo is the
+   protagonist, and OpenSky is its wide-context layer — "what's flying over
+   Japan, including beyond my horizon." Aircraft outside Japan never tie to
+   the receiver, the range outline, or the livemap, so the world sweep was
+   pure credit + storage spend with no narrative payoff.
+2. The box deliberately overshoots the antenna's reception footprint (the
+   v4.5 range outline, ~Kanto + offshore Pacific): the gap between the two is
+   "beyond my horizon," and it shrinks as the antenna's placement improves.
+3. The east edge reaches 165 to catch the trans-Pacific / NOPAC oceanic
+   traffic the antenna already receives over the water.
+
+Cost: any bbox > 400 sq deg is OpenSky's top flat tier (4 credits/call), so a
+generous Japan+ocean box costs the same as a continent — one call, 4 credits.
+Splitting it finer would only add calls without cutting per-call cost. See
+tests/test_credit_budget.py for the enforced budget.
+
+Kept as a list (not a bare dict) so ingest_states' dynamic task mapping is
+unchanged and sub-regions can return later without a DAG rewrite.
 
 Bounding box format: (lamin, lomin, lamax, lomax)
   Latitudes: -90 (south pole) to 90 (north pole)
@@ -19,12 +28,5 @@ Bounding box format: (lamin, lomin, lamax, lomax)
 from __future__ import annotations
 
 REGIONS: list[dict[str, float | str]] = [
-    {"name": "north_america", "lamin": 24.0,  "lomin": -125.0, "lamax": 60.0,  "lomax": -66.0},
-    {"name": "europe",        "lamin": 35.0,  "lomin": -10.0,  "lamax": 60.0,  "lomax": 30.0},
-    {"name": "east_asia",     "lamin": 20.0,  "lomin": 100.0,  "lamax": 50.0,  "lomax": 145.0},
-    {"name": "south_asia",    "lamin": 5.0,   "lomin": 65.0,   "lamax": 35.0,  "lomax": 95.0},
-    {"name": "oceania",       "lamin": -45.0, "lomin": 110.0,  "lamax": -10.0, "lomax": 180.0},
-    {"name": "south_america", "lamin": -55.0, "lomin": -85.0,  "lamax": 15.0,  "lomax": -35.0},
-    {"name": "africa",        "lamin": -35.0, "lomin": -20.0,  "lamax": 35.0,  "lomax": 55.0},
-    {"name": "middle_east",   "lamin": 12.0,  "lomin": 30.0,   "lamax": 42.0,  "lomax": 65.0},
+    {"name": "japan", "lamin": 20.0, "lomin": 122.0, "lamax": 50.0, "lomax": 165.0},
 ]

@@ -1,4 +1,4 @@
-slice_name: Live World Map
+slice_name: OpenSky Live Map — Japan
 description: null
 certified_by: null
 certification_details: null
@@ -51,9 +51,9 @@ params:
   mapbox_style: mapbox://styles/mapbox/dark-v9
   autozoom: true
   viewport:
-    longitude: 6.85236157047845
-    latitude: 31.222656842808707
-    zoom: 1
+    longitude: 140.0
+    latitude: 37.0
+    zoom: 4
     bearing: 0
     pitch: 0
   point_radius_fixed:
@@ -89,7 +89,7 @@ params:
 query_context: '{"datasource":{"id":5,"type":"table"},"force":false,"queries":[{"filters":[{"col":"snapshot_time","op":"TEMPORAL_RANGE","val":"DATEADD(DATETIME(\"now\"),
   -30, minute) : now"},{"col":"longitude","op":"IS NOT NULL","val":null},{"col":"latitude","op":"IS
   NOT NULL","val":null}],"extras":{"time_grain_sqla":null,"having":"","where":""},"applied_time_extras":{},"columns":["longitude","latitude","region"],"metrics":[],"orderby":[],"annotation_layers":[],"row_limit":50000,"series_limit":0,"group_others_when_limit_reached":false,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{},"is_timeseries":false}],"form_data":{"datasource":"5__table","viz_type":"deck_scatter","matrixify_enable":false,"matrixify_mode_columns":"disabled","matrixify_dimension_selection_mode_columns":"members","matrixify_dimension_columns":{"dimension":"","values":[]},"matrixify_topn_value_columns":10,"matrixify_all_sort_by_columns":"a_to_z","matrixify_topn_order_columns":true,"matrixify_show_column_headers":true,"matrixify_fit_columns_dynamically":true,"matrixify_mode_rows":"disabled","matrixify_dimension_selection_mode_rows":"members","matrixify_dimension_rows":{"dimension":"","values":[]},"matrixify_topn_value_rows":10,"matrixify_all_sort_by_rows":"a_to_z","matrixify_topn_order_rows":true,"matrixify_show_row_labels":true,"matrixify_row_height":300,"matrixify_charts_per_row":4,"matrixify_cell_title_template":"","spatial":{"type":"latlong","latCol":"latitude","lonCol":"longitude"},"row_limit":50000,"filter_nulls":true,"adhoc_filters":[{"expressionType":"SIMPLE","subject":"snapshot_time","operator":"TEMPORAL_RANGE","comparator":"DATEADD(DATETIME(\"now\"),
-  -30, minute) : now","clause":"WHERE","sqlExpression":null,"isExtra":false,"isNew":false,"datasourceWarning":false,"filterOptionName":"filter_vvr0kk9u68n_kog7fzjas3"}],"tooltip_contents":[],"tooltip_template":"","mapbox_style":"mapbox://styles/mapbox/dark-v9","autozoom":true,"viewport":{"longitude":6.85236157047845,"latitude":31.222656842808707,"zoom":1,"bearing":0,"pitch":0},"point_radius_fixed":{"type":"fix","value":"2000"},"point_unit":"square_m","min_radius":2,"max_radius":250,"multiplier":1.5,"legend_position":"tr","legend_format":"SMART_NUMBER","color_scheme_type":"categorical_palette","color_picker":{"r":0,"g":122,"b":135,"a":1},"dimension":"region","color_scheme":"d3Category10","default_breakpoint_color":{"r":158,"g":158,"b":158,"a":1},"js_columns":[],"js_data_mutator":"","js_tooltip":"","js_onclick_href":"","time_grain_sqla":null,"granularity":null,"extra_form_data":{},"dashboards":[],"force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
+  -30, minute) : now","clause":"WHERE","sqlExpression":null,"isExtra":false,"isNew":false,"datasourceWarning":false,"filterOptionName":"filter_vvr0kk9u68n_kog7fzjas3"}],"tooltip_contents":[],"tooltip_template":"","mapbox_style":"mapbox://styles/mapbox/dark-v9","autozoom":true,"viewport":{"longitude":140.0,"latitude":37.0,"zoom":4,"bearing":0,"pitch":0},"point_radius_fixed":{"type":"fix","value":"2000"},"point_unit":"square_m","min_radius":2,"max_radius":250,"multiplier":1.5,"legend_position":"tr","legend_format":"SMART_NUMBER","color_scheme_type":"categorical_palette","color_picker":{"r":0,"g":122,"b":135,"a":1},"dimension":"region","color_scheme":"d3Category10","default_breakpoint_color":{"r":158,"g":158,"b":158,"a":1},"js_columns":[],"js_data_mutator":"","js_tooltip":"","js_onclick_href":"","time_grain_sqla":null,"granularity":null,"extra_form_data":{},"dashboards":[],"force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
 cache_timeout: null
 uuid: d930bd78-71a2-486b-a0b1-3e2b0117f4a3
 version: 1.0.0

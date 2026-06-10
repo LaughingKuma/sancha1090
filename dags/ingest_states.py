@@ -1,17 +1,19 @@
 """ingest_states: pull aircraft state snapshots from OpenSky every 12 minutes.
 
-Stage 9: dynamic task mapping over geographic regions. Each region runs
-as its own parallel task instance, with independent retries and logs.
+Stage 9: dynamic task mapping over geographic regions. Since v5.0 the region
+list is a single Japan+ocean box (OpenSky is the antenna's wide-context layer,
+not a global sweep — see include/regions.py), but the mapping is kept so
+sub-regions can return without a DAG rewrite.
 
 Design notes:
-- 8 regions cover the populated airspace. Sparse polar areas omitted.
-- The summarize task uses trigger_rule="all_done" so it runs even if
-  some regions fail — we want the partial-success summary, not "skipped".
-- All 8 bboxes are >400 sq deg, the top tier of OpenSky's pricing, so
-  each call costs 4 credits. 8 regions x 4 credits x 120 runs/day =
-  3,840 credits/day, comfortably under the 4,000/day quota for
-  authenticated accounts. The */12 cadence is pinned by this math —
-  see tests/test_credit_budget.py for the enforced version.
+- One Japan+ocean bbox; the antenna covers the local sky, OpenSky covers the
+  rest of Japan and the surrounding ocean (beyond the receiver's horizon).
+- The summarize task uses trigger_rule="all_done" so it runs even if the
+  region fails — we want the partial-success summary, not "skipped".
+- The bbox is >400 sq deg, the top tier of OpenSky's pricing, so the call
+  costs 4 credits. 1 region x 4 credits x 120 runs/day = 480 credits/day,
+  ~6% of the 8,000/day active-feeder quota — deliberate headroom to raise
+  cadence later. See tests/test_credit_budget.py for the enforced version.
 """
 
 from __future__ import annotations
@@ -100,7 +102,7 @@ def ingest_states():
             pl.lit(context["logical_date"].isoformat()).alias("ingested_at"),
         )
 
-        # Include region in the key so 8 regions per minute don't collide.
+        # Include region in the key so mapped regions per minute don't collide.
         logical = context["logical_date"]
         key = (
             f"bronze/states_raw/"

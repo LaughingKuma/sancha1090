@@ -1,11 +1,11 @@
--- Reads the global states feed (fact_state_snapshots), so it's built by transform_marts (untagged),
--- not the rooftop-triggered transform_adsb_silver — keeps it fresh on global ticks.
+-- Reads the OpenSky context feed (fact_state_snapshots), so it's built by transform_marts (untagged),
+-- not the rooftop-triggered transform_adsb_silver — keeps it fresh on OpenSky context ticks.
 -- BOOTSTRAP: still refs tag:adsb relations built by transform_adsb_silver (dim_airports/dim_airlines/
 -- dim_hex_country seeds, dim_aircraft, fct_adsb_state). Steady state is fine; on a FRESH deploy run
 -- transform_adsb_silver once before transform_marts or this errors on a missing relation.
 {{ config(materialized='table') }}
 
--- INFERRED legs from the ~12-min global states feed: sessionize each airframe, snap low-altitude
+-- INFERRED legs from the ~12-min OpenSky context feed: sessionize each airframe, snap low-altitude
 -- endpoints to airports. route_inferred is an approximation, NOT ground truth (v5.2 reconciles).
 with ordered as (
     select
@@ -109,7 +109,7 @@ dest_snap as (
      and {{ haversine_km('l.last_lat', 'l.last_lon', 'a.lat', 'a.lon') }} <= {{ var('legs_snap_km') }}
 ),
 antenna as (
-    -- Rooftop is the only military signal; left-joined below so global legs without it simply read false.
+    -- Rooftop is the only military signal; left-joined below so OpenSky context legs without it simply read false.
     select hex, bool_or(is_military) as is_military
     from {{ ref('fct_adsb_state') }}
     group by hex

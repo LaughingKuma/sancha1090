@@ -1,7 +1,7 @@
--- Pure global-feed mart: built by transform_marts (untagged) so it refreshes on global states ticks.
+-- Pure OpenSky-context-feed mart: built by transform_marts (untagged) so it refreshes on OpenSky context ticks.
 {{ config(materialized='table') }}
 
--- Hourly distinct airframes by airline from the GLOBAL feed (callsign -> dim_airlines), not leg-derived.
+-- Hourly distinct airframes by airline from the OpenSky context feed (callsign -> dim_airlines), not leg-derived.
 select
     date_trunc('hour', s.snapshot_time) as snapshot_hour,
     al.name    as airline_name,

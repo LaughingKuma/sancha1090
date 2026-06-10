@@ -19,15 +19,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("vps_collector")
 
 
+# Keep in sync with include/regions.py by hand: vps_up.sh ships this file as a
+# single-file cloud-init payload, so the VPS can't import the include/ package.
 REGIONS: list[dict[str, Any]] = [
-    {"name": "north_america", "lamin": 24.0,  "lomin": -125.0, "lamax": 60.0,  "lomax": -66.0},
-    {"name": "europe",        "lamin": 35.0,  "lomin": -10.0,  "lamax": 60.0,  "lomax": 30.0},
-    {"name": "east_asia",     "lamin": 20.0,  "lomin": 100.0,  "lamax": 50.0,  "lomax": 145.0},
-    {"name": "south_asia",    "lamin": 5.0,   "lomin": 65.0,   "lamax": 35.0,  "lomax": 95.0},
-    {"name": "oceania",       "lamin": -45.0, "lomin": 110.0,  "lamax": -10.0, "lomax": 180.0},
-    {"name": "south_america", "lamin": -55.0, "lomin": -85.0,  "lamax": 15.0,  "lomax": -35.0},
-    {"name": "africa",        "lamin": -35.0, "lomin": -20.0,  "lamax": 35.0,  "lomax": 55.0},
-    {"name": "middle_east",   "lamin": 12.0,  "lomin": 30.0,   "lamax": 42.0,  "lomax": 65.0},
+    {"name": "japan", "lamin": 20.0, "lomin": 122.0, "lamax": 50.0, "lomax": 165.0},
 ]
 
 

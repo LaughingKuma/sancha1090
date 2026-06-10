@@ -1,10 +1,15 @@
 -- Trino reads the Polaris-backed bronze Iceberg table directly; columns are
 -- already typed, so no ::casts. 30-day filter mirrors retention — without it the
 -- mart rebuild would scan all bronze history.
+-- Japan scope (v5.0): filter geographically, NOT by region label — the pre-v5.0
+-- 'east_asia' box already covered Japan, so a region='japan' filter would drop
+-- recent Japan history. Box mirrors include/regions.py (kept in sync by hand).
 with src as (
     select *
     from {{ source('bronze', 'opensky_states') }}
     where snapshot_time >= current_timestamp - interval '30' day
+      and latitude  between 20 and 50
+      and longitude between 122 and 165
 ),
 typed as (
     select

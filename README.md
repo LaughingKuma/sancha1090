@@ -1,28 +1,35 @@
 # sancha1090: a local-first data platform
 
-Local Airflow 3 platform that fuses **two live aircraft-state feeds** — the global
-[OpenSky Network](https://opensky-network.org) REST API and a local **rooftop ADS-B
-antenna** — and shapes them through bronze/silver/gold layers in an Iceberg lakehouse
-(Garage S3 + Polaris catalog + Trino query engine), all in Docker Compose. No cloud
-accounts.
+A local-first Airflow 3 platform built around **one rooftop ADS-B antenna over
+Tokyo**. The antenna is the protagonist — everything it hears flows through
+bronze/silver/gold layers in an Iceberg lakehouse (Garage S3 + Polaris catalog +
+Trino query engine) and onto a live map, all in Docker Compose, no cloud accounts.
+
+The [OpenSky Network](https://opensky-network.org) REST API adds the rings the
+receiver can't reach on its own — **context** (everything flying over Japan and the
+surrounding ocean, beyond the antenna's horizon) and, increasingly, **backstory**
+(where those flights came from and are headed). The two feeds stay on separate
+refresh tracks and fuse in `gold.fct_flight_legs`.
 
 > **Data model:** the full column-level schema, lineage, and entity map for every
 > bronze/silver/gold table live in **[`docs/datalake.md`](docs/datalake.md)**.
 
 ## Architecture
 
-Two independent feeds land in Iceberg bronze and stay on separate refresh tracks
-(partitioned by dbt tag so they never race), fusing only in `gold.fct_flight_legs`:
+The antenna feed and the OpenSky context feed both land in Iceberg bronze and stay
+on separate refresh tracks (partitioned by dbt tag so they never race), fusing only
+in `gold.fct_flight_legs`:
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/architecture-dark.svg">
-    <img src="docs/architecture.svg" alt="sancha1090 dual-feed medallion lakehouse: OpenSky global + rooftop ADS-B feeds flow through bronze → silver → gold to Trino + Superset" width="520">
+    <img src="docs/architecture.svg" alt="sancha1090 medallion lakehouse: a rooftop ADS-B antenna plus OpenSky context feed flow through bronze → silver → gold to Trino + Superset" width="520">
   </picture>
 </p>
 
-Provenance for both feeds lives in Postgres (`public.ingestion_manifest` for global,
-`public.adsb_ingestion_manifest` for rooftop) — one row per landed file. See
+Provenance for both feeds lives in Postgres (`public.ingestion_manifest` for the
+OpenSky context feed, `public.adsb_ingestion_manifest` for the rooftop antenna) —
+one row per landed file. See
 [`docs/datalake.md`](docs/datalake.md) for the full lineage, entity map, and per-table schema.
 
 ## Quickstart
@@ -157,7 +164,7 @@ docker compose exec airflow-scheduler bash -c "cd /opt/airflow && pytest tests/ 
 `tests/test_dag_integrity.py` parses every DAG and asserts the expected
 schedule and task set. `tests/test_credit_budget.py` computes the daily
 OpenSky credit cost from the live region config + ingest schedule and
-asserts it stays under the 4,000/day quota.
+asserts it stays under the 8,000/day active-feeder quota.
 
 ## License
 

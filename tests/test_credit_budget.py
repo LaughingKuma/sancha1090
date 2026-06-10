@@ -1,9 +1,10 @@
-"""Guard the OpenSky 4000-credit/day daily budget.
+"""Guard the OpenSky daily credit budget.
 
 OpenSky's REST API charges credits per /states/all call based on bounding
-box area. With 8 large continental bboxes (all >400 sq deg = 4 credits
-each) and the current ingest cadence, total daily credit consumption must
-stay under the 4000-credit registered-user quota.
+box area. We pull a single Japan+ocean bbox (>400 sq deg = 4 credits) at the
+current ingest cadence, and must stay under the active-feeder quota of
+8000 credits/day (registering the receiver as a feeder doubles the 4000
+authenticated quota; eligibility is >=30% monthly uptime, not placement).
 
 If this test fails: slow the schedule, drop regions, or shrink the bboxes.
 Note that splitting a region into smaller bboxes does NOT save credits — the
@@ -15,7 +16,7 @@ from __future__ import annotations
 from include.regions import REGIONS
 
 
-DAILY_CREDIT_BUDGET = 4000
+DAILY_CREDIT_BUDGET = 8000
 
 # OpenSky's tiered cost for /states/all with a bbox, by area in square degrees.
 CREDIT_TIERS = [
@@ -32,10 +33,9 @@ RUNS_PER_DAY = 24 * (60 // 12)  # = 120
 
 # Retry budget: every fetch_region task can retry up to 3 times, and each
 # attempt's OpenSkyClient retries internally up to 5 times on 429/5xx. The
-# happy-path math leaves only ~4% headroom under the 4000-credit ceiling, so a
-# burst of 5xx from OpenSky can blow the budget. This factor models a small
-# steady retry rate (~4% extra calls). If real-world retry rate exceeds this,
-# the schedule needs to slow down.
+# single Japan box at the current cadence sits far under the 8000 feeder quota
+# (~480/day happy path), so this factor is now slack, not a tight constraint —
+# it stays as a deliberate margin if the box is split or the cadence raised.
 RETRY_BUDGET_FACTOR = 1.04
 
 
