@@ -501,7 +501,7 @@ services:
   livemap:
     build: ./livemap
     image: sancha1090-livemap:latest
-    # Server-side cache: one background poll/s into the MV, fanned out to every browser tab.
+    # Server-side cache: one background poll into the MV, fanned out to every browser tab.
     depends_on:
       risingwave:
         condition: service_healthy
@@ -513,6 +513,8 @@ services:
       # Carrot Tower landmark so the showcase never carries the rooftop location.
       LIVEMAP_FEEDER_LAT: ${LIVEMAP_FEEDER_LAT:-35.6434}
       LIVEMAP_FEEDER_LON: ${LIVEMAP_FEEDER_LON:-139.6692}
+      # 0.5s halves the cache-staleness term of end-to-end latency vs tar1090; the MV is tiny
+      LIVEMAP_POLL_SECONDS: "0.5"
     expose:
       - "8000"   # served on loopback via override (127.0.0.1:38100)
     healthcheck:

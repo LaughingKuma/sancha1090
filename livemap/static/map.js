@@ -2,11 +2,14 @@
 
 const { MapboxOverlay, IconLayer, ScatterplotLayer, PolygonLayer } = deck;
 
-// 60 s is the MV's data contract — fade-by-age visually recovers freshness within it.
-const WINDOW_S = 60;
+// 120 s is the MV's data contract (tar1090 position-retention parity) — fade-by-age
+// visually recovers freshness within it.
+const WINDOW_S = 120;
 const AMBER = [255, 176, 0];
 const MIL = [255, 59, 48];
 const KT_TO_MS = 0.514444;
+// Beyond this the projection outruns reality (turns, descents) — hold the capped estimate.
+const MAX_DR_S = 15;
 
 // North-pointing top-down silhouettes (64×64, nose up), baked as SVG data-URIs. mask:true means
 // deck ignores the white fill and tints by getColor, so the age-fade + mil-red still apply.
@@ -93,7 +96,7 @@ function serverNow() {
 
 function deadReckon(a, age) {
   if (a.gs == null || a.track == null || age <= 0) return [a.lon, a.lat];
-  const dist = a.gs * KT_TO_MS * age; // metres flown since the fix
+  const dist = a.gs * KT_TO_MS * Math.min(age, MAX_DR_S); // metres flown since the fix
   const br = (a.track * Math.PI) / 180;
   const dLat = (dist * Math.cos(br)) / 111320;
   const dLon = (dist * Math.sin(br)) / (111320 * Math.cos((a.lat * Math.PI) / 180));
@@ -239,7 +242,7 @@ function getTooltip(info) {
   return { html, className: "ac-tip" };
 }
 
-// ── Poll the server-side cache (1 query/s shared across every tab) ──
+// ── Poll the server-side cache (one shared query stream, never one per tab) ──
 const fmt = (n) => String(n).padStart(2, "0");
 let pollInFlight = false;
 async function poll() {
@@ -258,7 +261,7 @@ async function poll() {
     document.getElementById("stat-mil").textContent = milCount;
     const d = new Date(j.server_ts * 1000);
     document.getElementById("meta-line").textContent =
-      `Synced ${fmt(d.getHours())}:${fmt(d.getMinutes())}:${fmt(d.getSeconds())} · ${total} contacts · 1 query/s`;
+      `Synced ${fmt(d.getHours())}:${fmt(d.getMinutes())}:${fmt(d.getSeconds())} · ${total} contacts · shared cache`;
   } catch (e) {
     document.getElementById("meta-line").textContent = `Stream error — retrying… (${e.message})`;
   } finally {
@@ -266,4 +269,4 @@ async function poll() {
   }
 }
 poll();
-setInterval(poll, 1000);
+setInterval(poll, 500);

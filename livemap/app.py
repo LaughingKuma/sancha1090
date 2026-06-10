@@ -10,8 +10,10 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-# Server-side cache is the whole point: N browser tabs share ONE RW query/s, never N.
+# Server-side cache is the whole point: N browser tabs share ONE RW query stream, never N.
 POLL_SECONDS = float(os.environ.get("LIVEMAP_POLL_SECONDS", "1.0"))
+# Slow refreshes are tick-counted — derive the divisor so faster polls keep the ~5 min cadence
+SLOW_REFRESH_TICKS = max(1, int(300 / POLL_SECONDS))
 RW_DSN = os.environ.get(
     "LIVEMAP_RW_DSN", "postgresql://root@risingwave:4566/dev"
 )
@@ -152,7 +154,7 @@ async def _poller() -> None:
             # psycopg2 is sync; offload so the ~1s query never blocks the event loop
             _snapshot = await asyncio.to_thread(_fetch)
             # outline + routes change slowly — refresh on first tick, then every ~5 min
-            if n % 300 == 0:
+            if n % SLOW_REFRESH_TICKS == 0:
                 try:
                     _outline = await asyncio.to_thread(_fetch_outline)
                 except Exception as exc:

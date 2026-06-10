@@ -91,12 +91,13 @@ listener (`redpanda:9092`) and maintains the enriched live materialized views th
 Superset's "Live" dashboard reads over PG-wire. Single-node mode: meta + state live
 on one local volume, no extra sidecars.
 
-The live views use a **60 s staleness window**: `mv_current_aircraft` means "aircraft
-with a position update in the last 60 s", matching readsb/tar1090's "tracked" semantics
-— fringe aircraft (>60 nmi, weak signal) decode positions tens of seconds apart, so a
-tighter window undercounts aircraft the antenna is still tracking. Expect the count to
-sit **1–2 below tar1090's total**: tar1090 also lists aircraft heard without a position
-fix, which never enter the position feed the hot path consumes.
+The live views use a **120 s staleness window**: `mv_current_aircraft` means "aircraft
+with a position update in the last 120 s", matching tar1090's measured position
+retention — fringe aircraft (>60 nmi, weak signal) decode positions tens of seconds
+apart, and tar1090 keeps showing their last fix for ~2 minutes, so a tighter window
+undercounts contacts it still renders. Expect the count to sit **0–1 below tar1090's
+total**: tar1090 also lists aircraft heard without a position fix, which never enter
+the position feed the hot path consumes.
 
 Verify:
 
@@ -107,11 +108,12 @@ psql -h 127.0.0.1 -p 34566 -U root -d dev -c 'SELECT version();'
 ```
 
 The **`livemap`** service (v4.3) is a small FastAPI sidecar that polls
-`mv_current_aircraft` once a second into an in-memory snapshot and serves a dark
+`mv_current_aircraft` twice a second into an in-memory snapshot and serves a dark
 maplibre + deck.gl map of live aircraft over Tokyo at **<http://localhost:38100>**.
-The server-side cache is the point: every browser tab shares that one query/second,
+The server-side cache is the point: every browser tab shares that one query stream,
 so N viewers never become N queries against RisingWave. Aircraft dead-reckon between
-polls (track/groundspeed) and fade with position age over the 60 s window.
+polls (track/groundspeed, capped at 15 s of projection) and fade with position age
+over the 120 s window.
 
 ## Tech stack
 

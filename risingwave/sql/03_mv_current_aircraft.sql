@@ -1,21 +1,27 @@
 -- Migrate older deployments: CREATE ... IF NOT EXISTS can't change column shape, so an
 -- existing risingwave-data volume keeps the old MV and livemap then polls a missing column
--- forever. Sentinel = the newest column added (body_class); when the MV exists but lacks
--- it, drop it (+ its dependent mv_live_counts, which 04 recreates after this file). Bump the
--- sentinel whenever this SELECT gains a column. Fresh / current volumes skip the drop.
+-- forever. Sentinels: newest column added (body_class) OR a stale stored definition (old
+-- staleness window — IF NOT EXISTS can't change that either); either drops the MV (+ its
+-- dependent mv_live_counts, which 04 recreates after this file). Bump a sentinel whenever
+-- this SELECT changes. Fresh / current volumes skip the drop.
 SELECT (
     EXISTS (SELECT 1 FROM information_schema.columns
             WHERE table_schema = 'public' AND table_name = 'mv_current_aircraft')
-    AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+    AND (
+        NOT EXISTS (SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = 'mv_current_aircraft'
                       AND column_name = 'body_class')
+        OR EXISTS (SELECT 1 FROM rw_catalog.rw_materialized_views
+                   WHERE name = 'mv_current_aircraft'
+                     AND definition LIKE '%60 seconds%')
+    )
 )::text AS needs_schema_migration \gset
 \if :needs_schema_migration
 DROP MATERIALIZED VIEW IF EXISTS mv_live_counts;
 DROP MATERIALIZED VIEW IF EXISTS mv_current_aircraft;
 \endif
 
--- Latest state per airframe within the last 60 s, enriched with silver's decode
+-- Latest state per airframe within the last 120 s, enriched with silver's decode
 -- (fct_adsb_state) ported predicate-for-predicate. Silver is canonical: if this and the
 -- batch numbers disagree, fix THIS side (the v4 design's Lambda-trap guard).
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_current_aircraft AS
@@ -52,9 +58,9 @@ latest AS (
     SELECT * FROM (
         SELECT *, row_number() OVER (PARTITION BY hex ORDER BY capture_ts DESC) AS rn
         FROM typed
-        -- temporal filter: rows expire on their own. 60 s = tar1090's "tracked" semantics;
-        -- fringe aircraft decode positions >15 s apart, so tighter windows undercount.
-        WHERE capture_ts > now() - interval '60 seconds'
+        -- temporal filter: rows expire on their own. 120 s = tar1090's measured client-side
+        -- position retention; 60 s dropped fringe aircraft (sparse decodes) tar1090 still shows.
+        WHERE capture_ts > now() - interval '120 seconds'
     ) ranked
     WHERE rn = 1
 )
