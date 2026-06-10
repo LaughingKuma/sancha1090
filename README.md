@@ -1,15 +1,18 @@
 # sancha1090: a local-first data platform
 
-A local-first Airflow 3 platform built around **one rooftop ADS-B antenna over
-Tokyo**. The antenna is the protagonist — everything it hears flows through
-bronze/silver/gold layers in an Iceberg lakehouse (Garage S3 + Polaris catalog +
-Trino query engine) and onto a live map, all in Docker Compose, no cloud accounts.
+A local-first platform that turns a live rooftop ADS-B receiver over Tokyo into
+both a real-time map and a full Iceberg lakehouse. The receiver's own feed drives
+a streaming hot path (Redpanda → RisingWave) for what's overhead *right now*, and
+Airflow-orchestrated bronze/silver/gold marts (Garage S3 + Polaris catalog + Trino
++ dbt + Superset) for the accumulated history — all on a single host in Docker
+Compose, no cloud accounts.
 
-The [OpenSky Network](https://opensky-network.org) REST API adds the rings the
-receiver can't reach on its own — **context** (everything flying over Japan and the
-surrounding ocean, beyond the antenna's horizon) and, increasingly, **backstory**
-(where those flights came from and are headed). The two feeds stay on separate
-refresh tracks and fuse in `gold.fct_flight_legs`.
+The receiver is the anchor: everything it hears is ground truth. Around it, the
+[OpenSky Network](https://opensky-network.org) adds the rings the antenna can't
+reach alone — **context** (all of Japan and the surrounding ocean, beyond its
+horizon) and, increasingly, **backstory** (where those flights came from and are
+headed). The two feeds stay on separate refresh tracks and fuse in
+`gold.fct_flight_legs`.
 
 > **Data model:** the full column-level schema, lineage, and entity map for every
 > bronze/silver/gold table live in **[`docs/datalake.md`](docs/datalake.md)**.
