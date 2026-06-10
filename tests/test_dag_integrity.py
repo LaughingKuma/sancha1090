@@ -30,7 +30,7 @@ EXPECTED_DAGS = {
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {
-            "dbt_deps", "dbt_run_trino", "dbt_test_trino",
+            "ensure_bronze_tables", "dbt_deps", "dbt_run_trino", "dbt_test_trino",
         },
     },
     "transform_adsb_silver": {
@@ -55,7 +55,7 @@ EXPECTED_DAGS = {
         "schedule": "30 3 * * *",
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"expire_snapshots"},
+        "task_ids": {"ensure_bronze_tables", "optimize_bronze", "expire_bronze", "orphans_bronze"},
     },
     "maintain_iceberg_marts": {
         "schedule": "30 4 * * *",

@@ -171,6 +171,12 @@ schedule and task set. `tests/test_credit_budget.py` computes the daily
 OpenSky credit cost from the live region config + ingest schedule and
 asserts it stays under the 8,000/day active-feeder quota.
 
-## License
+## License & data attribution
 
-MIT
+Code: MIT.
+
+Data: live context and flight histories from the
+[OpenSky Network](https://opensky-network.org) (research/non-commercial terms);
+pre-pipeline historical positions contain data from
+[adsb.lol](https://adsb.lol), licensed under the
+[Open Database License (ODbL) 1.0](https://opendatacommons.org/licenses/odbl/1-0/).

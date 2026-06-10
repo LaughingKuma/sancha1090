@@ -45,6 +45,8 @@ class OpenSkyClient:
         self.max_retries = max_retries
         self._token: str | None = None
         self._token_expiry: float = 0.0
+        # Backfill scripts pace themselves against the day's remaining credit bucket.
+        self.last_credits_remaining: int | None = None
 
     @classmethod
     def from_env(cls) -> "OpenSkyClient":
@@ -105,6 +107,10 @@ class OpenSkyClient:
                 response = httpx.get(
                     url, params=params, headers=headers, timeout=self.timeout
                 )
+
+                remaining = response.headers.get("x-rate-limit-remaining")
+                if remaining is not None and remaining.isdigit():
+                    self.last_credits_remaining = int(remaining)
 
                 if response.status_code == 429:
                     if attempt == self.max_retries:

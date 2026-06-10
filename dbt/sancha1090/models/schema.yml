@@ -58,3 +58,36 @@ models:
         tests:
           - not_null
           - unique
+
+  - name: stg_states_history
+    description: "Backfilled pre-pipeline states (adsb.lol, ODbL); one row per (icao24, snapshot_time)"
+    columns:
+      - name: icao24
+        tests:
+          - not_null
+      - name: snapshot_time
+        tests:
+          - not_null
+
+  - name: agg_hourly_traffic_history
+    description: "Pre-pipeline hourly aggregates at the agg_hourly_traffic grain"
+    columns:
+      - name: snapshot_hour
+        tests:
+          - not_null
+          - unique
+
+  - name: agg_hourly_traffic_live_archive
+    description: "Insert-only accumulator of settled live hours; closes the gap behind the 30-day window"
+    columns:
+      - name: snapshot_hour
+        tests:
+          - not_null
+          - unique
+
+  - name: agg_airport_daily
+    description: "Daily arrivals/departures per tracked airport (JST days); extended backwards by the v5.2 flights backfill"
+    columns:
+      - name: traffic_day
+        tests:
+          - not_null

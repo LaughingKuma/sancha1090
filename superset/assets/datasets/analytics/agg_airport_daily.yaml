@@ -1,8 +1,8 @@
-# repointed to trino-iceberg in v2.7
-table_name: agg_hourly_traffic
-main_dttm_col: snapshot_hour
+# v5.2: multi-year daily airport traffic (REST /flights backfill extends this backwards)
+table_name: agg_airport_daily
+main_dttm_col: traffic_day
 currency_code_column: null
-description: "Hourly aircraft activity over Japan. Live: OpenSky Network. Pre-pipeline history contains data from adsb.lol (ODbL)."
+description: "Daily arrivals/departures per tracked JP airport (JST days). Data: OpenSky Network."
 default_endpoint: null
 offset: 0
 cache_timeout: null
@@ -17,7 +17,7 @@ extra: null
 normalize_columns: false
 always_filter_main_dttm: false
 folders: null
-uuid: 8d5185f6-5d1b-49e3-8db9-ddab8471cac6
+uuid: 9043ce01-6852-4e89-835e-a8a0af76da1a
 metrics:
 - metric_name: count
   verbose_name: COUNT(*)
@@ -29,11 +29,11 @@ metrics:
   extra: null
   warning_text: null
 columns:
-- column_name: snapshot_hour
+- column_name: traffic_day
   verbose_name: null
   is_dttm: true
   is_active: true
-  type: TIMESTAMP WITH TIME ZONE
+  type: DATE
   advanced_data_type: null
   groupby: true
   filterable: true
@@ -42,11 +42,11 @@ columns:
   python_date_format: null
   datetime_format: null
   extra: null
-- column_name: avg_airborne_speed_kmh
+- column_name: airport_icao
   verbose_name: null
   is_dttm: false
   is_active: true
-  type: NUMERIC(10, 2)
+  type: VARCHAR
   advanced_data_type: null
   groupby: true
   filterable: true
@@ -55,11 +55,11 @@ columns:
   python_date_format: null
   datetime_format: null
   extra: null
-- column_name: on_ground_observations
+- column_name: direction
   verbose_name: null
   is_dttm: false
   is_active: true
-  type: BIGINT
+  type: VARCHAR
   advanced_data_type: null
   groupby: true
   filterable: true
@@ -68,20 +68,7 @@ columns:
   python_date_format: null
   datetime_format: null
   extra: null
-- column_name: airborne_observations
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: BIGINT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: null
-  description: null
-  python_date_format: null
-  datetime_format: null
-  extra: null
-- column_name: total_observations
+- column_name: flights
   verbose_name: null
   is_dttm: false
   is_active: true
