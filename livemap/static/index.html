@@ -117,7 +117,7 @@
     clip-path: polygon(0 0, 100% 0, 100% 100%, 11px 100%, 0 calc(100% - 11px));
   }
   .legend-row { display: flex; gap: 16px; align-items: center; }
-  .legend-row.fleet { gap: 11px; }
+  .legend-row.fleet { gap: 11px; flex-wrap: wrap; }
   .key { display: flex; align-items: center; gap: 7px; font-size: 10.5px; letter-spacing: 0.08em; color: var(--ink-dim); }
   .legend-row.fleet .key { gap: 5px; font-size: 9.5px; }
   .glyph { width: 11px; height: 11px; }
@@ -127,6 +127,11 @@
   .fade-bar {
     width: 86px; height: 7px; border-radius: 1px;
     background: linear-gradient(90deg, var(--amber), rgba(255,176,0,0.12));
+  }
+  /* altitude ramp legend — mirrors ALT_RAMP in map.js */
+  .alt-bar {
+    width: 86px; height: 7px; border-radius: 1px;
+    background: linear-gradient(90deg, #e06a00, #ffb000 50%, #ffe8b0);
   }
   .console .meta {
     font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
@@ -190,6 +195,8 @@
       <span class="key"><svg class="glyph mil" viewBox="0 0 64 64"><use href="#sil-airliner"/></svg>Military</span>
     </div>
     <div class="legend-row fleet">
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-a380"/></svg>A380</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-b747"/></svg>747</span>
       <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-quad"/></svg>Quad</span>
       <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-widebody"/></svg>Wide</span>
       <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-airliner"/></svg>Narrow</span>
@@ -198,7 +205,8 @@
       <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-heli"/></svg>Heli</span>
     </div>
     <div class="legend-row">
-      <span class="key">Fresh<span class="fade-bar"></span>60&nbsp;s</span>
+      <span class="key">Fresh<span class="fade-bar"></span>120&nbsp;s</span>
+      <span class="key">GND<span class="alt-bar"></span>FL400</span>
     </div>
     <div class="meta"><span class="pip"></span><span id="meta-line">Connecting to stream…</span></div>
   </div>
@@ -208,15 +216,33 @@
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
     <g id="sil-airliner" fill="currentColor">
-      <polygon points="32,3 35,10 34,24 60,39 60,43 34,31 33,48 39,52 39,55 32,52 25,55 25,52 31,48 30,31 4,43 4,39 30,24 29,10"/>
+      <path fill-rule="evenodd" opacity="0.82" d="M32,3 L35,10 L34,24 L60,39 L60,43 L34,31 L33,48 L39,52 L39,55 L32,52 L25,55 L25,52 L31,48 L30,31 L4,43 L4,39 L30,24 L29,10 Z M32,5 L34.1,9.4 L29.9,9.4 Z"/>
+      <polygon opacity="0.3" points="32,5 34.1,9.4 29.9,9.4"/>
+      <ellipse cx="25.5" cy="29" rx="2" ry="3.4"/><ellipse cx="38.5" cy="29" rx="2" ry="3.4"/>
     </g>
     <g id="sil-widebody" fill="currentColor">
-      <polygon points="32,3 37,12 36,23 61,38 61,43 36,31 35,48 42,53 42,56 32,53 22,56 22,53 29,48 28,31 3,43 3,38 28,23 27,12"/>
+      <path fill-rule="evenodd" opacity="0.82" d="M32,3 L37,12 L36,23 L61,38 L61,43 L36,31 L35,48 L42,53 L42,56 L32,53 L22,56 L22,53 L29,48 L28,31 L3,43 L3,38 L28,23 L27,12 Z M32,5.5 L34.4,10.8 L29.6,10.8 Z"/>
+      <polygon opacity="0.3" points="32,5.5 34.4,10.8 29.6,10.8"/>
+      <ellipse cx="24.5" cy="28.5" rx="2.5" ry="4"/><ellipse cx="39.5" cy="28.5" rx="2.5" ry="4"/>
     </g>
     <g id="sil-quad" fill="currentColor">
-      <polygon points="32,3 35,10 34,24 60,39 60,43 34,31 33,48 39,52 39,55 32,52 25,55 25,52 31,48 30,31 4,43 4,39 30,24 29,10"/>
-      <ellipse cx="20" cy="33" rx="2.3" ry="3.6"/><ellipse cx="27" cy="30" rx="2.3" ry="3.6"/>
-      <ellipse cx="44" cy="33" rx="2.3" ry="3.6"/><ellipse cx="37" cy="30" rx="2.3" ry="3.6"/>
+      <path fill-rule="evenodd" opacity="0.82" d="M32,3 L35,10 L34,24 L60,39 L60,43 L34,31 L33,48 L39,52 L39,55 L32,52 L25,55 L25,52 L31,48 L30,31 L4,43 L4,39 L30,24 L29,10 Z M32,5 L34.1,9.4 L29.9,9.4 Z"/>
+      <polygon opacity="0.3" points="32,5 34.1,9.4 29.9,9.4"/>
+      <ellipse cx="27" cy="29" rx="2.5" ry="3.8"/><ellipse cx="37" cy="29" rx="2.5" ry="3.8"/>
+      <ellipse cx="20" cy="32" rx="2.5" ry="3.8"/><ellipse cx="44" cy="32" rx="2.5" ry="3.8"/>
+    </g>
+    <g id="sil-a380" fill="currentColor">
+      <path fill-rule="evenodd" opacity="0.82" d="M32,4 L34.3,6.8 L36,11 L36,21 L62,37 L62,42 L35.5,33 L34.5,49 L44,55 L44,58 L32,54.5 L20,58 L20,55 L29.5,49 L28.5,33 L2,42 L2,37 L28,21 L28,11 L29.7,6.8 Z M32,6.5 L34.5,11 L29.5,11 Z"/>
+      <polygon opacity="0.3" points="32,6.5 34.5,11 29.5,11"/>
+      <ellipse cx="41" cy="25.5" rx="2.8" ry="4.4"/><ellipse cx="50" cy="31" rx="2.6" ry="4.1"/>
+      <ellipse cx="23" cy="25.5" rx="2.8" ry="4.4"/><ellipse cx="14" cy="31" rx="2.6" ry="4.1"/>
+    </g>
+    <g id="sil-b747" fill="currentColor">
+      <path fill-rule="evenodd" opacity="0.82" d="M32,2 L35,7 L35.5,16 L34.5,19 L34,26 L58,43 L58,46.5 L34,35 L33.5,51 L41,56.5 L41,59.5 L32,56 L23,59.5 L23,56.5 L30.5,51 L30,35 L6,46.5 L6,43 L30,26 L29.5,19 L28.5,16 L29,7 Z M32,4 L34,7.4 L30,7.4 Z"/>
+      <polygon opacity="0.3" points="32,4 34,7.4 30,7.4"/>
+      <rect x="30" y="8.5" width="4" height="8.5" rx="2"/>
+      <ellipse cx="39.5" cy="30" rx="2.5" ry="4.2"/><ellipse cx="46.5" cy="35.5" rx="2.4" ry="3.9"/>
+      <ellipse cx="24.5" cy="30" rx="2.5" ry="4.2"/><ellipse cx="17.5" cy="35.5" rx="2.4" ry="3.9"/>
     </g>
     <g id="sil-regional" fill="currentColor">
       <polygon points="32,7 34,13 33,24 55,30 55,33 33,28 32,48 37,52 37,54 32,51 27,54 27,52 31,48 31,28 9,33 9,30 31,24 30,13"/>
