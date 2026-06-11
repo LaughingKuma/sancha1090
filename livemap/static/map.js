@@ -1,10 +1,11 @@
 "use strict";
 
-const { MapboxOverlay, IconLayer, ScatterplotLayer, PolygonLayer, PathLayer } = deck;
+const { MapboxOverlay, IconLayer, ScatterplotLayer, PolygonLayer, PathLayer, TextLayer } = deck;
 
 // 120 s is the MV's data contract (tar1090 position-retention parity) — fade-by-age
 // visually recovers freshness within it.
 const WINDOW_S = 120;
+const RING_NM = [25, 50, 100];
 const AMBER = [255, 176, 0];
 const MIL = [255, 59, 48];
 const KT_TO_MS = 0.514444;
@@ -87,6 +88,10 @@ const SHAPES = {
 };
 const SIL = Object.fromEntries(Object.entries(SHAPES).map(([k, v]) => [k, _icon(v)]));
 
+// climb/descend cues — plain triangles, billboarded (never rotated with track)
+const CHEV_UP = _icon('<polygon points="32,14 52,50 12,50"/>');
+const CHEV_DOWN = _icon('<polygon points="32,50 52,14 12,14"/>');
+
 // body_class → shape + on-screen size (heavies bigger). Unknown class → generic airliner.
 const CLASS_SHAPE = {
   quad: "quad", widebody: "widebody", narrowbody: "airliner",
@@ -121,6 +126,33 @@ function parseAlt(alt_baro) {
   const n = typeof alt_baro === "number" ? alt_baro : parseFloat(alt_baro);
   return Number.isFinite(n) ? Math.max(0, n) : null;
 }
+// Rate from the trail buffer: newest fix vs the oldest fix inside a 20 s window —
+// instant deltas off 2 s-spaced fixes are too noisy to threshold.
+const VR_WINDOW_S = 20;
+const VR_MIN_BASE_S = 8;
+const VR_THRESH_FPM = 300;
+function verticalState(hex) {
+  const tr = trails.get(hex);
+  if (!tr || tr.pts.length < 2) return 0;
+  const newest = tr.pts[tr.pts.length - 1];
+  if (newest.altFt == null) return 0;
+  let base = null;
+  for (const p of tr.pts) {
+    if (newest.ts - p.ts <= VR_WINDOW_S) { base = p; break; }
+  }
+  if (!base || base === newest || base.altFt == null) return 0;
+  const dt = newest.ts - base.ts;
+  if (dt < VR_MIN_BASE_S) return 0;
+  const fpm = ((newest.altFt - base.altFt) / dt) * 60;
+  return fpm > VR_THRESH_FPM ? 1 : fpm < -VR_THRESH_FPM ? -1 : 0;
+}
+const LABEL_ZOOM = 10.5;
+const LABEL_MAX = 40;
+function labelText(a) {
+  const alt = parseAlt(a.alt_baro);
+  const lvl = alt == null ? "" : alt >= 18000 ? ` FL${Math.round(alt / 100)}` : ` ${Math.round(alt)}ft`;
+  return `${(a.flight || "").trim()}${lvl}`;
+}
 function altTint(altFt) {
   if (altFt == null) return AMBER; // no baro alt → classic amber
   const x = Math.min(altFt, 40000);
@@ -135,6 +167,25 @@ function altTint(altFt) {
 const SHADOW_DIR = [0.45, 0.89];
 const SHADOW_MAX_PX = 26;
 const shadowPx = (altFt) => Math.min(SHADOW_MAX_PX, (altFt ?? 0) / 1700);
+
+// Great-circle range/bearing from the receiver — feederCenter is [lon, lat] from /range-outline.
+function stationVector(lon, lat) {
+  if (!feederCenter || lon == null || lat == null) return null;
+  const toRad = Math.PI / 180;
+  const [flon, flat] = feederCenter;
+  const dLat = (lat - flat) * toRad;
+  const dLon = (lon - flon) * toRad;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(flat * toRad) * Math.cos(lat * toRad) * Math.sin(dLon / 2) ** 2;
+  const nm = 2 * 3440.065 * Math.asin(Math.sqrt(a)); // earth radius in nm
+  const y = Math.sin(dLon) * Math.cos(lat * toRad);
+  const x =
+    Math.cos(flat * toRad) * Math.sin(lat * toRad) -
+    Math.sin(flat * toRad) * Math.cos(lat * toRad) * Math.cos(dLon);
+  const brg = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+  return { nm, brg };
+}
 
 const map = new maplibregl.Map({
   container: "map",
@@ -179,7 +230,7 @@ function frameData() {
     const mil = a.is_military === true;
     const [shape, size] = silShape(a);
     const altFt = parseAlt(a.alt_baro);
-    return { a, pos: deadReckon(a, age), alpha, mil, shape, size, altFt, tint: mil ? MIL : altTint(altFt) };
+    return { a, pos: deadReckon(a, age), alpha, mil, shape, size, altFt, vs: verticalState(a.hex), tint: mil ? MIL : altTint(altFt) };
   });
 }
 
@@ -227,6 +278,26 @@ function rebuildTrailSegments() {
 }
 setInterval(rebuildTrailSegments, 1000);
 
+// ── Acquisition pings ───────────────────────────────────────────
+// Ring only when a hex is NEW or silent >10 s — per-fix pings (1 Hz) would be constant static.
+const PING_GAP_S = 10;
+const PING_LIFE_S = 1.2;
+const lastSeen = new Map();
+let pings = [];
+function detectAcquisitions() {
+  const t = serverNow();
+  for (const a of snap.aircraft) {
+    if (!a.hex || a.lon == null || a.lat == null) continue;
+    const ct = Number(a.capture_ts);
+    if (!Number.isFinite(ct)) continue;
+    const prev = lastSeen.get(a.hex);
+    if (prev === undefined || ct - prev > PING_GAP_S)
+      pings.push({ pos: [a.lon, a.lat], t0: t, mil: a.is_military === true });
+    lastSeen.set(a.hex, ct);
+  }
+  for (const [hex, ts] of lastSeen) if (t - ts > 600) lastSeen.delete(hex); // bound memory
+}
+
 // Receiver coverage outline + dot — slow-changing, fetched separately from the 1 Hz aircraft poll.
 let outlineData = [];
 let feederCenter = null;
@@ -243,8 +314,40 @@ loadOutline();
 setInterval(loadOutline, 300000);
 
 function buildLayers() {
+  const tNow = serverNow();
+  pings = pings.filter((p) => tNow - p.t0 < PING_LIFE_S);
+  // crowded frame → demand one more zoom level before labels appear
+  const labelZoom = LABEL_ZOOM + (snap.aircraft.length > LABEL_MAX ? 1 : 0);
+  const showLabels = map.getZoom() >= labelZoom;
   const data = frameData();
   return [
+    // station range rings — beneath everything; fresh data array each frame so a late
+    // feederCenter fetch is picked up (deck only recomputes attributes on data change)
+    new ScatterplotLayer({
+      id: "range-rings",
+      data: feederCenter ? RING_NM.map((nm) => ({ nm })) : [],
+      getPosition: () => feederCenter,
+      getRadius: (d) => d.nm * 1852,
+      radiusUnits: "meters",
+      stroked: true,
+      filled: false,
+      getLineColor: [78, 162, 174, 90],
+      getLineWidth: 1,
+      lineWidthUnits: "pixels",
+      parameters: { depthTest: false },
+    }),
+    new TextLayer({
+      id: "range-ring-labels",
+      data: feederCenter ? RING_NM.map((nm) => ({ nm })) : [],
+      getPosition: (d) => [feederCenter[0], feederCenter[1] + d.nm / 60], // 1 nm = 1/60° lat
+      getText: (d) => `${d.nm} nm`,
+      getSize: 10,
+      getColor: [78, 162, 174, 150],
+      fontFamily: "'Spline Sans Mono', monospace",
+      getTextAnchor: "middle",
+      getAlignmentBaseline: "bottom",
+      parameters: { depthTest: false },
+    }),
     // coverage polygon, beneath everything — terrain-shaped reception envelope
     new PolygonLayer({
       id: "range-outline",
@@ -286,6 +389,19 @@ function buildLayers() {
       billboard: true,
       parameters: { depthTest: false },
     }),
+    new ScatterplotLayer({
+      id: "pings",
+      data: pings,
+      getPosition: (p) => p.pos,
+      getRadius: (p) => 6 + 34 * ((tNow - p.t0) / PING_LIFE_S),
+      radiusUnits: "pixels",
+      stroked: true,
+      filled: false,
+      getLineColor: (p) => [...(p.mil ? MIL : AMBER), Math.round(160 * (1 - (tNow - p.t0) / PING_LIFE_S))],
+      getLineWidth: 1.5,
+      lineWidthUnits: "pixels",
+      parameters: { depthTest: false },
+    }),
     // Soft phosphor glow under each contact — military burns hotter and wider.
     new ScatterplotLayer({
       id: "glow",
@@ -321,6 +437,33 @@ function buildLayers() {
       sizeUnits: "pixels",
       billboard: true,
       pickable: true,
+      parameters: { depthTest: false },
+    }),
+    // ▲/▼ beside the icon; data is re-filtered every frame so tint/alpha stay live
+    new IconLayer({
+      id: "chevrons",
+      data: data.filter((d) => d.vs !== 0),
+      getIcon: (d) => (d.vs > 0 ? CHEV_UP : CHEV_DOWN),
+      getPosition: (d) => d.pos,
+      getColor: (d) => [...d.tint, Math.round(d.alpha * 230)],
+      getSize: 7,
+      sizeUnits: "pixels",
+      getPixelOffset: (d) => [d.size * 0.7 + 5, 0],
+      billboard: true,
+      parameters: { depthTest: false },
+    }),
+    new TextLayer({
+      id: "labels",
+      data: showLabels ? data.filter((d) => d.a.flight) : [],
+      getPosition: (d) => d.pos,
+      getText: (d) => labelText(d.a),
+      getSize: 10,
+      getColor: (d) => [...d.tint, Math.round(d.alpha * 200)],
+      getPixelOffset: (d) => [0, d.size * 0.7 + 10],
+      fontFamily: "'Spline Sans Mono', monospace",
+      getTextAnchor: "middle",
+      getAlignmentBaseline: "top",
+      billboard: true,
       parameters: { depthTest: false },
     }),
     // the receiver itself — small bright dot with a dark ring (tar1090-style)
@@ -367,6 +510,7 @@ function getTooltip(info) {
   const alt = a.alt_baro == null ? "—" : a.alt_baro === "ground" ? "GROUND" : `${a.alt_baro} ft`;
   const spd = a.gs == null ? "—" : `${Math.round(a.gs)} kt`;
   const hdg = a.track == null ? "—" : `${Math.round(a.track)}°`;
+  const sv = stationVector(a.lon, a.lat);
   // Backstory ring (v5.1): latest known route for this callsign from the flights catalog.
   // D-2-sourced rows carry an old departure time — show the clock only when it's today's leg.
   let routeLine = "";
@@ -392,6 +536,8 @@ function getTooltip(info) {
     `<dt>Alt</dt><dd>${esc(alt)}</dd>` +
     `<dt>Speed</dt><dd>${esc(spd)}</dd>` +
     `<dt>Heading</dt><dd>${esc(hdg)}</dd>` +
+    `<dt>Range</dt><dd>${esc(sv ? sv.nm.toFixed(1) + " nm" : "—")}</dd>` +
+    `<dt>Bearing</dt><dd>${esc(sv ? Math.round(sv.brg) + "°" : "—")}</dd>` +
     `<dt>Recv</dt><dd>${esc(a.recv || "—")}</dd>` +
     "</dl>";
   return { html, className: "ac-tip" };
@@ -414,6 +560,7 @@ async function poll() {
     snap = { server_ts: serverTs, aircraft: j.aircraft || [], perf0: performance.now() / 1000 };
     ingestTrails();
     rebuildTrailSegments();
+    detectAcquisitions();
 
     const total = snap.aircraft.length;
     const milCount = snap.aircraft.filter((a) => a.is_military === true).length;
