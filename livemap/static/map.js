@@ -1,6 +1,6 @@
 "use strict";
 
-const { MapboxOverlay, IconLayer, ScatterplotLayer, PolygonLayer, PathLayer, TextLayer } = deck;
+const { MapboxOverlay, IconLayer, ScatterplotLayer, PolygonLayer, PathLayer, TextLayer, PathStyleExtension } = deck;
 
 // 120 s is the MV's data contract (tar1090 position-retention parity) — fade-by-age
 // visually recovers freshness within it.
@@ -9,8 +9,13 @@ const RING_NM = [25, 50, 100];
 const AMBER = [255, 176, 0];
 const MIL = [255, 59, 48];
 const KT_TO_MS = 0.514444;
-// Beyond this the projection outruns reality (turns, descents) — hold the capped estimate.
+// Beyond this the projection outruns reality (turns, descents) — cap the lead here.
 const MAX_DR_S = 15;
+// Hold the lead briefly, then settle back onto the last real fix — a frozen row must not
+// hold a fabricated position for the rest of the 120 s window. Both must stay > PING_GAP_S
+// so any contact that visibly parked fires the acquisition ping on return.
+const DR_HOLD_S = 20;
+const DR_PARK_S = 26;
 
 // ── Silhouettes ─────────────────────────────────────────────────
 // North-pointing top-down silhouettes (64×64, nose up), baked as SVG data-URIs. mask:true means
@@ -208,29 +213,92 @@ map.addControl(overlay);
 // Anchor the snapshot to the server clock so dead-reckoning and age never jump on a new poll.
 let snap = { server_ts: 0, aircraft: [], perf0: 0 };
 
+// a dead feed must read as "display stopped", not as a fleet-wide signal-loss event
+const STREAM_FREEZE_S = 3;
 function serverNow() {
-  return snap.server_ts + (performance.now() / 1000 - snap.perf0);
+  return snap.server_ts + Math.min(performance.now() / 1000 - snap.perf0, STREAM_FREEZE_S);
+}
+
+// glide 0→15 s of lead, hold to 20 s, settle back onto the fix by 26 s — continuous, no jumps
+function drSeconds(age) {
+  if (age <= DR_HOLD_S) return Math.min(age, MAX_DR_S);
+  if (age >= DR_PARK_S) return 0;
+  return MAX_DR_S * (1 - (age - DR_HOLD_S) / (DR_PARK_S - DR_HOLD_S));
 }
 
 function deadReckon(a, age) {
   if (a.gs == null || a.track == null || age <= 0) return [a.lon, a.lat];
-  const dist = a.gs * KT_TO_MS * Math.min(age, MAX_DR_S); // metres flown since the fix
+  const dist = a.gs * KT_TO_MS * drSeconds(age); // metres flown since the fix
   const br = (a.track * Math.PI) / 180;
   const dLat = (dist * Math.cos(br)) / 111320;
   const dLon = (dist * Math.sin(br)) / (111320 * Math.cos((a.lat * Math.PI) / 180));
   return [a.lon + dLon, a.lat + dLat];
 }
 
+// Per-poll target discontinuities (turn corrections, reacquisition snaps — including
+// backward ones) decay over ~τ instead of snapping; beyond EASE_MAX_M it's a genuine
+// relocation — jump instantly, the acquisition ping already marks it.
+const EASE_TAU_S = 0.5;
+const EASE_MAX_M = 5000;
+const renderState = new Map(); // hex → { offset, snapTs, prev, t }
+const metresBetween = (dLon, dLat, latRef) =>
+  Math.hypot(dLat * 111320, dLon * 111320 * Math.cos((latRef * Math.PI) / 180));
+
+function smoothPos(hex, target, pf) {
+  if (!hex) return target; // hex-less rows must not share one easing bucket
+  let st = renderState.get(hex);
+  if (!st) {
+    renderState.set(hex, (st = { offset: [0, 0], snapTs: snap.server_ts, prev: [target[0], target[1]], t: pf }));
+    return target;
+  }
+  if (st.snapTs !== snap.server_ts) {
+    const dLon = st.prev[0] - target[0];
+    const dLat = st.prev[1] - target[1];
+    st.offset = metresBetween(dLon, dLat, target[1]) < EASE_MAX_M ? [dLon, dLat] : [0, 0];
+    st.snapTs = snap.server_ts;
+  }
+  const decay = Math.exp(-Math.max(0, pf - st.t) / EASE_TAU_S);
+  st.offset[0] *= decay;
+  st.offset[1] *= decay;
+  st.t = pf;
+  st.prev = [target[0] + st.offset[0], target[1] + st.offset[1]];
+  // copy — deck accessors must never alias the easing state
+  return [st.prev[0], st.prev[1]];
+}
+
+// a garbage timestamp must fall through to the next candidate, not NaN-poison DR/alpha/tint
+const finiteTs = (...vals) => {
+  for (const v of vals) {
+    if (v == null || v === "") continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+};
+// seam for a future pos_ts passthrough (seen_pos via the MV); today rows freeze whole,
+// so capture_ts IS the fix time
+const fixAge = (a, t) => {
+  const ts = finiteTs(a.pos_ts, a.capture_ts);
+  return Math.max(0, t - (ts ?? t));
+};
+// parked contacts drift toward grey — signal loss must read as state, not a hover glitch
+const STALE_GREY = [148, 163, 178];
+const STALE_BLEND = 0.45;
+
 function frameData() {
   const t = serverNow();
+  const pf = performance.now() / 1000;
   return snap.aircraft.map((a) => {
-    const age = Math.max(0, t - (a.capture_ts ?? t));
+    const age = fixAge(a, t);
     const fade = Math.min(1, age / WINDOW_S);
     const alpha = Math.max(0.12, 1 - 0.85 * fade); // fresh = bright, fringe = dim
     const mil = a.is_military === true;
     const [shape, size] = silShape(a);
     const altFt = parseAlt(a.alt_baro);
-    return { a, pos: deadReckon(a, age), alpha, mil, shape, size, altFt, vs: verticalState(a.hex), tint: mil ? MIL : altTint(altFt) };
+    const base = mil ? MIL : altTint(altFt);
+    const tint =
+      age >= DR_PARK_S ? base.map((c, k) => Math.round(c + STALE_BLEND * (STALE_GREY[k] - c))) : base;
+    return { a, pos: smoothPos(a.hex, deadReckon(a, age), pf), age, alpha, mil, shape, size, altFt, vs: verticalState(a.hex), tint };
   });
 }
 
@@ -238,6 +306,7 @@ function frameData() {
 // Last ~90 s of real fixes per hex, accumulated client-side from the poll — zero backend.
 const TRAIL_S = 90;
 const TRAIL_GAP_S = 2; // sub-2s fixes add segments without adding visible shape
+const GAP_EST_S = MAX_DR_S; // a gap the DR envelope couldn't cover on screen is estimated, not flown track
 const trails = new Map();
 let trailSegments = [];
 function ingestTrails() {
@@ -251,7 +320,7 @@ function ingestTrails() {
     tr.mil = a.is_military === true;
     const last = tr.pts[tr.pts.length - 1];
     if (!last || (captureTs - last.ts >= TRAIL_GAP_S && (a.lon !== last.lon || a.lat !== last.lat)))
-      tr.pts.push({ lon: a.lon, lat: a.lat, ts: captureTs, altFt: parseAlt(a.alt_baro) });
+      tr.pts.push({ lon: a.lon, lat: a.lat, ts: captureTs, altFt: parseAlt(a.alt_baro), est: !!last && captureTs - last.ts > GAP_EST_S });
   }
 }
 // Rebuilt on its own clock so trails keep fading through stream errors; 1 Hz is invisible
@@ -259,18 +328,16 @@ function ingestTrails() {
 function rebuildTrailSegments() {
   const t = serverNow();
   const segs = [];
-  for (const [hex, tr] of trails) {
-    while (tr.pts.length && t - tr.pts[0].ts > TRAIL_S) tr.pts.shift();
-    if (!tr.pts.length) {
-      trails.delete(hex); // re-added on next sighting
-      continue;
-    }
+  for (const [, tr] of trails) {
+    // keep the newest fix alive as the bridge anchor — trails die with their aircraft, not by clock
+    while (tr.pts.length > 1 && t - tr.pts[0].ts > TRAIL_S) tr.pts.shift();
     for (let i = 1; i < tr.pts.length; i++) {
       const p = tr.pts[i];
       const fresh = Math.max(0, 1 - (t - p.ts) / TRAIL_S);
       segs.push({
         path: [[tr.pts[i - 1].lon, tr.pts[i - 1].lat], [p.lon, p.lat]],
-        color: [...(tr.mil ? MIL : altTint(p.altFt)), Math.round(145 * fresh)],
+        color: [...(tr.mil ? MIL : altTint(p.altFt)), Math.round(145 * fresh * (p.est ? 0.35 : 1))],
+        dash: p.est ? [6, 4] : [0, 0],
       });
     }
   }
@@ -320,6 +387,18 @@ function buildLayers() {
   const labelZoom = LABEL_ZOOM + (snap.aircraft.length > LABEL_MAX ? 1 : 0);
   const showLabels = map.getZoom() >= labelZoom;
   const data = frameData();
+  // elastic band: the wake terminates at the rendered icon in every state (tar1090's rule);
+  // dimmer than recorded track, and suppressed mid-ease so it never sweeps the coverage hole
+  const bridges = [];
+  for (const d of data) {
+    const tr = trails.get(d.a.hex);
+    const head = tr && tr.pts[tr.pts.length - 1];
+    if (!head) continue;
+    const st = renderState.get(d.a.hex);
+    if (st && metresBetween(st.offset[0], st.offset[1], d.pos[1]) > 400) continue;
+    if (head.lon !== d.pos[0] || head.lat !== d.pos[1])
+      bridges.push({ path: [[head.lon, head.lat], d.pos], color: [...d.tint, Math.round(87 * d.alpha)] });
+  }
   return [
     // station range rings — beneath everything; fresh data array each frame so a late
     // feederCenter fetch is picked up (deck only recomputes attributes on data change)
@@ -365,6 +444,18 @@ function buildLayers() {
     new PathLayer({
       id: "trails",
       data: trailSegments,
+      getPath: (d) => d.path,
+      getColor: (d) => d.color,
+      getWidth: 1.8,
+      widthUnits: "pixels",
+      capRounded: true,
+      getDashArray: (d) => d.dash,
+      extensions: [new PathStyleExtension({ dash: true })],
+      parameters: { depthTest: false },
+    }),
+    new PathLayer({
+      id: "trail-bridge",
+      data: bridges,
       getPath: (d) => d.path,
       getColor: (d) => d.color,
       getWidth: 1.8,
@@ -510,6 +601,9 @@ function getTooltip(info) {
   const alt = a.alt_baro == null ? "—" : a.alt_baro === "ground" ? "GROUND" : `${a.alt_baro} ft`;
   const spd = a.gs == null ? "—" : `${Math.round(a.gs)} kt`;
   const hdg = a.track == null ? "—" : `${Math.round(a.track)}°`;
+  const fixTs = finiteTs(a.pos_ts, a.capture_ts);
+  const fage = fixTs == null ? NaN : serverNow() - fixTs;
+  const contact = !Number.isFinite(fage) ? "—" : fage < 5 ? "live" : `last fix ${Math.round(fage)} s ago`;
   const sv = stationVector(a.lon, a.lat);
   // Backstory ring (v5.1): latest known route for this callsign from the flights catalog.
   // D-2-sourced rows carry an old departure time — show the clock only when it's today's leg.
@@ -539,6 +633,7 @@ function getTooltip(info) {
     `<dt>Range</dt><dd>${esc(sv ? sv.nm.toFixed(1) + " nm" : "—")}</dd>` +
     `<dt>Bearing</dt><dd>${esc(sv ? Math.round(sv.brg) + "°" : "—")}</dd>` +
     `<dt>Recv</dt><dd>${esc(a.recv || "—")}</dd>` +
+    `<dt>Contact</dt><dd>${esc(contact)}</dd>` +
     "</dl>";
   return { html, className: "ac-tip" };
 }
@@ -556,8 +651,17 @@ async function poll() {
     // coerced: a string ts would turn serverNow() into concatenation and NaN all clock math
     const serverTs = Number(j.server_ts);
     // duplicates too: re-anchoring perf0 on an equal ts steps serverNow() backward (DR stutter)
-    if (!Number.isFinite(serverTs) || serverTs <= snap.server_ts) return;
+    if (!Number.isFinite(serverTs) || serverTs <= snap.server_ts) {
+      // server reachable but feed not advancing — distinct from the fetch-error path below
+      if (performance.now() / 1000 - snap.perf0 > STREAM_FREEZE_S)
+        document.getElementById("meta-line").textContent = "Stream stalled — waiting…";
+      return;
+    }
     snap = { server_ts: serverTs, aircraft: j.aircraft || [], perf0: performance.now() / 1000 };
+    // absence from the accepted snapshot is the one authority on "gone" (MV 120 s expiry)
+    const live = new Set(snap.aircraft.map((a) => a.hex));
+    for (const hex of trails.keys()) if (!live.has(hex)) trails.delete(hex);
+    for (const hex of renderState.keys()) if (!live.has(hex)) renderState.delete(hex);
     ingestTrails();
     rebuildTrailSegments();
     detectAcquisitions();
