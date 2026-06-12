@@ -50,6 +50,8 @@ def build(text: str) -> list[dict]:
         parts = row[2].split("/")
         engines = int(parts[0]) if parts and parts[0].strip().isdigit() else None
         etype = parts[1].strip() if len(parts) > 1 else ""
+        # "MANUFACTURER, Model" → "MANUFACTURER Model" — matches readsb's desc style
+        model_name = " ".join(p.strip() for p in row[3].split(",", 1)) if len(row) > 3 and row[3].strip() else ""
         body_class = _body_class(typecode, klass, engines, etype)
         # seed contract: engines is always a positive int (the RW loader casts it) — drop
         # anything unclassifiable or without a parsed engine count; the MV's LEFT JOIN then
@@ -61,6 +63,7 @@ def build(text: str) -> list[dict]:
             "typecode": typecode,
             "engines": engines,
             "body_class": body_class,
+            "model_name": model_name,
         })
     return [best[k] for k in sorted(best)]
 
@@ -70,7 +73,7 @@ def main() -> int:
         rows = build(resp.read().decode("utf-8", errors="replace"))
     SEED.parent.mkdir(parents=True, exist_ok=True)
     with SEED.open("w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["typecode", "engines", "body_class"], lineterminator="\n")
+        w = csv.DictWriter(fh, fieldnames=["typecode", "engines", "body_class", "model_name"], lineterminator="\n")
         w.writeheader()
         w.writerows(rows)
     print(f"wrote {len(rows)} aircraft types -> {SEED}")

@@ -12,7 +12,7 @@ from psycopg2.extras import execute_values
 # treats bucket rows as proof a prior seed fully completed — so every other table must load first.
 SEEDS = {
     "dim_airlines": ("dim_airlines.csv", ("icao", "iata", "name", "callsign", "country", "active")),
-    "dim_aircraft_types": ("dim_aircraft_types.csv", ("typecode", "engines", "body_class")),
+    "dim_aircraft_types": ("dim_aircraft_types.csv", ("typecode", "engines", "body_class", "model_name")),
     "dim_hex_country": ("dim_hex_country.csv", ("block_lo", "block_hi", "country")),
 }
 INT_COLS = {"block_lo", "block_hi", "engines"}

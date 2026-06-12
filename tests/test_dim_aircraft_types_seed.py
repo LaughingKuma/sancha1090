@@ -31,7 +31,15 @@ def _rows() -> list[dict]:
 
 
 def test_columns_exact():
-    assert list(_rows()[0].keys()) == ["typecode", "engines", "body_class"]
+    assert list(_rows()[0].keys()) == ["typecode", "engines", "body_class", "model_name"]
+
+
+def test_anchor_model_names():
+    assert all(r["model_name"] for r in _rows()), "model_name must never be empty (regen drift tripwire)"
+    rows = {r["typecode"]: r["model_name"] for r in _rows()}
+    assert rows.get("B738") == "BOEING 737-800"
+    assert rows.get("DA40"), "DA40 must carry a model name (issue #34 anchor)"
+    assert "DA" in rows["DA40"].upper()
 
 
 def test_body_class_values_known():

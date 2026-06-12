@@ -54,3 +54,10 @@ def test_sorted_unique_typecodes():
     codes = [r["typecode"] for r in build(SAMPLE)]
     assert codes == sorted(codes)
     assert len(codes) == len(set(codes))
+
+
+def test_model_name_from_source():
+    rows = _by_code(build(SAMPLE))
+    assert rows["B738"]["model_name"] == "BOEING 737-800"
+    assert rows["C172"]["model_name"] == "CESSNA 172 Skyhawk"
+    assert rows["DH8D"]["model_name"] == "DE HAVILLAND CANADA DHC-8-400"

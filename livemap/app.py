@@ -32,7 +32,7 @@ FEEDER_LON = float(os.environ.get("LIVEMAP_FEEDER_LON", "139.6692"))
 QUERY = """
     SELECT capture_ts, hex, flight, lat, lon, alt_baro, gs, track,
            typecode, aircraft_desc, registration, body_class, is_military, is_helicopter,
-           airline_name, reg_country, recv
+           airline_name, reg_country, recv, own_op, year, category
     FROM mv_current_aircraft
     WHERE lat IS NOT NULL AND lon IS NOT NULL
 """
@@ -98,6 +98,9 @@ def _fetch() -> dict:
                 "airline_name": r["airline_name"],
                 "reg_country": r["reg_country"],
                 "recv": r["recv"],
+                "own_op": r["own_op"],
+                "year": r["year"],
+                "category": r["category"],
             }
         )
     return {"server_ts": time.time(), "aircraft": aircraft}

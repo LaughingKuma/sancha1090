@@ -140,6 +140,46 @@
   }
   .console .meta .pip { width: 5px; height: 5px; border-radius: 50%; background: var(--amber); }
 
+  /* ── Spotlight panel (v5.6) ───────────────────────────── */
+  .spotlight {
+    top: 96px; right: 18px; width: 250px;
+    pointer-events: auto;
+    border: 1px solid var(--hair); background: var(--panel);
+    backdrop-filter: blur(9px); padding: 12px 14px;
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 11px), calc(100% - 11px) 100%, 0 100%);
+  }
+  .spotlight[hidden], .spotlight [hidden] { display: none !important; }
+  .spotlight.lost { filter: grayscale(0.8) brightness(0.8); }
+  .sp-head { display: flex; align-items: center; gap: 8px; }
+  .sp-callsign {
+    font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 17px;
+    letter-spacing: 0.04em; color: var(--amber); flex: 1;
+  }
+  .spotlight.mil .sp-callsign { color: var(--mil); }
+  .sp-head .badge {
+    font-size: 8px; letter-spacing: 0.16em; padding: 2px 5px;
+    border: 1px solid currentColor; border-radius: 1px; text-transform: uppercase;
+  }
+  .sp-close {
+    background: none; border: none; color: var(--ink-dim); cursor: pointer;
+    font-size: 13px; padding: 2px 4px;
+  }
+  .sp-close:hover { color: var(--ink); }
+  .sp-model { margin-top: 4px; font-size: 11px; color: var(--ink); letter-spacing: 0.03em; }
+  .sp-org, .sp-route { font-size: 10px; color: var(--ink-dim); letter-spacing: 0.04em; margin-top: 2px; }
+  .sp-route { color: var(--amber); }
+  .sp-live { margin: 9px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; }
+  .sp-live dt { color: var(--ink-dim); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; }
+  .sp-live dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; color: var(--ink); }
+  .sp-track {
+    margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--hair-soft);
+    font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--amber-dim);
+  }
+  .sp-lost {
+    margin-top: 7px; font-size: 9px; letter-spacing: 0.2em; color: var(--mil);
+    border: 1px solid var(--mil); padding: 3px 6px; text-align: center;
+  }
+
   /* ── Tooltip ──────────────────────────────────────────── */
   .ac-tip {
     font-family: "Spline Sans Mono", monospace;
@@ -171,6 +211,7 @@
     .masthead h1 { font-size: 20px; }
     .telemetry { flex-direction: column; }
     .stat { min-width: 78px; }
+    .spotlight { top: auto; bottom: 175px; left: 18px; right: 18px; width: auto; }
   }
 </style>
 </head>
@@ -188,6 +229,29 @@
     <div class="stat"><div class="num" id="stat-total">—</div><div class="lbl">Tracked</div></div>
     <div class="stat mil"><div class="num" id="stat-mil">—</div><div class="lbl">Military</div></div>
   </div>
+
+  <aside class="hud spotlight" id="spotlight" aria-label="Aircraft spotlight" hidden>
+    <div class="sp-head">
+      <span class="sp-callsign" id="sp-callsign">—</span>
+      <span id="sp-badges"></span>
+      <button type="button" class="sp-close" id="sp-close" aria-label="Close">✕</button>
+    </div>
+    <div class="sp-model" id="sp-model">—</div>
+    <div class="sp-org" id="sp-org">—</div>
+    <div class="sp-route" id="sp-route" hidden></div>
+    <dl class="sp-live">
+      <dt>Alt</dt><dd id="sp-alt">—</dd>
+      <dt>Speed</dt><dd id="sp-spd">—</dd>
+      <dt>Heading</dt><dd id="sp-hdg">—</dd>
+      <dt>Range</dt><dd id="sp-rng">—</dd>
+      <dt>Bearing</dt><dd id="sp-brg">—</dd>
+      <dt>Reg</dt><dd id="sp-reg">—</dd>
+      <dt>Code</dt><dd id="sp-code">—</dd>
+      <dt>ICAO</dt><dd id="sp-hex">—</dd>
+    </dl>
+    <div class="sp-track" id="sp-track">—</div>
+    <div class="sp-lost" id="sp-lost" hidden>SIGNAL LOST</div>
+  </aside>
 
   <div class="hud console">
     <div class="legend-row">

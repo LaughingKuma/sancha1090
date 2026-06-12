@@ -1,6 +1,6 @@
 -- Migrate older deployments: CREATE ... IF NOT EXISTS can't change column shape, so an
 -- existing risingwave-data volume keeps the old MV and livemap then polls a missing column
--- forever. Sentinels: newest column added (body_class) OR a stale stored definition (old
+-- forever. Sentinels: newest column added (own_op) OR a stale stored definition (old
 -- staleness window — IF NOT EXISTS can't change that either); either drops the MV (+ its
 -- dependent mv_live_counts, which 04 recreates after this file). Bump a sentinel whenever
 -- this SELECT changes. Fresh / current volumes skip the drop.
@@ -10,7 +10,7 @@ SELECT (
     AND (
         NOT EXISTS (SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = 'mv_current_aircraft'
-                      AND column_name = 'body_class')
+                      AND column_name = 'own_op')
         OR EXISTS (SELECT 1 FROM rw_catalog.rw_materialized_views
                    WHERE name = 'mv_current_aircraft'
                      AND definition LIKE '%60 seconds%')
@@ -39,6 +39,8 @@ WITH typed AS (
         j ->> 'r'                                     AS registration,
         j ->> 't'                                     AS typecode,
         j ->> 'desc'                                  AS aircraft_desc,  -- readsb's resolved type name, e.g. 'BOEING 737-800'
+        j ->> 'ownOp'                                 AS own_op,   -- registry owner/operator (FAA et al via readsb db)
+        j ->> 'year'                                  AS year,     -- varchar like alt_baro: no cast risk
         j ->> 'squawk'                                AS squawk,
         -- multi-receiver seam: edge stamps a receiver id later; absent today → 'rooftop'
         coalesce(j ->> 'recv', 'rooftop')             AS recv,
@@ -76,8 +78,11 @@ SELECT
     l.category,
     l.registration,
     l.typecode,
-    l.aircraft_desc,
+    -- #34: desc is empty in tar1090-db for some airframes — the 8643 model name is the fallback
+    coalesce(nullif(l.aircraft_desc, ''), atype.model_name) AS aircraft_desc,
     l.squawk,
+    l.own_op,
+    l.year,
     (l.db_flags & 1) <> 0 AS is_military,
     (l.db_flags & 2) <> 0 AS is_interesting,
     (l.db_flags & 4) <> 0 AS is_pia,

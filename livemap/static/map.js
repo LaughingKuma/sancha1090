@@ -6,6 +6,44 @@ const { MapboxOverlay, IconLayer, ScatterplotLayer, PolygonLayer, PathLayer, Tex
 // visually recovers freshness within it.
 const WINDOW_S = 120;
 const RING_NM = [25, 50, 100];
+// Runway centerlines as geographic segments — published runway-end coords, verified against the
+// basemap at z13; visual furniture, not navigation data; codes are the most-recognizable per
+// field (IATA for the civils, ICAO for the bases).
+const AIRPORTS = [
+  { code: "HND", label: [139.784, 35.544], runways: [
+    { name: "16R/34L", path: [[139.7688, 35.5603], [139.7856, 35.5366]] },
+    { name: "04/22", path: [[139.7613, 35.5490], [139.7771, 35.5674]] },
+    { name: "16L/34R", path: [[139.7866, 35.5659], [139.8051, 35.5397]] },
+    { name: "05/23", path: [[139.8035, 35.5240], [139.8221, 35.5406]] },
+  ]},
+  { code: "NRT", label: [140.392, 35.772], runways: [
+    { name: "16R/34L", path: [[140.3683, 35.7744], [140.3907, 35.7433]] },
+    { name: "16L/34R", path: [[140.3781, 35.8052], [140.3922, 35.7858]] },
+  ]},
+  { code: "RJTY", label: [139.3545, 35.7485], runways: [
+    { name: "18/36", path: [[139.3454, 35.7634], [139.3516, 35.7336]] },
+  ]},
+  { code: "RJTA", label: [139.4540, 35.4546], runways: [
+    { name: "01/19", path: [[139.4503, 35.4436], [139.4499, 35.4656]] },
+  ]},
+];
+const RUNWAY_PATHS = AIRPORTS.flatMap((ap) => ap.runways.map((r) => ({ path: r.path })));
+// Threshold designators (published): name order follows path point order — first designator is the
+// heading you fly FROM the first endpoint, so each number lands at its painted threshold.
+const RUNWAY_ENDS = AIRPORTS.flatMap((ap) =>
+  ap.runways.flatMap((r) => {
+    const [p1, p2] = r.path;
+    const [n1, n2] = r.name.split("/");
+    const ex = (p1[0] - p2[0]) * Math.cos((p1[1] * Math.PI) / 180);
+    const ny = p1[1] - p2[1];
+    const m = Math.hypot(ex, ny);
+    const off = [(ex / m) * 14, (-ny / m) * 14]; // pixel y grows downward
+    return [
+      { pos: p1, text: n1, off },
+      { pos: p2, text: n2, off: [-off[0], -off[1]] },
+    ];
+  }),
+);
 const AMBER = [255, 176, 0];
 const MIL = [255, 59, 48];
 const KT_TO_MS = 0.514444;
@@ -18,15 +56,16 @@ const DR_HOLD_S = 20;
 const DR_PARK_S = 26;
 
 // ── Silhouettes ─────────────────────────────────────────────────
-// North-pointing top-down silhouettes (64×64, nose up), baked as SVG data-URIs. mask:true means
+// North-pointing top-down silhouettes (authored 64×64, nose up), baked as SVG data-URIs. mask:true means
 // deck ignores the fill color and tints by getColor, so age-fade + mil-red apply to any shape.
 // All artwork is original, sized from published planform ratios — never traced from tar1090/FA (GPL).
+// Raster bakes at 128 so ~60px heavies stay crisp on DPR-2; viewBox keeps the 64-unit artwork space.
 const _svg = (inner, fill = "#fff") =>
   "data:image/svg+xml;charset=utf-8," +
   encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="${fill}">${inner}</svg>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 64 64" fill="${fill}">${inner}</svg>`,
   );
-const _icon = (inner) => ({ url: _svg(inner), width: 64, height: 64, anchorX: 32, anchorY: 32, mask: true });
+const _icon = (inner) => ({ url: _svg(inner), width: 128, height: 128, anchorX: 64, anchorY: 64, mask: true });
 
 const _path = (pts) => `M${pts.replaceAll(" ", " L")} Z`;
 // Multi-tone inside one tint: airframe 0.82, cockpit notch cut to 0.3, engine details at 1.0 —
@@ -97,26 +136,38 @@ const SIL = Object.fromEntries(Object.entries(SHAPES).map(([k, v]) => [k, _icon(
 const CHEV_UP = _icon('<polygon points="32,14 52,50 12,50"/>');
 const CHEV_DOWN = _icon('<polygon points="32,50 52,14 12,14"/>');
 
-// body_class → shape + on-screen size (heavies bigger). Unknown class → generic airliner.
+// body_class → shape. Unknown class → generic airliner.
 const CLASS_SHAPE = {
   quad: "quad", widebody: "widebody", narrowbody: "airliner",
   regional: "regional", ga: "ga", heli: "heli", airliner: "airliner",
 };
-const SIZE_FOR = {
-  quad: 30, widebody: 27, narrowbody: 22, regional: 19, ga: 16, heli: 22, airliner: 21,
+// Wingspan-true sizing (v5.6): px = 18 + (span−10)·0.43, clamp 18–48, ×0.93 twin-widebody,
+// × zoom multiplier. Spans are published figures; class fallbacks cover unknown typecodes.
+const SPAN_M = {
+  A388: 79.8, B748: 68.4, B744: 64.4, B74F: 64.4, BLCF: 64.4,
+  B77W: 64.8, B77L: 64.8, B772: 60.9, B789: 60.1, B788: 60.1, B78X: 60.1,
+  A359: 64.8, A35K: 64.8, A332: 60.3, A333: 60.3, B763: 47.6, B764: 51.9,
+  B738: 35.8, B737: 35.8, B739: 35.8, A320: 35.8, A321: 35.8, A20N: 35.8, A21N: 35.8, A319: 35.8,
+  E190: 28.7, E170: 26.0, DH8D: 28.4, AT76: 27.1, AT75: 27.1,
+  C172: 11.0, DA40: 11.9, PC12: 16.3,
 };
+const SPAN_CLASS = { quad: 65, widebody: 60, narrowbody: 35, regional: 27, ga: 11, heli: 14, airliner: 35 };
 // Exact-typecode shapes win; body_class stays the fallback; generic airliner last.
-const TYPE_ICON = {
-  A388: ["a380", 30],
-  B748: ["b747", 30], B744: ["b747", 29], B74F: ["b747", 29], BLCF: ["b747", 29],
-};
+const TYPE_SHAPE = { A388: "a380", B748: "b747", B744: "b747", B74F: "b747", BLCF: "b747" };
 function silShape(a) {
-  if (a.is_helicopter === true) return ["heli", SIZE_FOR.heli];
-  const t = TYPE_ICON[a.typecode];
+  if (a.is_helicopter === true) return "heli";
+  const t = TYPE_SHAPE[a.typecode];
   if (t) return t;
-  const c = CLASS_SHAPE[a.body_class] ? a.body_class : "airliner";
-  return [CLASS_SHAPE[c], SIZE_FOR[c]];
+  return CLASS_SHAPE[a.body_class] ?? "airliner";
 }
+function sizeFor(a) {
+  const cls = a.is_helicopter === true ? "heli" : (CLASS_SHAPE[a.body_class] ? a.body_class : "airliner");
+  const span = SPAN_M[a.typecode] ?? SPAN_CLASS[cls];
+  let px = Math.min(48, Math.max(18, 18 + (span - 10) * 0.43));
+  if (cls === "widebody") px *= 0.93; // pure span flatters twins — restore the jumbo tier
+  return px;
+}
+const zoomMult = (z) => Math.min(1.25, Math.max(0.85, 0.85 + (z - 7) * 0.1));
 
 // ── Altitude cues ───────────────────────────────────────────────
 // Altitude lives inside the amber palette: deep orange on the deck → pale amber at cruise.
@@ -190,6 +241,14 @@ function stationVector(lon, lat) {
     Math.sin(flat * toRad) * Math.cos(lat * toRad) * Math.cos(dLon);
   const brg = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
   return { nm, brg };
+}
+
+// D-2-sourced rows carry an old departure time — show the clock only when it's today's leg
+function routeSuffix(r) {
+  if (!r) return "";
+  const dep = r.departed_epoch;
+  const ageH = dep ? (Date.now() / 1000 - dep) / 3600 : Infinity;
+  return ageH < 24 ? ` · departed ${new Date(dep * 1000).toTimeString().slice(0, 5)}` : " · usual route";
 }
 
 const map = new maplibregl.Map({
@@ -288,12 +347,15 @@ const STALE_BLEND = 0.45;
 function frameData() {
   const t = serverNow();
   const pf = performance.now() / 1000;
+  const zm = zoomMult(map.getZoom());
   return snap.aircraft.map((a) => {
     const age = fixAge(a, t);
     const fade = Math.min(1, age / WINDOW_S);
     const alpha = Math.max(0.12, 1 - 0.85 * fade); // fresh = bright, fringe = dim
     const mil = a.is_military === true;
-    const [shape, size] = silShape(a);
+    const shape = silShape(a);
+    let size = sizeFor(a) * zm;
+    if (selected && a.hex === selected.hex) size = Math.max(size, Math.min(size * 1.35, 56)); // spotlight cap
     const altFt = parseAlt(a.alt_baro);
     const base = mil ? MIL : altTint(altFt);
     const tint =
@@ -401,17 +463,70 @@ function rebuildSelectedSegments() {
   selectedSegments = segs;
 }
 
+// ── Spotlight panel (v5.6) — pure reader of `selected` + `snap` ─
+const spEl = (id) => document.getElementById(id);
+const spotlightEl = spEl("spotlight");
+function renderSpotlight() {
+  if (!selected) {
+    spotlightEl.hidden = true;
+    return;
+  }
+  const a = snap.aircraft.find((x) => x.hex === selected.hex);
+  spotlightEl.hidden = false;
+  spotlightEl.classList.toggle("lost", !a);
+  spEl("sp-lost").hidden = !!a;
+  if (!a) return; // keep last-rendered fields greyed under the LOST badge
+  spotlightEl.classList.toggle("mil", a.is_military === true);
+  spEl("sp-callsign").textContent = a.flight || a.hex || "UNKNOWN";
+  spEl("sp-badges").innerHTML =
+    (a.is_military ? '<span class="badge">MIL</span>' : "") +
+    (a.is_helicopter ? '<span class="badge">HELI</span>' : "");
+  const model = a.aircraft_desc || a.typecode || "—";
+  spEl("sp-model").textContent = a.year ? `${model} · ${a.year}` : model;
+  spEl("sp-org").textContent = a.airline_name || a.own_op || "Unregistered callsign";
+  const r = a.route;
+  spEl("sp-route").hidden = !r;
+  if (r) spEl("sp-route").textContent = `${r.origin} → ${r.dest}${routeSuffix(r)}`;
+  const vs = verticalState(a.hex);
+  const vsMark = vs > 0 ? " ▲" : vs < 0 ? " ▼" : "";
+  spEl("sp-alt").textContent =
+    a.alt_baro == null ? "—" : a.alt_baro === "ground" ? "GROUND" : `${a.alt_baro} ft${vsMark}`;
+  spEl("sp-spd").textContent = a.gs == null ? "—" : `${Math.round(a.gs)} kt`;
+  spEl("sp-hdg").textContent = a.track == null ? "—" : `${Math.round(a.track)}°`;
+  const sv = stationVector(a.lon, a.lat);
+  spEl("sp-rng").textContent = sv ? `${sv.nm.toFixed(1)} nm` : "—";
+  spEl("sp-brg").textContent = sv ? `${Math.round(sv.brg)}°` : "—";
+  spEl("sp-reg").textContent = a.registration || "—";
+  spEl("sp-code").textContent = a.typecode || "—";
+  spEl("sp-hex").textContent = (a.hex || "—").toUpperCase();
+  const pts = selected.pts;
+  if (pts.length > 1) {
+    const mins = Math.max(1, Math.round((pts[pts.length - 1].ts - pts[0].ts) / 60));
+    const est = pts.filter((p) => p.est).length;
+    spEl("sp-track").textContent =
+      `track ${mins} min · ${pts.length} fixes` + (est ? ` · ${est} est` : "");
+  } else {
+    spEl("sp-track").textContent = "track —";
+  }
+}
+spEl("sp-close").addEventListener("click", clearSelection);
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") clearSelection();
+});
+
 function clearSelection() {
   if (!selected) return;
   selected = null;
   trackFetchSeq++; // a deselect must orphan any in-flight /track fetch
   rebuildSelectedSegments();
+  renderSpotlight();
 }
 
 async function selectAircraft(hex) {
   if (selected && selected.hex === hex) return;
   selected = { hex, pts: [], mil: snap.aircraft.some((x) => x.hex === hex && x.is_military === true) };
   rebuildSelectedSegments();
+  renderSpotlight();
   const seq = ++trackFetchSeq;
   try {
     const j = await (await fetch(`/track/${encodeURIComponent(hex)}`, { cache: "no-store" })).json();
@@ -429,6 +544,7 @@ async function selectAircraft(hex) {
     selected.pts = pts.concat(selected.pts.filter((p) => p.ts > lastTs));
     if (selected.pts.length) pruneSelectedPts();
     rebuildSelectedSegments();
+    renderSpotlight();
   } catch (e) {
     /* track fetch is best-effort — selection stays, the wake is unaffected */
   }
@@ -536,6 +652,42 @@ function buildLayers() {
       getAlignmentBaseline: "bottom",
       parameters: { depthTest: false },
     }),
+    // airport furniture — above rings, below everything live
+    new PathLayer({
+      id: "airport-runways",
+      data: RUNWAY_PATHS,
+      getPath: (d) => d.path,
+      getColor: [78, 162, 174, 140], // ring teal — slate vanished against the basemap's pale strips
+      getWidth: 3,
+      widthUnits: "pixels",
+      parameters: { depthTest: false },
+    }),
+    new TextLayer({
+      id: "airport-codes",
+      data: AIRPORTS,
+      getPosition: (d) => d.label,
+      getText: (d) => d.code,
+      getSize: 9,
+      getColor: [78, 162, 174, 150],
+      fontFamily: "'Spline Sans Mono', monospace",
+      getTextAnchor: "middle",
+      getAlignmentBaseline: "top",
+      parameters: { depthTest: false },
+    }),
+    new TextLayer({
+      id: "runway-names",
+      data: map.getZoom() >= 11.2 ? RUNWAY_ENDS : [], // designators only once the basemap strips render
+      getPosition: (d) => d.pos,
+      getText: (d) => d.text,
+      getSize: 8,
+      getColor: [78, 162, 174, 170],
+      getPixelOffset: (d) => d.off,
+      fontFamily: "'Spline Sans Mono', monospace",
+      getTextAnchor: "middle",
+      getAlignmentBaseline: "center",
+      billboard: true,
+      parameters: { depthTest: false },
+    }),
     // coverage polygon, beneath everything — terrain-shaped reception envelope
     new PolygonLayer({
       id: "range-outline",
@@ -620,7 +772,7 @@ function buildLayers() {
       id: "glow",
       data,
       getPosition: (d) => d.pos,
-      getRadius: (d) => (d.mil ? 15 : Math.max(8, d.size * 0.42)), // bigger airframe, bigger glow
+      getRadius: (d) => Math.max(d.mil ? 15 : 8, d.size * (d.mil ? 0.62 : 0.55)), // disc a touch wider than the airframe; mil keeps the wider burn
       radiusUnits: "pixels",
       getFillColor: (d) => [...d.tint, Math.round(d.alpha * (d.mil ? 130 : 70))],
       stroked: false,
@@ -634,7 +786,7 @@ function buildLayers() {
       getPosition: (d) => d.pos,
       getAngle: (d) => -(d.a.track ?? 0),
       getColor: (d) => [10, 12, 15, Math.round(d.alpha * 235)],
-      getSize: (d) => d.size * 1.22,
+      getSize: (d) => d.size + 4, // constant 2px rim — proportional 1.22x read as bare wingtips at v5.6 sizes
       sizeUnits: "pixels",
       billboard: true,
       parameters: { depthTest: false },
@@ -728,24 +880,18 @@ function getTooltip(info) {
   const contact = !Number.isFinite(fage) ? "—" : fage < 5 ? "live" : `last fix ${Math.round(fage)} s ago`;
   const sv = stationVector(a.lon, a.lat);
   // Backstory ring (v5.1): latest known route for this callsign from the flights catalog.
-  // D-2-sourced rows carry an old departure time — show the clock only when it's today's leg.
-  let routeLine = "";
-  if (a.route) {
-    const dep = a.route.departed_epoch;
-    const ageH = dep ? (Date.now() / 1000 - dep) / 3600 : Infinity;
-    const when =
-      ageH < 24
-        ? ` · departed ${new Date(dep * 1000).toTimeString().slice(0, 5)}`
-        : " · usual route";
-    routeLine = `<div class="route">${esc(a.route.origin)} → ${esc(a.route.dest)}${esc(when)}</div>`;
-  }
+  const routeLine = a.route
+    ? `<div class="route">${esc(a.route.origin)} → ${esc(a.route.dest)}${esc(routeSuffix(a.route))}</div>`
+    : "";
   const html =
     `<div class="flight ${mil ? "mil" : ""}">${esc(a.flight || a.hex || "UNKNOWN")}${badges}</div>` +
     `<div class="org">${esc(a.airline_name || "Unregistered callsign")}</div>` +
     routeLine +
     "<dl>" +
     `<dt>Type</dt><dd>${esc(a.aircraft_desc || a.typecode || "—")}</dd>` +
-    `<dt>Code</dt><dd>${esc(a.typecode || "—")}</dd>` +
+    (a.typecode && (a.aircraft_desc || a.typecode) !== a.typecode
+      ? `<dt>Code</dt><dd>${esc(a.typecode)}</dd>`
+      : "") +
     `<dt>Reg</dt><dd>${esc(a.registration || "—")}</dd>` +
     `<dt>ICAO</dt><dd>${esc((a.hex || "—").toUpperCase())}</dd>` +
     `<dt>Origin</dt><dd>${esc(a.reg_country || "—")}</dd>` +
@@ -787,9 +933,8 @@ async function poll() {
     ingestTrails();
     if (selected) {
       const cur = snap.aircraft.find((x) => x.hex === selected.hex);
-      // absence from the accepted snapshot is the one authority on "gone" — no orphan tracks
+      // v5.6: a vanished hex keeps the selection — the spotlight greys to SIGNAL LOST instead of closing
       if (cur) appendSelectedFix(cur);
-      else clearSelection();
     }
     rebuildTrailSegments();
     detectAcquisitions();
@@ -799,6 +944,7 @@ async function poll() {
     const milCount = snap.aircraft.filter((a) => a.is_military === true).length;
     document.getElementById("stat-total").textContent = total;
     document.getElementById("stat-mil").textContent = milCount;
+    renderSpotlight();
     const d = new Date(serverTs * 1000);
     document.getElementById("meta-line").textContent =
       `Synced ${fmt(d.getHours())}:${fmt(d.getMinutes())}:${fmt(d.getSeconds())} · ${total} contacts · shared cache`;
@@ -813,7 +959,17 @@ setInterval(poll, 500);
 
 // ── ?icons — debug strip: every shape at authoring + on-map size, plus fade/mil tints ──
 if (new URLSearchParams(location.search).has("icons")) {
-  const onMap = { a380: 30, b747: 30, quad: 30, widebody: 27, airliner: 22, regional: 19, ga: 16, heli: 22 };
+  const zm8 = zoomMult(8);
+  const onMap = {
+    a380: sizeFor({ typecode: "A388", body_class: "quad" }) * zm8,
+    b747: sizeFor({ typecode: "B748", body_class: "quad" }) * zm8,
+    quad: sizeFor({ body_class: "quad" }) * zm8,
+    widebody: sizeFor({ typecode: "B789", body_class: "widebody" }) * zm8,
+    airliner: sizeFor({ typecode: "B738", body_class: "narrowbody" }) * zm8,
+    regional: sizeFor({ typecode: "DH8D", body_class: "regional" }) * zm8,
+    ga: sizeFor({ typecode: "C172", body_class: "ga" }) * zm8,
+    heli: sizeFor({ is_helicopter: true }) * zm8,
+  };
   const strip = document.createElement("div");
   strip.style.cssText =
     "position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:40;display:flex;gap:18px;" +
@@ -828,7 +984,7 @@ if (new URLSearchParams(location.search).has("icons")) {
         `<div style="display:flex;align-items:flex-end;">${img(name, 64, "#ffb000")}</div>` +
         `<div style="display:flex;align-items:center;gap:6px;">` +
         `${img(name, size, "#ffb000")}${img(name, size, "#ffb000", 0.35)}${img(name, size, "#ff3b30")}</div>` +
-        `<span>${name} · ${size}px</span></div>`,
+        `<span>${name} · ${Math.round(size)}px</span></div>`,
     );
   }
   document.body.appendChild(strip);

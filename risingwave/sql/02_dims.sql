@@ -29,5 +29,19 @@ CREATE TABLE IF NOT EXISTS dim_hex_country_buckets (
 CREATE TABLE IF NOT EXISTS dim_aircraft_types (
     typecode varchar,
     engines integer,
-    body_class varchar
+    body_class varchar,
+    model_name varchar
 );
+
+-- Migrate older volumes: IF NOT EXISTS can't add columns. Tables (unlike MVs) support
+-- ALTER ADD COLUMN with dependent MVs intact; 03's sentinel then recreates the MV.
+SELECT (
+    EXISTS (SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'dim_aircraft_types')
+    AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'dim_aircraft_types'
+              AND column_name = 'model_name')
+)::text AS needs_dim_migration \gset
+\if :needs_dim_migration
+ALTER TABLE dim_aircraft_types ADD COLUMN model_name varchar;
+\endif

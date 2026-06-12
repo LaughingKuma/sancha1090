@@ -14,7 +14,7 @@ from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 SILVER_TABLES = [
     "dim_aircraft",
     "dim_aircraft_registry",
-    "dim_aircraft_types",
+    # dim_aircraft_types is RW-only (livemap dim loads the CSV) — no Iceberg copy to maintain
     "dim_airlines",
     "dim_airports",
     "dim_hex_country",
