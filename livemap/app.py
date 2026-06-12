@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import contextlib
 import os
 import time
@@ -14,6 +15,8 @@ from fastapi.staticfiles import StaticFiles
 POLL_SECONDS = float(os.environ.get("LIVEMAP_POLL_SECONDS", "1.0"))
 # Slow refreshes are tick-counted — derive the divisor so faster polls keep the ~5 min cadence
 SLOW_REFRESH_TICKS = max(1, int(300 / POLL_SECONDS))
+# 30 min of track history regardless of poll cadence (compose runs 0.5 s ticks)
+TRACK_BUFFER_S = 1800
 RW_DSN = os.environ.get(
     "LIVEMAP_RW_DSN", "postgresql://root@risingwave:4566/dev"
 )
@@ -53,6 +56,9 @@ _snapshot: dict = {"server_ts": 0.0, "aircraft": []}
 _outline: list = []
 # callsign → latest known route (v5.1 backstory ring) — batch-computed daily, loaded into RW.
 _routes: dict = {}
+# (server_ts, [[hex, lon, lat, capture_ts, alt_baro], ...]) per successful poll; in-process
+# by design — lost on restart, refills at poll cadence
+_track_buf: collections.deque = collections.deque(maxlen=max(1, int(TRACK_BUFFER_S / POLL_SECONDS)))
 
 
 def _fetch() -> dict:
@@ -153,6 +159,11 @@ async def _poller() -> None:
         try:
             # psycopg2 is sync; offload so the ~1s query never blocks the event loop
             _snapshot = await asyncio.to_thread(_fetch)
+            _track_buf.append((
+                _snapshot["server_ts"],
+                [[a["hex"], a["lon"], a["lat"], a["capture_ts"], a["alt_baro"]]
+                 for a in _snapshot["aircraft"]],
+            ))
             # outline + routes change slowly — refresh on first tick, then every ~5 min
             if n % SLOW_REFRESH_TICKS == 0:
                 try:
@@ -178,6 +189,32 @@ async def aircraft() -> JSONResponse:
 async def range_outline() -> JSONResponse:
     # center = receiver (Carrot Tower default in public; real antenna from .env); ring = coverage polygon
     return JSONResponse({"center": [FEEDER_LON, FEEDER_LAT], "ring": _outline})
+
+
+@app.get("/track/{icao}")
+async def track(icao: str) -> JSONResponse:
+    points = []
+    last_ts = None
+    # no lock: appends happen on this same event loop, so iteration never races a mutation
+    for _, rows in _track_buf:
+        for row in rows:
+            if row[0] != icao:
+                continue
+            if row[3] != last_ts:  # frozen rows repeat capture_ts across polls
+                points.append(row[1:])
+                last_ts = row[3]
+            break
+    # unknown hex → empty points, 200: absence is a normal state, never a 404
+    return JSONResponse({"hex": icao, "points": points})
+
+
+@app.get("/history")
+async def history(s: float = 90.0) -> JSONResponse:
+    # clamp to (0, 120] — backfill serves the 90 s wake, never the full 30 min ring
+    s = min(s if s > 0 else 90.0, 120.0)
+    cutoff = time.time() - s
+    snaps = [[ts, rows] for ts, rows in _track_buf if ts >= cutoff]
+    return JSONResponse({"snapshots": snaps})
 
 
 @app.get("/healthz")

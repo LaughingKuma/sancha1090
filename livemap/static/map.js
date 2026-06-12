@@ -309,8 +309,8 @@ const TRAIL_GAP_S = 2; // sub-2s fixes add segments without adding visible shape
 const GAP_EST_S = MAX_DR_S; // a gap the DR envelope couldn't cover on screen is estimated, not flown track
 const trails = new Map();
 let trailSegments = [];
-function ingestTrails() {
-  for (const a of snap.aircraft) {
+function ingestTrails(rows = snap.aircraft) {
+  for (const a of rows) {
     if (!a.hex || a.lon == null || a.lat == null || a.capture_ts == null) continue;
     // coerce before clock math — a malformed ts would NaN the pruning and strand the trail
     const captureTs = Number(a.capture_ts);
@@ -344,6 +344,115 @@ function rebuildTrailSegments() {
   trailSegments = segs;
 }
 setInterval(rebuildTrailSegments, 1000);
+
+// ── Wake backfill ───────────────────────────────────────────────
+// One-shot /history replay through the existing ingest dedup — a fresh tab starts
+// with the 90 s wakes already drawn instead of accumulating from zero.
+let historyLoaded = false;
+async function loadHistory() {
+  historyLoaded = true; // set before the await so the 500 ms poll can't double-fire the fetch
+  try {
+    const r = await fetch("/history?s=90", { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    const live = new Set(snap.aircraft.map((a) => a.hex));
+    trails.clear();
+    for (const [, rows] of j.snapshots || []) {
+      ingestTrails(
+        rows
+          .filter((r) => live.has(r[0])) // expired hexes must not flash orphan wakes
+          .map(([hex, lon, lat, capture_ts, alt_baro]) => ({ hex, lon, lat, capture_ts, alt_baro })),
+      );
+    }
+    ingestTrails(); // re-ingest the live snapshot so wake heads end on the newest real fix
+    rebuildTrailSegments();
+  } catch (e) {
+    historyLoaded = false; // transient failure must not forfeit the backfill — retry next poll
+  }
+}
+
+// ── Selected track ──────────────────────────────────────────────
+// One aircraft at most; its 30-min track comes from /track on click and grows live
+// from the poll thereafter.
+let selected = null; // { hex, pts: [{lon, lat, ts, altFt, est}] }
+let trackFetchSeq = 0;
+let selectedSegments = [];
+const SELECTED_TRACK_S = 1800; // mirror the sidecar buffer window — live growth must not exceed it
+
+// hours-long selections must not accumulate unbounded geometry
+function pruneSelectedPts() {
+  const cutoff = selected.pts[selected.pts.length - 1].ts - SELECTED_TRACK_S;
+  while (selected.pts.length > 1 && selected.pts[0].ts < cutoff) selected.pts.shift();
+}
+
+function rebuildSelectedSegments() {
+  const segs = [];
+  if (selected) {
+    for (let i = 1; i < selected.pts.length; i++) {
+      const p = selected.pts[i];
+      segs.push({
+        path: [[selected.pts[i - 1].lon, selected.pts[i - 1].lat], [p.lon, p.lat]],
+        // constant alpha — the point of the track is seeing the old parts, so no age fade
+        color: [...(selected.mil ? MIL : altTint(p.altFt)), Math.round(200 * (p.est ? 0.35 : 1))],
+        dash: p.est ? [6, 4] : [0, 0],
+      });
+    }
+  }
+  selectedSegments = segs;
+}
+
+function clearSelection() {
+  if (!selected) return;
+  selected = null;
+  trackFetchSeq++; // a deselect must orphan any in-flight /track fetch
+  rebuildSelectedSegments();
+}
+
+async function selectAircraft(hex) {
+  if (selected && selected.hex === hex) return;
+  selected = { hex, pts: [], mil: snap.aircraft.some((x) => x.hex === hex && x.is_military === true) };
+  rebuildSelectedSegments();
+  const seq = ++trackFetchSeq;
+  try {
+    const j = await (await fetch(`/track/${encodeURIComponent(hex)}`, { cache: "no-store" })).json();
+    if (seq !== trackFetchSeq) return; // a later click or deselect superseded this fetch
+    const pts = [];
+    for (const [lon, lat, ts, alt] of j.points || []) {
+      const captureTs = Number(ts);
+      if (lon == null || lat == null || !Number.isFinite(captureTs)) continue;
+      const last = pts[pts.length - 1];
+      if (!last || (captureTs - last.ts >= TRAIL_GAP_S && (lon !== last.lon || lat !== last.lat)))
+        pts.push({ lon, lat, ts: captureTs, altFt: parseAlt(alt), est: !!last && captureTs - last.ts > GAP_EST_S });
+    }
+    // live fixes may have landed while the fetch was in flight — keep them after the history
+    const lastTs = pts.length ? pts[pts.length - 1].ts : -Infinity;
+    selected.pts = pts.concat(selected.pts.filter((p) => p.ts > lastTs));
+    if (selected.pts.length) pruneSelectedPts();
+    rebuildSelectedSegments();
+  } catch (e) {
+    /* track fetch is best-effort — selection stays, the wake is unaffected */
+  }
+}
+
+function appendSelectedFix(a) {
+  selected.mil = a.is_military === true;
+  if (a.lon == null || a.lat == null) return;
+  const captureTs = Number(a.capture_ts);
+  if (!Number.isFinite(captureTs)) return;
+  const last = selected.pts[selected.pts.length - 1];
+  if (!last || (captureTs - last.ts >= TRAIL_GAP_S && (a.lon !== last.lon || a.lat !== last.lat))) {
+    selected.pts.push({ lon: a.lon, lat: a.lat, ts: captureTs, altFt: parseAlt(a.alt_baro), est: !!last && captureTs - last.ts > GAP_EST_S });
+    pruneSelectedPts();
+    rebuildSelectedSegments();
+  }
+}
+
+// deck pick wins over the bare map click — the interleaved overlay fires both for one gesture
+map.on("click", (e) => {
+  const pick = overlay._deck?.pickObject({ x: e.point.x, y: e.point.y, radius: 4, layerIds: ["planes"] });
+  if (pick && pick.object && pick.object.a.hex) selectAircraft(pick.object.a.hex);
+  else clearSelection();
+});
 
 // ── Acquisition pings ───────────────────────────────────────────
 // Ring only when a hex is NEW or silent >10 s — per-fix pings (1 Hz) would be constant static.
@@ -438,6 +547,19 @@ function buildLayers() {
       getLineColor: [78, 162, 174, 130],
       getLineWidth: 1.3,
       lineWidthUnits: "pixels",
+      parameters: { depthTest: false },
+    }),
+    // selected aircraft's 30-min track — under the wake so the live fade reads on top
+    new PathLayer({
+      id: "selected-track",
+      data: selectedSegments,
+      getPath: (d) => d.path,
+      getColor: (d) => d.color,
+      getWidth: 2.2,
+      widthUnits: "pixels",
+      capRounded: true,
+      getDashArray: (d) => d.dash,
+      extensions: [new PathStyleExtension({ dash: true })],
       parameters: { depthTest: false },
     }),
     // fading wake of real fixes — approach streams into HND/NRT read as structure, not dots
@@ -663,8 +785,15 @@ async function poll() {
     for (const hex of trails.keys()) if (!live.has(hex)) trails.delete(hex);
     for (const hex of renderState.keys()) if (!live.has(hex)) renderState.delete(hex);
     ingestTrails();
+    if (selected) {
+      const cur = snap.aircraft.find((x) => x.hex === selected.hex);
+      // absence from the accepted snapshot is the one authority on "gone" — no orphan tracks
+      if (cur) appendSelectedFix(cur);
+      else clearSelection();
+    }
     rebuildTrailSegments();
     detectAcquisitions();
+    if (!historyLoaded) loadHistory();
 
     const total = snap.aircraft.length;
     const milCount = snap.aircraft.filter((a) => a.is_military === true).length;
