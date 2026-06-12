@@ -15,8 +15,8 @@ from fastapi.staticfiles import StaticFiles
 POLL_SECONDS = float(os.environ.get("LIVEMAP_POLL_SECONDS", "1.0"))
 # Slow refreshes are tick-counted — derive the divisor so faster polls keep the ~5 min cadence
 SLOW_REFRESH_TICKS = max(1, int(300 / POLL_SECONDS))
-# 30 min of track history regardless of poll cadence (compose runs 0.5 s ticks)
-TRACK_BUFFER_S = 1800
+# v5.7: deque only backfills the ≤120 s /history wake — /track reads mv_track_positions
+HISTORY_BUFFER_S = 120
 RW_DSN = os.environ.get(
     "LIVEMAP_RW_DSN", "postgresql://root@risingwave:4566/dev"
 )
@@ -35,6 +35,14 @@ QUERY = """
            airline_name, reg_country, recv, own_op, year, category
     FROM mv_current_aircraft
     WHERE lat IS NOT NULL AND lon IS NOT NULL
+"""
+
+# v5.7: 30-min trail from RW — survives sidecar restarts; row shape mirrors the old ring buffer
+TRACK_QUERY = """
+    SELECT lon, lat, capture_ts, alt_baro
+    FROM mv_track_positions
+    WHERE hex = %s
+    ORDER BY capture_ts
 """
 
 @asynccontextmanager
@@ -57,8 +65,8 @@ _outline: list = []
 # callsign → latest known route (v5.1 backstory ring) — batch-computed daily, loaded into RW.
 _routes: dict = {}
 # (server_ts, [[hex, lon, lat, capture_ts, alt_baro], ...]) per successful poll; in-process
-# by design — lost on restart, refills at poll cadence
-_track_buf: collections.deque = collections.deque(maxlen=max(1, int(TRACK_BUFFER_S / POLL_SECONDS)))
+# is fine now — a restart refills the full wake window in ~2 min
+_track_buf: collections.deque = collections.deque(maxlen=max(1, int(HISTORY_BUFFER_S / POLL_SECONDS)))
 
 
 def _fetch() -> dict:
@@ -155,6 +163,21 @@ def _fetch_routes() -> dict:
         conn.close()
 
 
+def _fetch_track(icao: str) -> list:
+    conn = psycopg2.connect(
+        RW_DSN,
+        connect_timeout=DB_CONNECT_TIMEOUT,
+        options=f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",
+    )
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(TRACK_QUERY, (icao,))
+            return [[lon, lat, ct.timestamp(), alt] for lon, lat, ct, alt in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 async def _poller() -> None:
     global _snapshot, _outline, _routes
     n = 0
@@ -196,17 +219,12 @@ async def range_outline() -> JSONResponse:
 
 @app.get("/track/{icao}")
 async def track(icao: str) -> JSONResponse:
-    points = []
-    last_ts = None
-    # no lock: appends happen on this same event loop, so iteration never races a mutation
-    for _, rows in _track_buf:
-        for row in rows:
-            if row[0] != icao:
-                continue
-            if row[3] != last_ts:  # frozen rows repeat capture_ts across polls
-                points.append(row[1:])
-                last_ts = row[3]
-            break
+    # psycopg2 is sync; offload like the poller. Clicks are rare — a per-click query is cheap.
+    try:
+        points = await asyncio.to_thread(_fetch_track, icao)
+    except Exception as exc:  # RW down → empty track; selection and wake still render
+        print(f"livemap track fetch failed: {exc}", flush=True)
+        points = []
     # unknown hex → empty points, 200: absence is a normal state, never a 404
     return JSONResponse({"hex": icao, "points": points})
 

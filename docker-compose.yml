@@ -408,20 +408,20 @@ services:
     environment:
       RPK_BROKERS: redpanda:9092
     # Idempotently ensure the one hot-path topic: 1 partition (hex keying gives
-    # per-aircraft ordering), ~10 min retention (enough to cover a RisingWave
-    # restart-and-replay; durability lives in the cold path, not here). Retention
+    # per-aircraft ordering), ~35 min retention (covers mv_track_positions' 30-min
+    # window on MV recreation; durability lives in the cold path, not here). Retention
     # is ENFORCED, not just set-on-create — auto_create_topics is on, so a producer
     # racing init could otherwise create adsb.live with the 7-day cluster default.
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
         set -euo pipefail
-        rpk topic create adsb.live -p 1 -r 1 -c retention.ms=600000 2>/dev/null || true
-        rpk topic alter-config adsb.live --set retention.ms=600000
+        rpk topic create adsb.live -p 1 -r 1 -c retention.ms=2100000 2>/dev/null || true
+        rpk topic alter-config adsb.live --set retention.ms=2100000
         # assert the contract held, else fail so Compose surfaces it (subshell drops
         # pipefail so grep -q closing the pipe early can't SIGPIPE rpk into a false fail)
-        if ! (set +o pipefail; rpk topic describe adsb.live -c | grep -qE '^retention.ms[[:space:]]+600000'); then
-          echo "adsb.live retention.ms != 600000" >&2; exit 1
+        if ! (set +o pipefail; rpk topic describe adsb.live -c | grep -qE '^retention.ms[[:space:]]+2100000'); then
+          echo "adsb.live retention.ms != 2100000" >&2; exit 1
         fi
         # 1-partition contract (hex keying = per-aircraft ordering); can't be auto-fixed, so fail loud
         if ! (set +o pipefail; rpk topic describe adsb.live | grep -qE '^PARTITIONS[[:space:]]+1[[:space:]]*$'); then
@@ -515,6 +515,10 @@ services:
       LIVEMAP_FEEDER_LON: ${LIVEMAP_FEEDER_LON:-139.6692}
       # 0.5s halves the cache-staleness term of end-to-end latency vs tar1090; the MV is tiny
       LIVEMAP_POLL_SECONDS: "0.5"
+    volumes:
+      # static stays baked into the image for releases; the bind-mount serves edits live so
+      # frontend tweaks don't force the rebuild+restart that used to blank trails for 30 min
+      - ./livemap/static:/app/static:ro
     expose:
       - "8000"   # served on loopback via override (127.0.0.1:38100)
     healthcheck:

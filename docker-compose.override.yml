@@ -4,6 +4,10 @@ networks:
     driver: bridge
 
 services:
+  airflow-scheduler:
+    volumes:
+      # livemap has no pytest of its own — mount it so in-container pytest can import app.py
+      - ./livemap:/opt/airflow/livemap:ro
   airflow-apiserver:
     ports:
       - "127.0.0.1:38080:8080"

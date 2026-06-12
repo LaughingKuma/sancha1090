@@ -6,7 +6,7 @@ WITH (
     connector = 'kafka',
     topic = 'adsb.live',
     properties.bootstrap.server = 'redpanda:9092',
-    -- replay whatever the ~10-min topic retains on first creation; offsets checkpoint after
+    -- replay whatever the ~35-min topic retains on first creation; offsets checkpoint after
     scan.startup.mode = 'earliest'
 )
 FORMAT PLAIN ENCODE BYTES;
