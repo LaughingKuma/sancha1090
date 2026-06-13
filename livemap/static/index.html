@@ -201,6 +201,7 @@
     font-size: 8px; letter-spacing: 0.16em; padding: 2px 5px;
     border: 1px solid currentColor; border-radius: 1px; text-transform: uppercase;
   }
+  .ac-tip .model { font-size: 11px; color: var(--ink); letter-spacing: 0.03em; margin-bottom: 2px; }
   .ac-tip .org { color: var(--ink-dim); margin-bottom: 7px; font-size: 10px; letter-spacing: 0.04em; }
   .ac-tip .route { color: var(--amber); margin: -5px 0 7px; font-size: 10px; letter-spacing: 0.04em; }
   .ac-tip dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; }
@@ -248,6 +249,9 @@
       <dt>Reg</dt><dd id="sp-reg">—</dd>
       <dt>Code</dt><dd id="sp-code">—</dd>
       <dt>ICAO</dt><dd id="sp-hex">—</dd>
+      <dt>Origin</dt><dd id="sp-origin">—</dd>
+      <dt>Recv</dt><dd id="sp-recv">—</dd>
+      <dt>Contact</dt><dd id="sp-contact">—</dd>
     </dl>
     <div class="sp-track" id="sp-track">—</div>
     <div class="sp-lost" id="sp-lost" hidden>SIGNAL LOST</div>
@@ -330,6 +334,7 @@
 
 <script src="vendor/maplibre-gl.js"></script>
 <script src="vendor/deck.gl.min.js"></script>
-<script src="map.js"></script>
+<!-- versioned URL evicts pre-no-cache copies browsers heuristic-cached; bump on release -->
+<script src="map.js?v=5.7.1"></script>
 </body>
 </html>

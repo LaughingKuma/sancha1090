@@ -247,5 +247,13 @@ async def healthz() -> JSONResponse:
     )
 
 
+# Header-less statics get heuristic-cached by browsers — a stale map.js once outlived its index.html
+class RevalidatedStatic(StaticFiles):
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 # Mounted last so /aircraft and /healthz win; serves index.html at /
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+app.mount("/", RevalidatedStatic(directory="static", html=True), name="static")

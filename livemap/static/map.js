@@ -477,28 +477,24 @@ function renderSpotlight() {
   spEl("sp-lost").hidden = !!a;
   if (!a) return; // keep last-rendered fields greyed under the LOST badge
   spotlightEl.classList.toggle("mil", a.is_military === true);
-  spEl("sp-callsign").textContent = a.flight || a.hex || "UNKNOWN";
-  spEl("sp-badges").innerHTML =
-    (a.is_military ? '<span class="badge">MIL</span>' : "") +
-    (a.is_helicopter ? '<span class="badge">HELI</span>' : "");
-  const model = a.aircraft_desc || a.typecode || "—";
-  spEl("sp-model").textContent = a.year ? `${model} · ${a.year}` : model;
-  spEl("sp-org").textContent = a.airline_name || a.own_op || "Unregistered callsign";
-  const r = a.route;
-  spEl("sp-route").hidden = !r;
-  if (r) spEl("sp-route").textContent = `${r.origin} → ${r.dest}${routeSuffix(r)}`;
-  const vs = verticalState(a.hex);
-  const vsMark = vs > 0 ? " ▲" : vs < 0 ? " ▼" : "";
-  spEl("sp-alt").textContent =
-    a.alt_baro == null ? "—" : a.alt_baro === "ground" ? "GROUND" : `${a.alt_baro} ft${vsMark}`;
-  spEl("sp-spd").textContent = a.gs == null ? "—" : `${Math.round(a.gs)} kt`;
-  spEl("sp-hdg").textContent = a.track == null ? "—" : `${Math.round(a.track)}°`;
-  const sv = stationVector(a.lon, a.lat);
-  spEl("sp-rng").textContent = sv ? `${sv.nm.toFixed(1)} nm` : "—";
-  spEl("sp-brg").textContent = sv ? `${Math.round(sv.brg)}°` : "—";
-  spEl("sp-reg").textContent = a.registration || "—";
-  spEl("sp-code").textContent = a.typecode || "—";
-  spEl("sp-hex").textContent = (a.hex || "—").toUpperCase();
+  const c = cardData(a);
+  spEl("sp-callsign").textContent = c.callsign;
+  spEl("sp-badges").innerHTML = c.badges;
+  spEl("sp-model").textContent = c.model;
+  spEl("sp-org").textContent = c.org;
+  spEl("sp-route").hidden = !c.route;
+  if (c.route) spEl("sp-route").textContent = c.route;
+  spEl("sp-alt").textContent = c.alt;
+  spEl("sp-spd").textContent = c.spd;
+  spEl("sp-hdg").textContent = c.hdg;
+  spEl("sp-rng").textContent = c.rng;
+  spEl("sp-brg").textContent = c.brg;
+  spEl("sp-reg").textContent = c.reg;
+  spEl("sp-code").textContent = c.code;
+  spEl("sp-hex").textContent = c.hex;
+  spEl("sp-origin").textContent = c.origin;
+  spEl("sp-recv").textContent = c.recv;
+  spEl("sp-contact").textContent = c.contact;
   const pts = selected.pts;
   if (pts.length > 1) {
     const mins = Math.max(1, Math.round((pts[pts.length - 1].ts - pts[0].ts) / 60));
@@ -865,43 +861,60 @@ const esc = (v) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
+// one builder feeds both the hover card and the spotlight so the two can never drift apart
+function cardData(a) {
+  const vs = verticalState(a.hex);
+  const vsMark = vs > 0 ? " ▲" : vs < 0 ? " ▼" : "";
+  const fixTs = finiteTs(a.pos_ts, a.capture_ts);
+  const fage = fixTs == null ? NaN : serverNow() - fixTs;
+  const sv = stationVector(a.lon, a.lat);
+  const model = a.aircraft_desc || a.typecode || "—";
+  return {
+    callsign: a.flight || a.hex || "UNKNOWN",
+    badges:
+      (a.is_military === true ? '<span class="badge">MIL</span>' : "") +
+      (a.is_helicopter ? '<span class="badge">HELI</span>' : ""),
+    model: a.year ? `${model} · ${a.year}` : model,
+    org: a.airline_name || a.own_op || "Unregistered callsign",
+    // Backstory ring (v5.1): latest known route for this callsign from the flights catalog.
+    route: a.route ? `${a.route.origin} → ${a.route.dest}${routeSuffix(a.route)}` : null,
+    alt: a.alt_baro == null ? "—" : a.alt_baro === "ground" ? "GROUND" : `${a.alt_baro} ft${vsMark}`,
+    spd: a.gs == null ? "—" : `${Math.round(a.gs)} kt`,
+    hdg: a.track == null ? "—" : `${Math.round(a.track)}°`,
+    rng: sv ? `${sv.nm.toFixed(1)} nm` : "—",
+    brg: sv ? `${Math.round(sv.brg)}°` : "—",
+    reg: a.registration || "—",
+    code: a.typecode || "—",
+    hex: (a.hex || "—").toUpperCase(),
+    origin: a.reg_country || "—",
+    recv: a.recv || "—",
+    contact: !Number.isFinite(fage) ? "—" : fage < 5 ? "live" : `last fix ${Math.round(fage)} s ago`,
+  };
+}
+
 function getTooltip(info) {
   if (!info || !info.object) return null;
   const a = info.object.a;
-  const mil = a.is_military === true;
-  const badges =
-    (mil ? '<span class="badge">MIL</span>' : "") +
-    (a.is_helicopter ? '<span class="badge">HELI</span>' : "");
-  const alt = a.alt_baro == null ? "—" : a.alt_baro === "ground" ? "GROUND" : `${a.alt_baro} ft`;
-  const spd = a.gs == null ? "—" : `${Math.round(a.gs)} kt`;
-  const hdg = a.track == null ? "—" : `${Math.round(a.track)}°`;
-  const fixTs = finiteTs(a.pos_ts, a.capture_ts);
-  const fage = fixTs == null ? NaN : serverNow() - fixTs;
-  const contact = !Number.isFinite(fage) ? "—" : fage < 5 ? "live" : `last fix ${Math.round(fage)} s ago`;
-  const sv = stationVector(a.lon, a.lat);
-  // Backstory ring (v5.1): latest known route for this callsign from the flights catalog.
-  const routeLine = a.route
-    ? `<div class="route">${esc(a.route.origin)} → ${esc(a.route.dest)}${esc(routeSuffix(a.route))}</div>`
-    : "";
+  // the spotlight panel already shows the focused aircraft — a hover card would be a duplicate
+  if (selected && a.hex === selected.hex) return null;
+  const c = cardData(a);
   const html =
-    `<div class="flight ${mil ? "mil" : ""}">${esc(a.flight || a.hex || "UNKNOWN")}${badges}</div>` +
-    `<div class="org">${esc(a.airline_name || "Unregistered callsign")}</div>` +
-    routeLine +
+    `<div class="flight ${a.is_military === true ? "mil" : ""}">${esc(c.callsign)}${c.badges}</div>` +
+    `<div class="model">${esc(c.model)}</div>` +
+    `<div class="org">${esc(c.org)}</div>` +
+    (c.route ? `<div class="route">${esc(c.route)}</div>` : "") +
     "<dl>" +
-    `<dt>Type</dt><dd>${esc(a.aircraft_desc || a.typecode || "—")}</dd>` +
-    (a.typecode && (a.aircraft_desc || a.typecode) !== a.typecode
-      ? `<dt>Code</dt><dd>${esc(a.typecode)}</dd>`
-      : "") +
-    `<dt>Reg</dt><dd>${esc(a.registration || "—")}</dd>` +
-    `<dt>ICAO</dt><dd>${esc((a.hex || "—").toUpperCase())}</dd>` +
-    `<dt>Origin</dt><dd>${esc(a.reg_country || "—")}</dd>` +
-    `<dt>Alt</dt><dd>${esc(alt)}</dd>` +
-    `<dt>Speed</dt><dd>${esc(spd)}</dd>` +
-    `<dt>Heading</dt><dd>${esc(hdg)}</dd>` +
-    `<dt>Range</dt><dd>${esc(sv ? sv.nm.toFixed(1) + " nm" : "—")}</dd>` +
-    `<dt>Bearing</dt><dd>${esc(sv ? Math.round(sv.brg) + "°" : "—")}</dd>` +
-    `<dt>Recv</dt><dd>${esc(a.recv || "—")}</dd>` +
-    `<dt>Contact</dt><dd>${esc(contact)}</dd>` +
+    `<dt>Alt</dt><dd>${esc(c.alt)}</dd>` +
+    `<dt>Speed</dt><dd>${esc(c.spd)}</dd>` +
+    `<dt>Heading</dt><dd>${esc(c.hdg)}</dd>` +
+    `<dt>Range</dt><dd>${esc(c.rng)}</dd>` +
+    `<dt>Bearing</dt><dd>${esc(c.brg)}</dd>` +
+    `<dt>Reg</dt><dd>${esc(c.reg)}</dd>` +
+    `<dt>Code</dt><dd>${esc(c.code)}</dd>` +
+    `<dt>ICAO</dt><dd>${esc(c.hex)}</dd>` +
+    `<dt>Origin</dt><dd>${esc(c.origin)}</dd>` +
+    `<dt>Recv</dt><dd>${esc(c.recv)}</dd>` +
+    `<dt>Contact</dt><dd>${esc(c.contact)}</dd>` +
     "</dl>";
   return { html, className: "ac-tip" };
 }
