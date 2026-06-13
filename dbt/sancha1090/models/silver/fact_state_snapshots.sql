@@ -21,9 +21,7 @@ select
     vertical_rate_mps,
     on_ground,
     -- Derived time dimensions for fast grouping
-    date_trunc('hour', snapshot_time) as snapshot_hour,
-    date_trunc('day', snapshot_time)  as snapshot_day,
-    cast(to_unixtime(snapshot_time) as bigint) as snapshot_epoch
+    date_trunc('hour', snapshot_time) as snapshot_hour
 from {{ ref('stg_states') }}
 where latitude is not null
   and longitude is not null

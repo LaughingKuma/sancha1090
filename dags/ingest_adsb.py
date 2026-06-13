@@ -27,10 +27,6 @@ def summarize_results(results: list[Optional[dict]]) -> dict[str, int]:
             "adsb_landed": adsb_landed, "beast_landed": beast_landed}
 
 
-def adsb_landed_count(results: list[Optional[dict]]) -> int:
-    return sum(1 for r in results if r and r["ok"] and r["stream"] == "adsb_state")
-
-
 def maybe_log_stale(results: list[Optional[dict]], now: datetime, logger: logging.Logger,
                     manifest_newest: Optional[datetime] = None) -> bool:
     """Surfaces a silent producer/push: if the newest known adsb_state close time is >2 h behind
@@ -87,21 +83,15 @@ def ingest_adsb():
 
     @task(retries=1, retry_delay=timedelta(minutes=1), max_active_tis_per_dag=6)
     def validate_and_record(bundle: dict[str, Any]) -> dict[str, Any]:
-        import os
-        from pyarrow.fs import S3FileSystem
         from include import adsb_discovery as ad
         from include import adsb_manifest as am
+        from include.s3_helpers import garage_pyarrow_fs
 
         b = ad.RemoteManifestBundle(**bundle)
 
         num_rows = None
         if b.stream == "adsb_state":
-            fs = S3FileSystem(
-                endpoint_override=f"http://{os.environ['S3_ENDPOINT']}",
-                access_key=os.environ["S3_ACCESS_KEY"], secret_key=os.environ["S3_SECRET_KEY"],
-                region="garage", scheme="http",
-            )
-            num_rows = ad.read_parquet_num_rows(fs, b.data_s3_uri[len("s3://"):])
+            num_rows = ad.read_parquet_num_rows(garage_pyarrow_fs(), b.data_s3_uri[len("s3://"):])
         ad.validate_bundle(b, num_rows)  # raises on rowcount mismatch → task red, retried next run
 
         m = b.manifest
@@ -131,7 +121,7 @@ def ingest_adsb():
                         manifest_newest=am.newest_adsb_rotation_end())
         print(f"ingest_adsb summary: {summary}")
 
-        if adsb_landed_count(results) == 0:
+        if summary["adsb_landed"] == 0:
             raise AirflowSkipException("no adsb_state rows landed this run; not emitting asset")
         return summary
 

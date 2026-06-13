@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+from types import SimpleNamespace
+
 import sqlalchemy as sa
 
 from include import manifest
@@ -109,3 +112,39 @@ def test_pending_uris_tolerates_surrounding_slashes(monkeypatch):
     monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
     _insert(eng, "s3://o/bronze/flights_raw/dt=2026-06-10/airport=RJAA.parquet", 1, 2, 5)
     assert len(manifest.pending_uris("/bronze/flights_raw/", engine=eng)) == 1
+
+
+def _table_with_snapshot(snapshot):
+    return SimpleNamespace(current_snapshot=lambda: snapshot)
+
+
+def _snapshot(properties):
+    return SimpleNamespace(summary=SimpleNamespace(additional_properties=properties))
+
+
+def test_batch_fingerprint_is_order_insensitive():
+    uris = ["s3://o/bronze/states_raw/b.parquet", "s3://o/bronze/states_raw/a.parquet"]
+    expected = hashlib.sha256(
+        "s3://o/bronze/states_raw/a.parquet\ns3://o/bronze/states_raw/b.parquet".encode()
+    ).hexdigest()
+    assert manifest.batch_fingerprint(uris) == expected
+    assert manifest.batch_fingerprint(list(reversed(uris))) == expected
+
+
+def test_already_appended_matches_current_snapshot_fingerprint():
+    table = _table_with_snapshot(_snapshot({"manifest_fingerprint": "abc"}))
+    assert manifest.already_appended(table, "abc") is True
+
+
+def test_already_appended_false_on_fingerprint_mismatch():
+    table = _table_with_snapshot(_snapshot({"manifest_fingerprint": "abc"}))
+    assert manifest.already_appended(table, "def") is False
+
+
+def test_already_appended_false_without_current_snapshot():
+    assert manifest.already_appended(_table_with_snapshot(None), "abc") is False
+
+
+def test_already_appended_false_when_snapshot_has_no_summary():
+    table = _table_with_snapshot(SimpleNamespace(summary=None))
+    assert manifest.already_appended(table, "abc") is False

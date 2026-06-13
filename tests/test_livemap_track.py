@@ -1,7 +1,5 @@
 import collections
 import importlib.util
-import os
-import sys
 import time
 from pathlib import Path
 
@@ -13,17 +11,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 @pytest.fixture(scope="module")
 def livemap():
-    # StaticFiles(directory="static") resolves against CWD — import with CWD at livemap/
-    # (process-global chdir + sys.modules entry: single-process pytest only, no xdist)
     spec = importlib.util.spec_from_file_location("livemap_app", REPO_ROOT / "livemap" / "app.py")
     mod = importlib.util.module_from_spec(spec)
-    cwd = os.getcwd()
-    try:
-        os.chdir(REPO_ROOT / "livemap")
-        sys.modules["livemap_app"] = mod
-        spec.loader.exec_module(mod)
-    finally:
-        os.chdir(cwd)
+    spec.loader.exec_module(mod)
     return mod
 
 

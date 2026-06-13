@@ -9,30 +9,10 @@ testable here: Trino enforces a 7d min-retention so fresh snapshots can't expire
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 
 TABLE = "iceberg.silver._mainttest"
-
-
-def _trino():
-    try:
-        import trino
-    except ImportError as exc:
-        pytest.skip(f"trino client not available: {exc}")
-    try:
-        conn = trino.dbapi.connect(
-            host=os.environ.get("TRINO_HOST", "trino-coordinator"),
-            port=int(os.environ.get("TRINO_PORT", "8080")),
-            user="root",
-            catalog="iceberg",
-            http_scheme="http",
-        )
-        return conn.cursor()
-    except Exception as exc:
-        pytest.skip(f"trino-coordinator not reachable: {exc}")
 
 
 def _run(cur, sql: str):
@@ -48,8 +28,7 @@ def _meta_count(cur, suffix: str) -> int:  # count rows in a "$files"/"$snapshot
     return _scalar(cur, f'SELECT count(*) FROM iceberg.silver."_mainttest{suffix}"')
 
 
-def test_maintenance_ops_compact_and_run_clean():
-    cur = _trino()
+def test_maintenance_ops_compact_and_run_clean(cur):
     try:
         _run(cur, f"DROP TABLE IF EXISTS {TABLE}")
     except Exception as exc:

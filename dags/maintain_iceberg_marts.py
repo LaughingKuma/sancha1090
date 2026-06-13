@@ -7,6 +7,8 @@ import pendulum
 from airflow.sdk import dag
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
+from include.iceberg_maintenance import maintenance_statements
+
 
 # Every dbt-rebuilt Iceberg table across all lanes, seeds included — the hourly
 # adsb REPLACE cycle (:05) clears the 04:30 maintenance window by 25 minutes, and
@@ -40,8 +42,6 @@ GOLD_TABLES = [
     "longest_flights",
 ]
 
-RETENTION = "7d"
-
 
 @dag(
     dag_id="maintain_iceberg_marts",
@@ -54,25 +54,10 @@ RETENTION = "7d"
     tags=["sancha1090", "iceberg", "maintenance", "v2"],
 )
 def maintain_iceberg_marts():
-    # One statement per list entry: the Trino DBAPI runs a single statement per
-    # execute, so SQLExecuteQueryOperator iterates the list rather than splitting.
-    def _ops(ns: str, tables: list[str], op: str) -> list[str]:
-        if op == "optimize":
-            return [f"ALTER TABLE iceberg.{ns}.{t} EXECUTE optimize" for t in tables]
-        if op == "expire":
-            return [
-                f"ALTER TABLE iceberg.{ns}.{t} EXECUTE expire_snapshots(retention_threshold => '{RETENTION}')"
-                for t in tables
-            ]
-        if op == "orphans":
-            return [
-                f"ALTER TABLE iceberg.{ns}.{t} EXECUTE remove_orphan_files(retention_threshold => '{RETENTION}')"
-                for t in tables
-            ]
-        raise ValueError(f"unsupported op {op!r} for ns {ns!r}")
-
     def _task(task_id: str, ns: str, tables: list[str], op: str) -> SQLExecuteQueryOperator:
-        return SQLExecuteQueryOperator(task_id=task_id, conn_id="trino_default", sql=_ops(ns, tables, op))
+        return SQLExecuteQueryOperator(
+            task_id=task_id, conn_id="trino_default", sql=maintenance_statements(ns, tables, op)
+        )
 
     optimize_silver = _task("optimize_silver", "silver", SILVER_TABLES, "optimize")
     expire_silver = _task("expire_silver", "silver", SILVER_TABLES, "expire")

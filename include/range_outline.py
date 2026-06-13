@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 
-import psycopg2
-import trino
 from psycopg2.extras import execute_values
+
+from include.db import rw_connect, trino_connect
 
 # Real antenna is a secret (home rooftop) — from .env; default is the public Carrot Tower landmark.
 FEEDER_LAT = float(os.environ.get("LIVEMAP_FEEDER_LAT", "35.6434"))
@@ -41,13 +41,7 @@ def _compute(lat0: float, lon0: float) -> list[tuple]:
     )
     SELECT bin, far[1] AS lat, far[2] AS lon, max_nmi FROM binned ORDER BY bin
     """
-    conn = trino.dbapi.connect(
-        host=os.environ.get("TRINO_HOST", "trino-coordinator"),
-        port=int(os.environ.get("TRINO_PORT", "8080")),
-        user=os.environ.get("TRINO_USER", "airflow"),
-        catalog="iceberg",
-        schema="bronze",
-    )
+    conn = trino_connect("bronze")
     try:
         cur = conn.cursor()
         cur.execute(sql)
@@ -61,13 +55,7 @@ def refresh_range_outline() -> int:
     # guard: a sparse polygon means a bad feeder coord or a thin window — don't blank a good outline
     if len(rows) < BINS // 2:
         raise RuntimeError(f"range outline only {len(rows)}/{BINS} bins — refusing to load a sparse polygon")
-    conn = psycopg2.connect(
-        host=os.environ.get("RISINGWAVE_HOST", "risingwave"),
-        port=int(os.environ.get("RISINGWAVE_PORT", "4566")),
-        user="root",
-        dbname="dev",
-    )
-    conn.autocommit = True
+    conn = rw_connect()
     try:
         with conn.cursor() as cur:
             cur.execute(

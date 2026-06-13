@@ -21,7 +21,8 @@ from include import archive_backfill as ab
 from include import archive_iceberg
 from include import manifest
 from include.db import analytics_engine
-from include.s3_helpers import get_bucket, write_parquet
+from include.flights_iceberg import RAW_FLIGHTS_SCHEMA, flight_row
+from include.s3_helpers import garage_pyarrow_fs, get_bucket, write_parquet
 
 USER_AGENT = "sancha1090-backfill"
 
@@ -46,19 +47,6 @@ RAW_STATES_SCHEMA = {
     "region": pl.Utf8,
     "source": pl.Utf8,
 }
-
-RAW_FLIGHTS_SCHEMA = {
-    "icao24": pl.Utf8,
-    "callsign": pl.Utf8,
-    "first_seen": pl.Int64,
-    "last_seen": pl.Int64,
-    "est_departure_airport": pl.Utf8,
-    "est_arrival_airport": pl.Utf8,
-    "captured_for_airport": pl.Utf8,
-    "direction": pl.Utf8,
-    "window_kind": pl.Utf8,
-}
-
 
 def _manifest_uris(like: str) -> dict[str, bool]:
     stmt = sa.text(
@@ -201,20 +189,10 @@ def _append_day(table, uri: str, df: pl.DataFrame, allow_recovery: bool) -> None
 
 
 def _read_raw_parquet(uri: str) -> pl.DataFrame:
-    import os
-
     import pyarrow as pa
     import pyarrow.parquet as pq
-    from pyarrow.fs import S3FileSystem
 
-    # s3fs HEAD against Garage returns 400 without pre-warming; pyarrow doesn't.
-    fs = S3FileSystem(
-        endpoint_override=f"http://{os.environ['S3_ENDPOINT']}",
-        access_key=os.environ["S3_ACCESS_KEY"],
-        secret_key=os.environ["S3_SECRET_KEY"],
-        region="garage",
-        scheme="http",
-    )
+    fs = garage_pyarrow_fs()
     # ParquetFile, not the dataset API: multi-row-group files trip dataset schema
     # merging on dictionary-encoded constant columns.
     table = pq.ParquetFile(fs.open_input_file(uri[len("s3://"):])).read()
@@ -334,17 +312,7 @@ def run_flights(args: argparse.Namespace) -> int:
                 ("departure", client.get_flights_departure),
             ):
                 for f in fetch(icao, begin_ts, end_ts):
-                    rows.append({
-                        "icao24": f.get("icao24"),
-                        "callsign": f.get("callsign"),
-                        "first_seen": f.get("firstSeen"),
-                        "last_seen": f.get("lastSeen"),
-                        "est_departure_airport": f.get("estDepartureAirport"),
-                        "est_arrival_airport": f.get("estArrivalAirport"),
-                        "captured_for_airport": icao,
-                        "direction": direction,
-                        "window_kind": "backfill",
-                    })
+                    rows.append(flight_row(f, icao, direction, window_kind="backfill"))
                 calls += 1
 
             df = pl.DataFrame(rows, schema=RAW_FLIGHTS_SCHEMA).with_columns(

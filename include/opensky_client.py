@@ -171,20 +171,13 @@ class OpenSkyClient:
     def get_flights_departure(self, airport: str, begin: int, end: int) -> list[dict[str, Any]]:
         return self._get_flights("/flights/departure", airport, begin, end)
 
-    def get_states(
-        self,
-        bbox: tuple[float, float, float, float] | None = None,
-        time_seconds: int | None = None,
-    ) -> dict[str, Any]:
+    def get_states(self, bbox: tuple[float, float, float, float] | None = None) -> dict[str, Any]:
         """Get state vectors for all aircraft, optionally bounded.
 
         bbox: (lamin, lomin, lamax, lomax) — latitude/longitude box
-        time_seconds: epoch seconds for the snapshot (default: now)
         """
         params: dict[str, Any] = {}
         if bbox:
             lamin, lomin, lamax, lomax = bbox
             params.update(lamin=lamin, lomin=lomin, lamax=lamax, lomax=lomax)
-        if time_seconds:
-            params["time"] = time_seconds
         return self._request("/states/all", params=params)

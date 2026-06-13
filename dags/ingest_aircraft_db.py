@@ -71,15 +71,12 @@ def ingest_aircraft_db():
 
     @task(outlets=[bronze_aircraft_db_table])
     def tableize(**_context) -> dict:
-        import hashlib
-        import os
         from datetime import datetime, timezone
 
         import polars as pl
-        import pyarrow.parquet as pq
-        from pyarrow.fs import S3FileSystem
         from include import flights_iceberg as fib
         from include import manifest
+        from include.s3_helpers import garage_pyarrow_fs, read_pending_frames
 
         table = fib.ensure_aircraft_db_table()
 
@@ -88,29 +85,13 @@ def ingest_aircraft_db():
             return {"committed": 0, "rows": 0, "files": 0}
 
         uris = [r["object_uri"] for r in pending]
-        fingerprint = hashlib.sha256("\n".join(sorted(uris)).encode()).hexdigest()
+        fingerprint = manifest.batch_fingerprint(uris)
 
-        # Crash-recovery: same fingerprint contract as the other tableize lanes.
-        current = table.current_snapshot()
-        if current and current.summary and current.summary.additional_properties.get("manifest_fingerprint") == fingerprint:
+        if manifest.already_appended(table, fingerprint):
             committed = manifest.mark_iceberg_committed(uris)
             return {"committed": committed, "rows": 0, "files": len(pending), "recovered": True}
 
-        # s3fs HEAD against Garage returns 400 without pre-warming; pyarrow doesn't.
-        fs = S3FileSystem(
-            endpoint_override=f"http://{os.environ['S3_ENDPOINT']}",
-            access_key=os.environ["S3_ACCESS_KEY"],
-            secret_key=os.environ["S3_SECRET_KEY"],
-            region="garage",
-            scheme="http",
-        )
-
-        frames: list[pl.DataFrame] = []
-        for row in pending:
-            uri = row["object_uri"]
-            if not uri.startswith("s3://"):
-                raise ValueError(f"unexpected non-s3 manifest URI: {uri}")
-            frames.append(pl.from_arrow(pq.read_table(uri[len("s3://"):], filesystem=fs)))
+        frames = read_pending_frames(garage_pyarrow_fs(), pending)
 
         df = pl.concat(frames, how="diagonal_relaxed")
 

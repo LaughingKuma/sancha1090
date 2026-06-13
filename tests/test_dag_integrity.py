@@ -16,7 +16,7 @@ EXPECTED_DAGS = {
         "schedule": "*/12 * * * *",
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"list_regions", "fetch_region", "summarize"},
+        "task_ids": {"fetch_region", "summarize"},
     },
     "ingest_adsb": {
         "schedule": "5 * * * *",
@@ -29,15 +29,13 @@ EXPECTED_DAGS = {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {
-            "ensure_bronze_tables", "dbt_deps", "dbt_run_trino", "dbt_test_trino",
-        },
+        "task_ids": {"ensure_bronze_tables", "dbt_run_trino", "dbt_test_trino"},
     },
     "transform_adsb_silver": {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"dbt_deps", "dbt_seed", "dbt_run", "dbt_test"},
+        "task_ids": {"dbt_seed", "dbt_run", "dbt_test"},
     },
     "tableize_states": {
         "schedule_is_asset_triggered": True,
@@ -95,16 +93,11 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"sync_r2_to_garage"},
     },
-    "backfill_adsb": {
-        "catchup": False,
-        "max_active_runs": 1,
-        "task_ids": {"run_backfill", "run_beast_backfill"},
-    },
     "ingest_flights": {
         "schedule": "30 14 * * *",
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"list_airports", "fetch_airport", "summarize"},
+        "task_ids": {"fetch_airport", "summarize"},
     },
     "tableize_flights": {
         "schedule_is_asset_triggered": True,
@@ -123,19 +116,9 @@ EXPECTED_DAGS = {
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {
-            "ensure_bronze_tables", "dbt_deps", "dbt_seed", "dbt_run", "dbt_test",
+            "ensure_bronze_tables", "dbt_seed", "dbt_run", "dbt_test",
             "push_flight_routes",
         },
-    },
-    "register_bronze_in_polaris": {
-        "catchup": False,
-        "max_active_runs": 1,
-        "task_ids": {"register"},
-    },
-    "migrate_drop_sqlcatalog_tables": {
-        "catchup": False,
-        "max_active_runs": 1,
-        "task_ids": {"drop_sqlcatalog_tables"},
     },
 }
 

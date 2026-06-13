@@ -27,60 +27,30 @@ def tableize_states():
 
     @task(outlets=[bronze_states_table])
     def load_pending_to_iceberg() -> dict:
-        import hashlib
-        import os
         from datetime import datetime, timezone
 
         import polars as pl
         import pyarrow as pa
-        import pyarrow.parquet as pq
-        from pyarrow.fs import S3FileSystem
         from include import iceberg as ib
         from include import manifest
+        from include.iceberg_rest import get_polaris_catalog
+        from include.s3_helpers import garage_pyarrow_fs, read_pending_frames
 
-        catalog = ib.get_catalog()
-        ib.ensure_namespace_and_table(catalog)
+        catalog = get_polaris_catalog()
 
         pending = manifest.pending_uris("bronze/states_raw")
         if not pending:
             return {"committed": 0, "rows": 0, "files": 0}
 
         uris = [r["object_uri"] for r in pending]
-        fingerprint = hashlib.sha256("\n".join(sorted(uris)).encode()).hexdigest()
+        fingerprint = manifest.batch_fingerprint(uris)
         table = catalog.load_table(ib.QUALIFIED)
 
-        # Crash-recovery: if the last commit's snapshot already carries this batch's
-        # fingerprint, the Iceberg append succeeded on a prior attempt that died before
-        # marking the manifest. Skip the append; just reconcile the manifest.
-        current = table.current_snapshot()
-        if current and current.summary and current.summary.additional_properties.get("manifest_fingerprint") == fingerprint:
+        if manifest.already_appended(table, fingerprint):
             committed = manifest.mark_iceberg_committed(uris)
             return {"committed": committed, "rows": 0, "files": len(pending), "recovered": True}
 
-        # s3fs HEAD against Garage returns 400 without pre-warming; pyarrow doesn't.
-        fs = S3FileSystem(
-            endpoint_override=f"http://{os.environ['S3_ENDPOINT']}",
-            access_key=os.environ["S3_ACCESS_KEY"],
-            secret_key=os.environ["S3_SECRET_KEY"],
-            region="garage",
-            scheme="http",
-        )
-
-        frames: list[pl.DataFrame] = []
-        for row in pending:
-            uri = row["object_uri"]
-            if not uri.startswith("s3://"):
-                raise ValueError(f"unexpected non-s3 manifest URI: {uri}")
-            path = uri[len("s3://"):]
-            parquet_table = pq.read_table(path, filesystem=fs)
-            # polars from_arrow rejects non-string dict-encoded columns.
-            decoded_columns = {}
-            for name in parquet_table.column_names:
-                col = parquet_table.column(name)
-                if pa.types.is_dictionary(col.type):
-                    col = col.cast(col.type.value_type)
-                decoded_columns[name] = col
-            frames.append(pl.from_arrow(pa.table(decoded_columns)))
+        frames = read_pending_frames(garage_pyarrow_fs(), pending)
 
         df = pl.concat(frames, how="diagonal_relaxed")
 

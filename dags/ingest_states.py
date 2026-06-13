@@ -1,22 +1,3 @@
-"""ingest_states: pull aircraft state snapshots from OpenSky every 12 minutes.
-
-Stage 9: dynamic task mapping over geographic regions. Since v5.0 the region
-list is a single Japan+ocean box (OpenSky is the antenna's wide-context layer,
-not a global sweep — see include/regions.py), but the mapping is kept so
-sub-regions can return without a DAG rewrite.
-
-Design notes:
-- One Japan+ocean bbox; the antenna covers the local sky, OpenSky covers the
-  rest of Japan and the surrounding ocean (beyond the receiver's horizon).
-- The summarize task uses trigger_rule="all_done" so it runs even if the
-  region fails — we want the partial-success summary, not "skipped".
-- The bbox is >400 sq deg, the top tier of OpenSky's pricing, so the call
-  costs 4 credits. 1 region x 4 credits x 120 runs/day = 480 credits/day,
-  ~12% of the 4,000/day quota the API currently meters us at (8,000 only
-  once active-feeder uptime accrues) — don't raise cadence until the
-  header confirms promotion. See tests/test_credit_budget.py.
-"""
-
 from __future__ import annotations
 
 from datetime import timedelta
@@ -27,6 +8,7 @@ import pendulum
 from airflow.sdk import dag, task
 
 from include.assets import raw_states_landed
+from include.regions import REGIONS
 
 
 @dag(
@@ -46,12 +28,6 @@ from include.assets import raw_states_landed
     tags=["sancha1090", "bronze"],
 )
 def ingest_states():
-
-    @task
-    def list_regions() -> list[dict[str, Any]]:
-        from include.regions import REGIONS
-
-        return REGIONS
 
     @task(
         retries=3,
@@ -142,9 +118,8 @@ def ingest_states():
         print(f"Ingestion summary: {summary}")
         return summary
 
-    regions = list_regions()
-    results = fetch_region.expand(region=regions)
-    summarize(results) # type: ignore[arg-type] 
+    results = fetch_region.expand(region=REGIONS)
+    summarize(results) # type: ignore[arg-type]
 
 
 ingest_states()

@@ -2,11 +2,11 @@
 .DEFAULT_GOAL := help
 
 SCHED := docker compose exec -T airflow-scheduler bash -c
-# ruff isn't installed on the host; run the pinned image. Config-free args match CI.
+# ruff isn't installed on the host; run the pinned image. Config-free because the public snapshot has no ruff.toml; CI reuses this target.
 RUFF  := docker run --rm -v "$$PWD":/io -w /io ghcr.io/astral-sh/ruff:0.15.15
 RUFF_ARGS := --select F,B,ARG --line-length 110 --target-version py312
 
-.PHONY: help up down restart ps logs test lint parse check
+.PHONY: help up down restart ps logs test lint parse dbt check
 
 help: ## List targets
 	@grep -hE '^[a-z%-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  \033[36m%-9s\033[0m %s\n", $$1, $$2}'
@@ -26,13 +26,16 @@ ps: ## Show service status
 logs: ## Tail logs (scope with S=, e.g. make logs S=risingwave)
 	docker compose logs -f $(S)
 
-test: ## Run the pytest suite in the scheduler container
-	$(SCHED) "cd /opt/airflow && python -m pytest tests/ -q"
+test: ## Run pytest in the scheduler container (scope with K=, e.g. make test K=adsb)
+	$(SCHED) "cd /opt/airflow && python -m pytest tests/ -q$(if $(K), -k '$(K)')"
 
 lint: ## Ruff check (real bugs only: F,B,ARG)
 	$(RUFF) check $(RUFF_ARGS) .
 
 parse: ## Validate the dbt project (no warehouse needed)
 	$(SCHED) "cd /opt/airflow/dbt/sancha1090 && dbt parse --profiles-dir . --target trino"
+
+dbt: ## dbt in the scheduler (ARGS="run --select tag:adsb")
+	$(SCHED) "cd /opt/airflow/dbt/sancha1090 && dbt $(ARGS) --profiles-dir . --target trino --no-use-colors"
 
 check: lint parse test ## lint + parse + test

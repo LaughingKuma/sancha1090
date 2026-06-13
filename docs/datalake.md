@@ -13,7 +13,13 @@ in exactly one place (`gold.fct_flight_legs`):
 | **Context** (OpenSky) | OpenSky Network `/states/all` REST API, one Japan+ocean bbox, ~12-min cadence | `bronze.opensky_states` | Japan + surrounding ocean (beyond the antenna's horizon) | metres, m/s |
 | **Rooftop** | A local `readsb` ADS-B antenna, byte-faithful records | `bronze.adsb_states` | the antenna's reception footprint (Tokyo area) | feet, knots |
 
-This document is the authoritative, column-level reference for every table in the lake.
+This document is the column-level reference for the **states/ADS-B core** of the lake — the
+two feeds above and the models built from them. Two newer lanes are **not yet documented here**:
+the v5.1 flights lane (`bronze.opensky_flights`, `silver.dim_aircraft_registry`,
+`gold.fact_flights`, `gold.agg_flight_routes`, `gold.longest_flights`,
+`gold.agg_operator_traffic`, `gold.agg_airport_daily`) and the v5.2 archive-history lane
+(`bronze.archive_states`, `silver.stg_states_history`, `gold.agg_hourly_traffic_history`,
+`gold.agg_hourly_traffic_live_archive`) — see the dbt sources and models for those.
 
 ## Contents
 
@@ -34,7 +40,7 @@ flowchart TD
     OSK -->|"ingest_states → tableize_states"| BOS[("bronze.opensky_states")]
     ANT -->|"edge push → ingest_adsb → tableize_adsb"| BAS[("bronze.adsb_states")]
 
-    %% ---- OpenSky context track: transform_marts (--exclude tag:adsb) ----
+    %% ---- OpenSky context track: transform_marts (--exclude tag:adsb tag:flights) ----
     BOS --> STG["silver.stg_states"]
     STG --> FSS["silver.fact_state_snapshots"]
     STG --> ACT["gold.agg_country_traffic"]
@@ -91,21 +97,23 @@ erDiagram
 
 ## Refresh model
 
-Two Airflow DAGs, each asset-triggered on its feed's bronze table, partition the dbt graph
-by tag. `dim_*` seeds and rooftop models carry `tag:adsb`; everything else is untagged.
+Two Airflow DAGs, each asset-triggered on its feed's bronze table, partition the states-core
+dbt graph by tag. `dim_*` seeds and rooftop models carry `tag:adsb`; the states core is
+otherwise untagged. (The flights and archive-history lanes, not documented here, carry
+`tag:flights` / `tag:history`.)
 
 | Object | Built by | Trigger asset | dbt selection |
 |--------|----------|---------------|---------------|
 | `bronze.opensky_states` | `ingest_states` → `tableize_states` | — (produces `bronze_states_table`) | — |
 | `bronze.adsb_states` | edge push → `ingest_adsb` → `tableize_adsb` | — (produces `adsb_bronze_table`) | — |
-| `silver.stg_states` | `transform_marts` | `bronze_states_table` (OpenSky context) | `--exclude tag:adsb` |
-| `silver.fact_state_snapshots` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb` |
-| `gold.anomalies` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb` |
-| `gold.agg_country_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb` |
-| `gold.agg_hourly_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb` |
-| `gold.agg_airline_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb` |
-| `gold.fct_flight_legs` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb` |
-| `gold.agg_route_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb` |
+| `silver.stg_states` | `transform_marts` | `bronze_states_table` (OpenSky context) | `--exclude tag:adsb tag:flights` |
+| `silver.fact_state_snapshots` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
+| `gold.anomalies` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
+| `gold.agg_country_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
+| `gold.agg_hourly_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
+| `gold.agg_airline_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
+| `gold.fct_flight_legs` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
+| `gold.agg_route_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
 | `silver.dim_aircraft` | `transform_adsb_silver` | `adsb_bronze_table` (rooftop) | `--select tag:adsb` |
 | `silver.fct_adsb_state` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
 | `silver.dim_airlines` / `dim_airports` / `dim_hex_country` (seeds) | `transform_adsb_silver` (`dbt seed`) | `adsb_bronze_table` | `tag:adsb` |
@@ -301,8 +309,6 @@ shared across both feeds.
 | `vertical_rate_mps` | `double` | Vertical rate, m/s. |
 | `on_ground` | `boolean` | On-ground flag; drives leg-splitting in `fct_flight_legs`. |
 | `snapshot_hour` | `timestamp(6) with time zone` | `date_trunc('hour', snapshot_time)`. |
-| `snapshot_day` | `timestamp(6) with time zone` | `date_trunc('day', snapshot_time)`. |
-| `snapshot_epoch` | `bigint` | `to_unixtime(snapshot_time)` as bigint. |
 
 ### `silver.fct_adsb_state` — rooftop observation fact
 
@@ -339,8 +345,10 @@ shared across both feeds.
 - **Grain:** one row per airframe, keyed by lowercase hex (`icao24`), unique not-null.
 - **Source:** collapsed from `bronze.adsb_states` (rooftop-derived) via `max_by(col, capture_ts)`
   over non-null samples (latest known value wins; a later NULL never blanks a known field).
-- **Notes:** antenna-derived, so **sparse** (~2,285 airframes) — `registration`/`typecode` are
-  mostly NULL for aircraft the rooftop never saw, until the v5.1 global-registry source.
+- **Notes:** the airframe list is antenna-derived (only rooftop-seen hexes get a row). Since
+  v5.1, `registration`/`typecode` are backfilled from `dim_aircraft_registry` (registry wins
+  where present), and that join adds registry columns (`operator`, `owner`, `model`,
+  `manufacturer`, `country_of_registration`) not listed below.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -457,7 +465,8 @@ OpenSky-context marts follow.
   deck.gl arc map.
 - **Notes:** only both-endpoints-resolved legs are ranked, and self-loops (`origin == dest`) are
   filtered out. Transoceanic legs fragment and never appear here, so the leaderboard skews
-  intra-continental until v5.2 authoritative-route reconciliation.
+  intra-continental; for authoritative airport pairs use the v5.1 flights lane
+  (`fact_flights` / `agg_flight_routes`) — this mart is not reconciled against it.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -569,14 +578,16 @@ These predate v3.5 and are listed in `maintain_iceberg_marts` for OPTIMIZE compa
 ## Known limitations
 
 - **Inferred routes ≠ ground truth.** `fct_flight_legs.route_inferred` is reconstructed from a
-  ~12-min sampled feed and snaps to the nearest in-coverage airport, not the actual runway. v5.2
-  will reconcile against OpenSky arrival/departure for authoritative origin/dest.
+  ~12-min sampled feed and snaps to the nearest in-coverage airport, not the actual runway.
+  Authoritative origin/dest from OpenSky arrival/departure data lives in the v5.1 flights lane
+  (`fact_flights`); `route_inferred` is not reconciled against it.
 - **Transoceanic fragmentation.** Long-haul flights that leave coverage mid-ocean split into two
   legs, each with one NULL endpoint, so they're excluded from `agg_route_traffic` — which skews
   the leaderboard toward intra-continental routes.
-- **Sparse airframe enrichment.** `dim_aircraft` is antenna-derived (~2,285 airframes), so
-  `registration`/`typecode` are mostly NULL for aircraft outside the rooftop footprint until the
-  v5.1 global registry.
+- **Sparse airframe enrichment.** `dim_aircraft` only has rows for airframes the rooftop has
+  seen, so cross-feed enrichment in `fct_flight_legs` stays NULL for everything else. For
+  rooftop-seen airframes, the v5.1 global registry (`dim_aircraft_registry`) backfills
+  `registration`/`typecode`.
 - **Cross-feed lag + bootstrap.** `fct_flight_legs` geometry is fresh every OpenSky context tick, but its
   rooftop enrichment (`is_military`, `crossed_antenna`) can lag by up to one OpenSky-context-tick interval;
   and on a fresh deploy `transform_adsb_silver` must run once before `transform_marts`.

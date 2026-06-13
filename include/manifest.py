@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Optional
 
 import sqlalchemy as sa
@@ -64,6 +65,22 @@ def pending_uris(uri_prefix: str, engine: Optional[sa.Engine] = None) -> list[di
             dict(r._mapping)
             for r in conn.execute(stmt, {"prefix": f"%/{escaped}/%"}).fetchall()
         ]
+
+
+def batch_fingerprint(uris: list[str]) -> str:
+    return hashlib.sha256("\n".join(sorted(uris)).encode()).hexdigest()
+
+
+def already_appended(table, fingerprint: str) -> bool:
+    # Crash-recovery: if the last commit's snapshot already carries this batch's
+    # fingerprint, the Iceberg append succeeded on a prior attempt that died before
+    # marking the manifest. Skip the append; just reconcile the manifest.
+    current = table.current_snapshot()
+    return bool(
+        current
+        and current.summary
+        and current.summary.additional_properties.get("manifest_fingerprint") == fingerprint
+    )
 
 
 def mark_iceberg_committed(uris: list[str], engine: Optional[sa.Engine] = None) -> int:

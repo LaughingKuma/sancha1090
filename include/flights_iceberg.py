@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
+import polars as pl
 from pyiceberg.catalog import Catalog
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
@@ -49,6 +50,32 @@ FLIGHTS_PARTITION_SPEC = PartitionSpec(
     PartitionField(source_id=3, field_id=1000, transform=DayTransform(), name="first_seen_day"),
 )
 
+RAW_FLIGHTS_SCHEMA = {
+    "icao24": pl.Utf8,
+    "callsign": pl.Utf8,
+    "first_seen": pl.Int64,
+    "last_seen": pl.Int64,
+    "est_departure_airport": pl.Utf8,
+    "est_arrival_airport": pl.Utf8,
+    "captured_for_airport": pl.Utf8,
+    "direction": pl.Utf8,
+    "window_kind": pl.Utf8,
+}
+
+
+def flight_row(f: dict[str, Any], icao: str, direction: str, window_kind: str) -> dict[str, Any]:
+    return {
+        "icao24": f.get("icao24"),
+        "callsign": f.get("callsign"),
+        "first_seen": f.get("firstSeen"),
+        "last_seen": f.get("lastSeen"),
+        "est_departure_airport": f.get("estDepartureAirport"),
+        "est_arrival_airport": f.get("estArrivalAirport"),
+        "captured_for_airport": icao,
+        "direction": direction,
+        "window_kind": window_kind,
+    }
+
 # Subset of OpenSky's aircraft-database.csv columns we keep (identity + operator layer;
 # dim_aircraft_types already covers type → silhouette).
 AIRCRAFT_DB_CSV_COLUMNS = [
@@ -87,13 +114,9 @@ TABLE_PROPERTIES = {
 }
 
 
-def get_catalog() -> Catalog:
-    return get_polaris_catalog()
-
-
 def ensure_flights_table(catalog: Optional[Catalog] = None) -> Table:
     """Idempotent; bronze namespace pre-exists in Polaris (v2.1 bootstrap)."""
-    cat = catalog or get_catalog()
+    cat = catalog or get_polaris_catalog()
     cat.create_namespace_if_not_exists(NAMESPACE)
     return cat.create_table_if_not_exists(
         FLIGHTS_QUALIFIED,
@@ -105,7 +128,7 @@ def ensure_flights_table(catalog: Optional[Catalog] = None) -> Table:
 
 def ensure_aircraft_db_table(catalog: Optional[Catalog] = None) -> Table:
     """Idempotent; bronze namespace pre-exists in Polaris (v2.1 bootstrap)."""
-    cat = catalog or get_catalog()
+    cat = catalog or get_polaris_catalog()
     cat.create_namespace_if_not_exists(NAMESPACE)
     return cat.create_table_if_not_exists(
         AIRCRAFT_DB_QUALIFIED,

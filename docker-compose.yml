@@ -2,6 +2,12 @@
 # Just Postgres (metadata) + Airflow (api-server, scheduler, dag-processor).
 # LocalExecutor — no separate workers, no Redis.
 
+x-airflow-depends: &airflow-depends
+  postgres-airflow:
+    condition: service_healthy
+  airflow-init:
+    condition: service_completed_successfully
+
 # YAML anchor: define common config once, reuse in each Airflow service.
 # This is the same pattern the official Astronomer compose uses.
 x-airflow-common:
@@ -79,9 +85,6 @@ services:
     volumes:
       - .:/sources
     restart: "no"
-    depends_on:
-      postgres-airflow:
-        condition: service_healthy
 
   postgres-airflow:
     image: postgres:15
@@ -178,11 +181,7 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
-    depends_on:
-      postgres-airflow:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
+    depends_on: *airflow-depends
 
   airflow-scheduler:
     <<: *airflow-common
@@ -194,11 +193,7 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
-    depends_on:
-      postgres-airflow:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
+    depends_on: *airflow-depends
 
   airflow-dag-processor:
     <<: *airflow-common
@@ -210,11 +205,7 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
-    depends_on:
-      postgres-airflow:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
+    depends_on: *airflow-depends
 
   garage:
     image: dxflrs/garage:v2.3.0
@@ -254,7 +245,7 @@ services:
       POLARIS_ROOT_CLIENT_ID: ${POLARIS_ROOT_CLIENT_ID:-root}
       POLARIS_ROOT_CLIENT_SECRET: ${POLARIS_ROOT_CLIENT_SECRET:?POLARIS_ROOT_CLIENT_SECRET must be set in .env}
     volumes:
-      - ./scripts/spike_polaris_bootstrap.sh:/bootstrap.sh:ro
+      - ./scripts/polaris_bootstrap.sh:/bootstrap.sh:ro
     entrypoint: ["/bin/sh", "/bootstrap.sh"]
     restart: "no"
 
@@ -312,10 +303,8 @@ services:
       POLARIS_ROOT_CLIENT_ID: ${POLARIS_ROOT_CLIENT_ID:-root}
       POLARIS_ROOT_CLIENT_SECRET: ${POLARIS_ROOT_CLIENT_SECRET:?POLARIS_ROOT_CLIENT_SECRET must be set in .env}
       S3_BUCKET: ${S3_BUCKET:-sancha1090}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
     volumes:
-      - ./scripts/spike_create_polaris_catalog.sh:/setup.sh:ro
+      - ./scripts/create_polaris_catalog.sh:/setup.sh:ro
     entrypoint: ["/bin/sh", "/setup.sh"]
     restart: "no"
 

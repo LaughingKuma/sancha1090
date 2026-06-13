@@ -64,10 +64,10 @@ def tableize_adsb():
 
     @task(outlets=[adsb_bronze_table])
     def add_pending_to_iceberg() -> dict:
-        from include import adsb_iceberg as ai
         from include import adsb_manifest as am
+        from include.iceberg_rest import get_polaris_catalog
 
-        return tableize_core(ai.get_catalog(), am._engine())
+        return tableize_core(get_polaris_catalog(), am._engine())
 
     add_pending_to_iceberg()
 

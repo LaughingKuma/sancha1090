@@ -25,15 +25,6 @@ def test_summarize_counts_landed_and_failed_by_stream():
     assert s["beast_landed"] == 1
 
 
-def test_adsb_landed_count_only_counts_successful_adsb():
-    results = [
-        _r("adsb_state", True, "2026-05-29T01:00:00Z"),
-        _r("adsb_state", False, "2026-05-29T01:00:00Z"),
-        _r("beast_raw", True, "2026-05-29T01:00:00Z"),
-    ]
-    assert ia.adsb_landed_count(results) == 1
-
-
 def test_maybe_log_stale_errors_when_newest_adsb_over_2h_old(caplog):
     now = datetime(2026, 5, 29, 4, 0, 0, tzinfo=timezone.utc)
     results = [_r("adsb_state", True, "2026-05-29T01:00:00Z")]  # 3h behind → stale

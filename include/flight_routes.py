@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 
-import psycopg2
-import trino
 from psycopg2.extras import execute_values
+
+from include.db import rw_connect, trino_connect
 
 # Route memory horizon: callsigns map to stable scheduled legs, so the latest flight
 # within a week is a reliable backstory for an aircraft flying that callsign today.
@@ -37,13 +37,7 @@ def _compute() -> list[tuple]:
            dest_icao, dest_code, dest_city, departed_epoch
     FROM ranked WHERE rn = 1
     """
-    conn = trino.dbapi.connect(
-        host=os.environ.get("TRINO_HOST", "trino-coordinator"),
-        port=int(os.environ.get("TRINO_PORT", "8080")),
-        user=os.environ.get("TRINO_USER", "airflow"),
-        catalog="iceberg",
-        schema="gold",
-    )
+    conn = trino_connect("gold")
     try:
         cur = conn.cursor()
         cur.execute(sql)
@@ -54,13 +48,7 @@ def _compute() -> list[tuple]:
 
 def refresh_flight_routes() -> int:
     rows = _compute()
-    conn = psycopg2.connect(
-        host=os.environ.get("RISINGWAVE_HOST", "risingwave"),
-        port=int(os.environ.get("RISINGWAVE_PORT", "4566")),
-        user="root",
-        dbname="dev",
-    )
-    conn.autocommit = True
+    conn = rw_connect()
     try:
         with conn.cursor() as cur:
             cur.execute(

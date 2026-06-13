@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
-from pyiceberg.catalog.rest import RestCatalog
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.transforms import DayTransform
@@ -14,8 +11,6 @@ from pyiceberg.types import (
     StringType,
     TimestamptzType,
 )
-
-from include.iceberg_rest import get_polaris_catalog
 
 
 NAMESPACE = "bronze"
@@ -51,13 +46,3 @@ SCHEMA = Schema(
 PARTITION_SPEC = PartitionSpec(
     PartitionField(source_id=17, field_id=1000, transform=DayTransform(), name="snapshot_day"),
 )
-
-
-def get_catalog() -> RestCatalog:
-    return get_polaris_catalog()
-
-
-def ensure_namespace_and_table(catalog: Optional[RestCatalog] = None) -> None:  # noqa: ARG001
-    # bronze namespace + table are pre-registered in Polaris (v2.1 bootstrap +
-    # v2.3 sync_polaris); keep the call site contract but no-op here (catalog unused by design).
-    return None

@@ -129,6 +129,66 @@ def _num(value: Any) -> Optional[float]:
     return float(value) if isinstance(value, (int, float)) else None
 
 
+def _trace_preamble(trace_doc: dict[str, Any]) -> Optional[tuple[list[Any], str, float]]:
+    points = trace_doc.get("trace") or []
+    if not points:
+        return None
+    icao = (trace_doc.get("icao") or "").lower()
+    base = trace_doc.get("timestamp")
+    if not icao or icao.startswith("~") or base is None:
+        return None
+    return points, icao, base
+
+
+def _point_row(
+    icao: str,
+    callsign: Optional[str],
+    squawk: Optional[str],
+    t: float,
+    point: list[Any],
+    flags: int,
+    lat: float,
+    lon: float,
+    snapshot_time: int,
+    region: str,
+) -> dict[str, Any]:
+    alt_baro = point[3] if len(point) > 3 else None
+    on_ground = alt_baro == "ground"
+    gs = _num(point[4]) if len(point) > 4 else None
+    track = _num(point[5]) if len(point) > 5 else None
+    baro_rate = _num(point[7]) if len(point) > 7 else None
+    alt_geom = _num(point[10]) if len(point) > 10 else None
+    alt_main = None if on_ground else _num(alt_baro)
+    # flags&8 = the altitude field is geometric, not barometric.
+    alt_is_geom = bool(flags & 8)
+
+    return {
+        "icao24": icao,
+        "callsign": callsign,
+        "origin_country": None,
+        "time_position": int(t),
+        "last_contact": int(t),
+        "longitude": lon,
+        "latitude": lat,
+        "baro_altitude": None if alt_is_geom or alt_main is None else alt_main * FT_TO_M,
+        "on_ground": on_ground,
+        "velocity": gs * KT_TO_MPS if gs is not None else None,
+        "true_track": track,
+        # flags&4 marks a geometric rate — still a vertical rate, keep it.
+        "vertical_rate": baro_rate * FPM_TO_MPS if baro_rate is not None else None,
+        "geo_altitude": (
+            alt_geom * FT_TO_M if alt_geom is not None
+            else (alt_main * FT_TO_M if alt_is_geom and alt_main is not None else None)
+        ),
+        "squawk": squawk,
+        "spi": None,
+        "position_source": None,
+        "snapshot_time": snapshot_time,
+        "region": region,
+        "source": "adsblol",
+    }
+
+
 def resample_trace(
     trace_doc: dict[str, Any],
     day_start: int,
@@ -136,13 +196,10 @@ def resample_trace(
     staleness_s: int = STALENESS_S,
     bbox: tuple[float, float, float, float] = JAPAN_BBOX,
 ) -> list[dict[str, Any]]:
-    points = trace_doc.get("trace") or []
-    if not points:
+    preamble = _trace_preamble(trace_doc)
+    if preamble is None:
         return []
-    icao = (trace_doc.get("icao") or "").lower()
-    base = trace_doc.get("timestamp")
-    if not icao or icao.startswith("~") or base is None:
-        return []
+    points, icao, base = preamble
 
     lamin, lomin, lamax, lomax = bbox
     # k starts at 1: a 00:00 boundary could only be satisfied by the PREVIOUS
@@ -186,41 +243,7 @@ def resample_trace(
         if not (lamin <= lat <= lamax and lomin <= lon <= lomax):
             continue
 
-        alt_baro = point[3] if len(point) > 3 else None
-        on_ground = alt_baro == "ground"
-        gs = _num(point[4]) if len(point) > 4 else None
-        track = _num(point[5]) if len(point) > 5 else None
-        baro_rate = _num(point[7]) if len(point) > 7 else None
-        alt_geom = _num(point[10]) if len(point) > 10 else None
-        alt_main = None if on_ground else _num(alt_baro)
-        # flags&8 = the altitude field is geometric, not barometric.
-        alt_is_geom = bool(flags & 8)
-
-        rows.append({
-            "icao24": icao,
-            "callsign": callsign,
-            "origin_country": None,
-            "time_position": int(t),
-            "last_contact": int(t),
-            "longitude": lon,
-            "latitude": lat,
-            "baro_altitude": None if alt_is_geom or alt_main is None else alt_main * FT_TO_M,
-            "on_ground": on_ground,
-            "velocity": gs * KT_TO_MPS if gs is not None else None,
-            "true_track": track,
-            # flags&4 marks a geometric rate — still a vertical rate, keep it.
-            "vertical_rate": baro_rate * FPM_TO_MPS if baro_rate is not None else None,
-            "geo_altitude": (
-                alt_geom * FT_TO_M if alt_geom is not None
-                else (alt_main * FT_TO_M if alt_is_geom and alt_main is not None else None)
-            ),
-            "squawk": squawk,
-            "spi": None,
-            "position_source": None,
-            "snapshot_time": boundary,
-            "region": "japan",
-            "source": "adsblol",
-        })
+        rows.append(_point_row(icao, callsign, squawk, t, point, flags, lat, lon, boundary, "japan"))
 
     return rows
 
@@ -230,13 +253,10 @@ def dense_rows(
     day_start: int,
     zones: dict[str, tuple[float, float, float, float]] = DENSE_ZONES,
 ) -> list[dict[str, Any]]:
-    points = trace_doc.get("trace") or []
-    if not points:
+    preamble = _trace_preamble(trace_doc)
+    if preamble is None:
         return []
-    icao = (trace_doc.get("icao") or "").lower()
-    base = trace_doc.get("timestamp")
-    if not icao or icao.startswith("~") or base is None:
-        return []
+    points, icao, base = preamble
 
     day_end = day_start + 86400
     rows: list[dict[str, Any]] = []
@@ -271,39 +291,7 @@ def dense_rows(
         if zone is None:
             continue
 
-        alt_baro = point[3] if len(point) > 3 else None
-        on_ground = alt_baro == "ground"
-        gs = _num(point[4]) if len(point) > 4 else None
-        track = _num(point[5]) if len(point) > 5 else None
-        baro_rate = _num(point[7]) if len(point) > 7 else None
-        alt_geom = _num(point[10]) if len(point) > 10 else None
-        alt_main = None if on_ground else _num(alt_baro)
-        alt_is_geom = bool(flags & 8)
-
-        rows.append({
-            "icao24": icao,
-            "callsign": callsign,
-            "origin_country": None,
-            "time_position": int(t),
-            "last_contact": int(t),
-            "longitude": lon,
-            "latitude": lat,
-            "baro_altitude": None if alt_is_geom or alt_main is None else alt_main * FT_TO_M,
-            "on_ground": on_ground,
-            "velocity": gs * KT_TO_MPS if gs is not None else None,
-            "true_track": track,
-            "vertical_rate": baro_rate * FPM_TO_MPS if baro_rate is not None else None,
-            "geo_altitude": (
-                alt_geom * FT_TO_M if alt_geom is not None
-                else (alt_main * FT_TO_M if alt_is_geom and alt_main is not None else None)
-            ),
-            "squawk": squawk,
-            "spi": None,
-            "position_source": None,
-            "snapshot_time": int(t),
-            "region": zone,
-            "source": "adsblol",
-        })
+        rows.append(_point_row(icao, callsign, squawk, t, point, flags, lat, lon, int(t), zone))
 
     return rows
 

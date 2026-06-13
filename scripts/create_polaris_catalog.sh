@@ -6,8 +6,6 @@ apk add --no-cache jq > /dev/null
 REALM=POLARIS
 CATALOG=opensky
 BASE_LOCATION="s3://${S3_BUCKET}/warehouse/"
-S3_ACCESS_KEY="${S3_ACCESS_KEY:?S3_ACCESS_KEY missing}"
-S3_SECRET_KEY="${S3_SECRET_KEY:?S3_SECRET_KEY missing}"
 
 TOKEN=$(curl -s -X POST http://polaris:8181/api/catalog/v1/oauth/tokens \
   -H "Polaris-Realm: ${REALM}" \

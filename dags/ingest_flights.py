@@ -7,6 +7,7 @@ import pendulum
 
 from airflow.sdk import dag, task
 
+from include.airports_jp import AIRPORTS_JP
 from include.assets import raw_flights_landed
 
 
@@ -30,12 +31,6 @@ from include.assets import raw_flights_landed
 )
 def ingest_flights():
 
-    @task
-    def list_airports() -> list[dict[str, Any]]:
-        from include.airports_jp import AIRPORTS_JP
-
-        return AIRPORTS_JP
-
     @task(
         retries=3,
         retry_delay=timedelta(seconds=30),
@@ -46,6 +41,7 @@ def ingest_flights():
         """The actual data never travels through XCom — only the URI."""
 
         import polars as pl
+        from include.flights_iceberg import RAW_FLIGHTS_SCHEMA, flight_row
         from include.opensky_client import OpenSkyClient
         from include.s3_helpers import write_parquet
         from include import manifest
@@ -73,35 +69,12 @@ def ingest_flights():
                 else client.get_flights_departure
             )
             for f in fetch(icao, begin, until):
-                rows.append({
-                    "icao24": f.get("icao24"),
-                    "callsign": f.get("callsign"),
-                    "first_seen": f.get("firstSeen"),
-                    "last_seen": f.get("lastSeen"),
-                    "est_departure_airport": f.get("estDepartureAirport"),
-                    "est_arrival_airport": f.get("estArrivalAirport"),
-                    "captured_for_airport": icao,
-                    "direction": direction,
-                    "window_kind": window_kind,
-                })
+                rows.append(flight_row(f, icao, direction, window_kind))
 
         if not rows:
             return {"airport": icao, "rows": 0, "uri": None}
 
-        df = pl.DataFrame(
-            rows,
-            schema={
-                "icao24": pl.Utf8,
-                "callsign": pl.Utf8,
-                "first_seen": pl.Int64,
-                "last_seen": pl.Int64,
-                "est_departure_airport": pl.Utf8,
-                "est_arrival_airport": pl.Utf8,
-                "captured_for_airport": pl.Utf8,
-                "direction": pl.Utf8,
-                "window_kind": pl.Utf8,
-            },
-        ).with_columns(
+        df = pl.DataFrame(rows, schema=RAW_FLIGHTS_SCHEMA).with_columns(
             pl.lit(end_dt.isoformat()).alias("ingested_at"),
         )
 
@@ -139,8 +112,7 @@ def ingest_flights():
         print(f"Flights ingestion summary: {summary}")
         return summary
 
-    airports = list_airports()
-    results = fetch_airport.expand(airport=airports)
+    results = fetch_airport.expand(airport=AIRPORTS_JP)
     summarize(results)  # type: ignore[arg-type]
 
 

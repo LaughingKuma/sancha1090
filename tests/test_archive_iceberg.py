@@ -18,6 +18,7 @@ def test_archive_schema_mirrors_opensky_states_plus_source():
         )
     extra = archive_fields[-1]
     assert (extra.field_id, extra.name) == (21, "source")
+    assert len({f.field_id for f in archive_fields}) == len(archive_fields)
 
 
 def test_archive_partitioned_by_snapshot_day():

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import csv
-import os
 import sys
 
-import psycopg2
 from psycopg2.extras import execute_values
+
+from include.db import rw_connect
 
 # the same dbt seed CSVs that feed silver — one data source, no live/batch dim drift
 # dim_hex_country stays LAST: it expands into dim_hex_country_buckets, and the --if-empty guard
@@ -20,19 +20,8 @@ BUCKET_BITS = 12  # 4096-address buckets; must match the /4096 in mv_current_air
 SEEDS_DIR = "/opt/airflow/dbt/sancha1090/seeds"
 
 
-def _connect():
-    conn = psycopg2.connect(
-        host=os.environ.get("RISINGWAVE_HOST", "risingwave"),
-        port=int(os.environ.get("RISINGWAVE_PORT", "4566")),
-        user="root",
-        dbname="dev",
-    )
-    conn.autocommit = True
-    return conn
-
-
 def load_dims(only_if_empty: bool = False) -> dict[str, int]:
-    conn = _connect()
+    conn = rw_connect()
     loaded: dict[str, int] = {}
 
     def swap(cur, table: str, cols: tuple[str, ...], rows: list[tuple]) -> None:

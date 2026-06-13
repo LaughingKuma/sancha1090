@@ -7,12 +7,12 @@ import pendulum
 from airflow.sdk import dag, task
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
+from include.iceberg_maintenance import maintenance_statements
+
 
 # bronze.adsb_states is excluded: that lane registers external files via add_files
 # and has its own maintenance story (maintain_adsb_schema).
 BRONZE_TABLES = ["opensky_states", "opensky_flights", "archive_states", "aircraft_db"]
-
-RETENTION = "7d"
 
 
 @dag(
@@ -42,25 +42,12 @@ def maintain_iceberg_states():
         fib.ensure_flights_table()
         fib.ensure_aircraft_db_table()
 
-    # One statement per list entry: the Trino DBAPI runs a single statement per
-    # execute, so SQLExecuteQueryOperator iterates the list rather than splitting.
-    def _ops(op: str) -> list[str]:
-        if op == "optimize":
-            return [f"ALTER TABLE iceberg.bronze.{t} EXECUTE optimize" for t in BRONZE_TABLES]
-        if op == "expire":
-            return [
-                f"ALTER TABLE iceberg.bronze.{t} EXECUTE expire_snapshots(retention_threshold => '{RETENTION}')"
-                for t in BRONZE_TABLES
-            ]
-        if op == "orphans":
-            return [
-                f"ALTER TABLE iceberg.bronze.{t} EXECUTE remove_orphan_files(retention_threshold => '{RETENTION}')"
-                for t in BRONZE_TABLES
-            ]
-        raise ValueError(f"unsupported op {op!r}")
-
     def _task(task_id: str, op: str) -> SQLExecuteQueryOperator:
-        return SQLExecuteQueryOperator(task_id=task_id, conn_id="trino_default", sql=_ops(op))
+        return SQLExecuteQueryOperator(
+            task_id=task_id,
+            conn_id="trino_default",
+            sql=maintenance_statements("bronze", BRONZE_TABLES, op),
+        )
 
     optimize = _task("optimize_bronze", "optimize")
     expire = _task("expire_bronze", "expire")

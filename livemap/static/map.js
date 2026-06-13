@@ -46,6 +46,7 @@ const RUNWAY_ENDS = AIRPORTS.flatMap((ap) =>
 );
 const AMBER = [255, 176, 0];
 const MIL = [255, 59, 48];
+const TEAL = [78, 162, 174];
 const KT_TO_MS = 0.514444;
 // Beyond this the projection outruns reality (turns, descents) — cap the lead here.
 const MAX_DR_S = 15;
@@ -131,6 +132,7 @@ const SHAPES = {
     '<rect x="9" y="25.5" width="46" height="3" rx="1.5" transform="rotate(-35 32 27)"/>',
 };
 const SIL = Object.fromEntries(Object.entries(SHAPES).map(([k, v]) => [k, _icon(v)]));
+document.body.insertAdjacentHTML("beforeend", `<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>${Object.entries(SHAPES).map(([k, s]) => `<g id="sil-${k}" fill="currentColor">${s}</g>`).join("")}</defs></svg>`);
 
 // climb/descend cues — plain triangles, billboarded (never rotated with track)
 const CHEV_UP = _icon('<polygon points="32,14 52,50 12,50"/>');
@@ -369,20 +371,25 @@ function frameData() {
 const TRAIL_S = 90;
 const TRAIL_GAP_S = 2; // sub-2s fixes add segments without adding visible shape
 const GAP_EST_S = MAX_DR_S; // a gap the DR envelope couldn't cover on screen is estimated, not flown track
+function pushFix(pts, lon, lat, ts, altRaw) {
+  const t = Number(ts);
+  if (lon == null || lat == null || !Number.isFinite(t)) return false;
+  const last = pts[pts.length - 1];
+  if (!last || (t - last.ts >= TRAIL_GAP_S && (lon !== last.lon || lat !== last.lat))) {
+    pts.push({ lon, lat, ts: t, altFt: parseAlt(altRaw), est: !!last && t - last.ts > GAP_EST_S });
+    return true;
+  }
+  return false;
+}
 const trails = new Map();
 let trailSegments = [];
 function ingestTrails(rows = snap.aircraft) {
   for (const a of rows) {
     if (!a.hex || a.lon == null || a.lat == null || a.capture_ts == null) continue;
-    // coerce before clock math — a malformed ts would NaN the pruning and strand the trail
-    const captureTs = Number(a.capture_ts);
-    if (!Number.isFinite(captureTs)) continue;
     let tr = trails.get(a.hex);
     if (!tr) trails.set(a.hex, (tr = { pts: [], mil: false }));
     tr.mil = a.is_military === true;
-    const last = tr.pts[tr.pts.length - 1];
-    if (!last || (captureTs - last.ts >= TRAIL_GAP_S && (a.lon !== last.lon || a.lat !== last.lat)))
-      tr.pts.push({ lon: a.lon, lat: a.lat, ts: captureTs, altFt: parseAlt(a.alt_baro), est: !!last && captureTs - last.ts > GAP_EST_S });
+    pushFix(tr.pts, a.lon, a.lat, a.capture_ts, a.alt_baro);
   }
 }
 // Rebuilt on its own clock so trails keep fading through stream errors; 1 Hz is invisible
@@ -528,13 +535,7 @@ async function selectAircraft(hex) {
     const j = await (await fetch(`/track/${encodeURIComponent(hex)}`, { cache: "no-store" })).json();
     if (seq !== trackFetchSeq) return; // a later click or deselect superseded this fetch
     const pts = [];
-    for (const [lon, lat, ts, alt] of j.points || []) {
-      const captureTs = Number(ts);
-      if (lon == null || lat == null || !Number.isFinite(captureTs)) continue;
-      const last = pts[pts.length - 1];
-      if (!last || (captureTs - last.ts >= TRAIL_GAP_S && (lon !== last.lon || lat !== last.lat)))
-        pts.push({ lon, lat, ts: captureTs, altFt: parseAlt(alt), est: !!last && captureTs - last.ts > GAP_EST_S });
-    }
+    for (const [lon, lat, ts, alt] of j.points || []) pushFix(pts, lon, lat, ts, alt);
     // live fixes may have landed while the fetch was in flight — keep them after the history
     const lastTs = pts.length ? pts[pts.length - 1].ts : -Infinity;
     selected.pts = pts.concat(selected.pts.filter((p) => p.ts > lastTs));
@@ -548,12 +549,7 @@ async function selectAircraft(hex) {
 
 function appendSelectedFix(a) {
   selected.mil = a.is_military === true;
-  if (a.lon == null || a.lat == null) return;
-  const captureTs = Number(a.capture_ts);
-  if (!Number.isFinite(captureTs)) return;
-  const last = selected.pts[selected.pts.length - 1];
-  if (!last || (captureTs - last.ts >= TRAIL_GAP_S && (a.lon !== last.lon || a.lat !== last.lat))) {
-    selected.pts.push({ lon: a.lon, lat: a.lat, ts: captureTs, altFt: parseAlt(a.alt_baro), est: !!last && captureTs - last.ts > GAP_EST_S });
+  if (pushFix(selected.pts, a.lon, a.lat, a.capture_ts, a.alt_baro)) {
     pruneSelectedPts();
     rebuildSelectedSegments();
   }
@@ -620,29 +616,30 @@ function buildLayers() {
     if (head.lon !== d.pos[0] || head.lat !== d.pos[1])
       bridges.push({ path: [[head.lon, head.lat], d.pos], color: [...d.tint, Math.round(87 * d.alpha)] });
   }
+  const ringData = feederCenter ? RING_NM.map((nm) => ({ nm })) : [];
   return [
     // station range rings — beneath everything; fresh data array each frame so a late
     // feederCenter fetch is picked up (deck only recomputes attributes on data change)
     new ScatterplotLayer({
       id: "range-rings",
-      data: feederCenter ? RING_NM.map((nm) => ({ nm })) : [],
+      data: ringData,
       getPosition: () => feederCenter,
       getRadius: (d) => d.nm * 1852,
       radiusUnits: "meters",
       stroked: true,
       filled: false,
-      getLineColor: [78, 162, 174, 90],
+      getLineColor: [...TEAL, 90],
       getLineWidth: 1,
       lineWidthUnits: "pixels",
       parameters: { depthTest: false },
     }),
     new TextLayer({
       id: "range-ring-labels",
-      data: feederCenter ? RING_NM.map((nm) => ({ nm })) : [],
+      data: ringData,
       getPosition: (d) => [feederCenter[0], feederCenter[1] + d.nm / 60], // 1 nm = 1/60° lat
       getText: (d) => `${d.nm} nm`,
       getSize: 10,
-      getColor: [78, 162, 174, 150],
+      getColor: [...TEAL, 150],
       fontFamily: "'Spline Sans Mono', monospace",
       getTextAnchor: "middle",
       getAlignmentBaseline: "bottom",
@@ -653,7 +650,7 @@ function buildLayers() {
       id: "airport-runways",
       data: RUNWAY_PATHS,
       getPath: (d) => d.path,
-      getColor: [78, 162, 174, 140], // ring teal — slate vanished against the basemap's pale strips
+      getColor: [...TEAL, 140], // ring teal — slate vanished against the basemap's pale strips
       getWidth: 3,
       widthUnits: "pixels",
       parameters: { depthTest: false },
@@ -664,7 +661,7 @@ function buildLayers() {
       getPosition: (d) => d.label,
       getText: (d) => d.code,
       getSize: 9,
-      getColor: [78, 162, 174, 150],
+      getColor: [...TEAL, 150],
       fontFamily: "'Spline Sans Mono', monospace",
       getTextAnchor: "middle",
       getAlignmentBaseline: "top",
@@ -676,7 +673,7 @@ function buildLayers() {
       getPosition: (d) => d.pos,
       getText: (d) => d.text,
       getSize: 8,
-      getColor: [78, 162, 174, 170],
+      getColor: [...TEAL, 170],
       getPixelOffset: (d) => d.off,
       fontFamily: "'Spline Sans Mono', monospace",
       getTextAnchor: "middle",
@@ -692,7 +689,7 @@ function buildLayers() {
       stroked: true,
       filled: true,
       getFillColor: [24, 116, 130, 20],
-      getLineColor: [78, 162, 174, 130],
+      getLineColor: [...TEAL, 130],
       getLineWidth: 1.3,
       lineWidthUnits: "pixels",
       parameters: { depthTest: false },
@@ -920,7 +917,6 @@ function getTooltip(info) {
 }
 
 // ── Poll the server-side cache (one shared query stream, never one per tab) ──
-const fmt = (n) => String(n).padStart(2, "0");
 let pollInFlight = false;
 async function poll() {
   if (pollInFlight) return; // never let a slow response race a newer one
@@ -958,9 +954,8 @@ async function poll() {
     document.getElementById("stat-total").textContent = total;
     document.getElementById("stat-mil").textContent = milCount;
     renderSpotlight();
-    const d = new Date(serverTs * 1000);
     document.getElementById("meta-line").textContent =
-      `Synced ${fmt(d.getHours())}:${fmt(d.getMinutes())}:${fmt(d.getSeconds())} · ${total} contacts · shared cache`;
+      `Synced ${new Date(serverTs * 1000).toTimeString().slice(0, 8)} · ${total} contacts · shared cache`;
   } catch (e) {
     document.getElementById("meta-line").textContent = `Stream error — retrying… (${e.message})`;
   } finally {

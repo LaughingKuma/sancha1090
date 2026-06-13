@@ -1,22 +1,6 @@
 from __future__ import annotations
 
-import pytest
-
 from include import flights_iceberg as fib
-
-
-@pytest.fixture
-def local_catalog(tmp_path):
-    """A real on-disk PyIceberg catalog (sqlite + local warehouse) — hermetic."""
-    from pyiceberg.catalog.sql import SqlCatalog
-
-    warehouse = tmp_path / "wh"
-    warehouse.mkdir()
-    return SqlCatalog(
-        "test",
-        uri=f"sqlite:///{tmp_path / 'catalog.db'}",
-        warehouse=f"file://{warehouse}",
-    )
 
 
 def test_ensure_flights_table_is_idempotent(local_catalog):

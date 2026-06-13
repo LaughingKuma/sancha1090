@@ -7,6 +7,8 @@ from airflow.providers.standard.operators.bash import BashOperator
 
 from include.assets import bronze_states_table
 
+_DBT = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target trino --no-use-colors"
+
 
 @dag(
     dag_id="transform_marts",
@@ -32,33 +34,19 @@ def transform_marts():
 
         archive_iceberg.ensure_archive_table()
 
-    dbt_deps = BashOperator(
-        task_id="dbt_deps",
-        bash_command=(
-            "cd /opt/airflow/dbt/sancha1090 && "
-            "dbt deps --profiles-dir . --no-use-colors"
-        ),
-    )
-
     # Builds fct_flight_legs, which refs tag:adsb relations (seeds + dim_aircraft + fct_adsb_state)
     # built by transform_adsb_silver — on a fresh deploy, run that DAG once before this one.
     dbt_run_trino = BashOperator(
         task_id="dbt_run_trino",
-        bash_command=(
-            "cd /opt/airflow/dbt/sancha1090 && "
-            "dbt run --profiles-dir . --target trino --no-use-colors --exclude tag:adsb tag:flights"
-        ),
+        bash_command=_DBT.format(cmd="run --exclude tag:adsb tag:flights"),
     )
 
     dbt_test_trino = BashOperator(
         task_id="dbt_test_trino",
-        bash_command=(
-            "cd /opt/airflow/dbt/sancha1090 && "
-            "dbt test --profiles-dir . --target trino --no-use-colors --exclude tag:adsb tag:flights"
-        ),
+        bash_command=_DBT.format(cmd="test --exclude tag:adsb tag:flights"),
     )
 
-    ensure_bronze_tables() >> dbt_deps >> dbt_run_trino >> dbt_test_trino
+    ensure_bronze_tables() >> dbt_run_trino >> dbt_test_trino
 
 
 transform_marts()

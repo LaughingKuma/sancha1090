@@ -73,18 +73,9 @@ def maintain_adsb_schema():
 
     @task
     def scan_drift() -> dict:
-        import os
+        from include.s3_helpers import garage_pyarrow_fs, get_bucket
 
-        from pyarrow.fs import S3FileSystem
-
-        from include.s3_helpers import get_bucket
-
-        fs = S3FileSystem(
-            endpoint_override=f"http://{os.environ['S3_ENDPOINT']}",
-            access_key=os.environ["S3_ACCESS_KEY"], secret_key=os.environ["S3_SECRET_KEY"],
-            region="garage", scheme="http",
-        )
-        return scan_core(fs, f"{get_bucket()}/bronze/adsb_state",
+        return scan_core(garage_pyarrow_fs(), f"{get_bucket()}/bronze/adsb_state",
                          limit_files=DEFAULT_LIMIT_FILES, sample_rows=DEFAULT_SAMPLE_ROWS)
 
     scan_drift()

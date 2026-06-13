@@ -69,7 +69,7 @@ _routes: dict = {}
 _track_buf: collections.deque = collections.deque(maxlen=max(1, int(HISTORY_BUFFER_S / POLL_SECONDS)))
 
 
-def _fetch() -> dict:
+def _rw_rows(sql, params=None, cursor_factory=None):
     conn = psycopg2.connect(
         RW_DSN,
         connect_timeout=DB_CONNECT_TIMEOUT,
@@ -77,105 +77,59 @@ def _fetch() -> dict:
     )
     try:
         conn.autocommit = True
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(QUERY)
-            rows = cur.fetchall()
+        with conn.cursor(cursor_factory=cursor_factory) as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
     finally:
         conn.close()
+
+
+def _fetch() -> dict:
+    rows = _rw_rows(QUERY, cursor_factory=psycopg2.extras.RealDictCursor)
     aircraft = []
     for r in rows:
-        ct = r["capture_ts"]
-        flight = (r["flight"] or "").strip() or None
-        aircraft.append(
-            {
-                "capture_ts": ct.timestamp() if ct is not None else None,
-                "hex": r["hex"],
-                "flight": flight,
-                "route": _routes.get(flight),
-                "lat": r["lat"],
-                "lon": r["lon"],
-                "alt_baro": r["alt_baro"],
-                "gs": r["gs"],
-                "track": r["track"],
-                "typecode": r["typecode"],
-                "aircraft_desc": r["aircraft_desc"],
-                "registration": r["registration"],
-                "body_class": r["body_class"],
-                "is_military": r["is_military"],
-                "is_helicopter": r["is_helicopter"],
-                "airline_name": r["airline_name"],
-                "reg_country": r["reg_country"],
-                "recv": r["recv"],
-                "own_op": r["own_op"],
-                "year": r["year"],
-                "category": r["category"],
-            }
-        )
+        a = dict(r)
+        ct = a["capture_ts"]
+        a["capture_ts"] = ct.timestamp() if ct is not None else None
+        flight = (a["flight"] or "").strip() or None
+        a["flight"] = flight
+        a["route"] = _routes.get(flight)
+        aircraft.append(a)
     return {"server_ts": time.time(), "aircraft": aircraft}
 
 
 def _fetch_outline() -> list:
-    conn = psycopg2.connect(
-        RW_DSN,
-        connect_timeout=DB_CONNECT_TIMEOUT,
-        options=f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",
+    # latest complete generation only (max gen) — never a half-written polygon; table may not exist yet
+    rows = _rw_rows(
+        "SELECT lon, lat FROM range_outline "
+        "WHERE gen = (SELECT max(gen) FROM range_outline) ORDER BY bin"
     )
-    try:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            # latest complete generation only (max gen) — never a half-written polygon; table may not exist yet
-            cur.execute(
-                "SELECT lon, lat FROM range_outline "
-                "WHERE gen = (SELECT max(gen) FROM range_outline) ORDER BY bin"
-            )
-            ring = [[float(lon), float(lat)] for lon, lat in cur.fetchall()]
-    finally:
-        conn.close()
+    ring = [[float(lon), float(lat)] for lon, lat in rows]
     if ring:
         ring.append(ring[0])  # close the polygon
     return ring
 
 
 def _fetch_routes() -> dict:
-    conn = psycopg2.connect(
-        RW_DSN,
-        connect_timeout=DB_CONNECT_TIMEOUT,
-        options=f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",
+    # latest complete generation only (max gen); table may not exist yet
+    rows = _rw_rows(
+        "SELECT callsign, origin_code, origin_city, dest_code, dest_city, departed_epoch "
+        "FROM dim_flight_routes "
+        "WHERE gen = (SELECT max(gen) FROM dim_flight_routes)"
     )
-    try:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            # latest complete generation only (max gen); table may not exist yet
-            cur.execute(
-                "SELECT callsign, origin_code, origin_city, dest_code, dest_city, departed_epoch "
-                "FROM dim_flight_routes "
-                "WHERE gen = (SELECT max(gen) FROM dim_flight_routes)"
-            )
-            return {
-                cs: {
-                    "origin": oc, "origin_city": ocity,
-                    "dest": dc, "dest_city": dcity,
-                    "departed_epoch": dep,
-                }
-                for cs, oc, ocity, dc, dcity, dep in cur.fetchall()
-            }
-    finally:
-        conn.close()
+    return {
+        cs: {
+            "origin": oc, "origin_city": ocity,
+            "dest": dc, "dest_city": dcity,
+            "departed_epoch": dep,
+        }
+        for cs, oc, ocity, dc, dcity, dep in rows
+    }
 
 
 def _fetch_track(icao: str) -> list:
-    conn = psycopg2.connect(
-        RW_DSN,
-        connect_timeout=DB_CONNECT_TIMEOUT,
-        options=f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",
-    )
-    try:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute(TRACK_QUERY, (icao,))
-            return [[lon, lat, ct.timestamp(), alt] for lon, lat, ct, alt in cur.fetchall()]
-    finally:
-        conn.close()
+    rows = _rw_rows(TRACK_QUERY, params=(icao,))
+    return [[lon, lat, ct.timestamp(), alt] for lon, lat, ct, alt in rows]
 
 
 async def _poller() -> None:
@@ -231,8 +185,8 @@ async def track(icao: str) -> JSONResponse:
 
 @app.get("/history")
 async def history(s: float = 90.0) -> JSONResponse:
-    # clamp to (0, 120] — backfill serves the 90 s wake, never the full 30 min ring
-    s = min(s if s > 0 else 90.0, 120.0)
+    # clamp to the wake buffer — backfill serves the 90 s wake, never the full 30 min ring
+    s = min(s if s > 0 else 90.0, HISTORY_BUFFER_S)
     cutoff = time.time() - s
     snaps = [[ts, rows] for ts, rows in _track_buf if ts >= cutoff]
     return JSONResponse({"snapshots": snaps})
@@ -256,4 +210,8 @@ class RevalidatedStatic(StaticFiles):
 
 
 # Mounted last so /aircraft and /healthz win; serves index.html at /
-app.mount("/", RevalidatedStatic(directory="static", html=True), name="static")
+app.mount(
+    "/",
+    RevalidatedStatic(directory=os.path.join(os.path.dirname(__file__), "static"), html=True),
+    name="static",
+)

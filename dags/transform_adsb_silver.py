@@ -27,10 +27,6 @@ _DBT = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target tr
 )
 def transform_adsb_silver():
 
-    dbt_deps = BashOperator(
-        task_id="dbt_deps",
-        bash_command=_DBT.format(cmd="deps").replace(" --target trino", ""),
-    )
     dbt_seed = BashOperator(
         task_id="dbt_seed",
         bash_command=_DBT.format(cmd="seed --select tag:adsb"),
@@ -44,7 +40,7 @@ def transform_adsb_silver():
         bash_command=_DBT.format(cmd="test --select tag:adsb"),
     )
 
-    dbt_deps >> dbt_seed >> dbt_run >> dbt_test
+    dbt_seed >> dbt_run >> dbt_test
 
 
 transform_adsb_silver()

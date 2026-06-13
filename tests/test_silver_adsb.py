@@ -1,32 +1,8 @@
 from __future__ import annotations
 
-import os
-
-import pytest
-
 
 # Doc sanity targets: these ICAO designators must resolve through the callsign->dim_airlines join.
 TOP_AIRLINE_ANCHORS = {"ANA", "JAL", "CPA", "UAL", "EVA", "CAL"}
-
-
-@pytest.fixture(scope="module")
-def cur():
-    try:
-        import trino
-    except ImportError as exc:
-        pytest.skip(f"trino client not available: {exc}")
-    try:
-        conn = trino.dbapi.connect(
-            host=os.environ.get("TRINO_HOST", "trino-coordinator"),
-            port=int(os.environ.get("TRINO_PORT", "8080")),
-            user="root", catalog="iceberg", http_scheme="http",
-        )
-        c = conn.cursor()
-        c.execute("SELECT 1")
-        c.fetchall()
-    except Exception as exc:  # only infra unreachability skips; missing tables must fail loudly (RED)
-        pytest.skip(f"trino not reachable: {exc}")
-    return c
 
 
 def _q(cur, sql):

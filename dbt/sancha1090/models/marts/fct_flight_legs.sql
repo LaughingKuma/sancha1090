@@ -6,7 +6,7 @@
 {{ config(materialized='table') }}
 
 -- INFERRED legs from the ~12-min OpenSky context feed: sessionize each airframe, snap low-altitude
--- endpoints to airports. route_inferred is an approximation, NOT ground truth (v5.2 reconciles).
+-- endpoints to airports. route_inferred is an approximation, NOT ground truth (fact_flights is authoritative).
 with ordered as (
     select
         icao24,

@@ -46,7 +46,6 @@ def credit_cost(bbox_area_sq_deg: float) -> int:
     for upper, cost in CREDIT_TIERS:
         if bbox_area_sq_deg <= upper:
             return cost
-    return 4
 
 
 def bbox_area_sq_deg(region: dict) -> float:

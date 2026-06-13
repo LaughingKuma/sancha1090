@@ -6,21 +6,13 @@ import pytest
 def _catalog_or_skip():
     try:
         from include import iceberg as ib
+        from include.iceberg_rest import get_polaris_catalog
 
-        catalog = ib.get_catalog()
+        catalog = get_polaris_catalog()
         catalog.load_table(ib.QUALIFIED)
     except Exception as exc:
         pytest.skip(f"polaris not reachable from this host: {exc}")
     return ib, catalog
-
-
-def test_get_catalog_is_polaris_rest():
-    from pyiceberg.catalog.rest import RestCatalog
-
-    ib, catalog = _catalog_or_skip()
-    assert isinstance(catalog, RestCatalog), (
-        "get_catalog() must return a Polaris RestCatalog after v2.4-5"
-    )
 
 
 def test_tableize_increments_polaris_snapshot_count():

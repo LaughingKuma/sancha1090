@@ -1,36 +1,8 @@
 from __future__ import annotations
 
-import os
-
-import pytest
-
 
 # Keep in sync with var legs_cruise_alt_m in dbt_project.yml.
 CRUISE_ALT_M = 3000
-
-
-@pytest.fixture(scope="module")
-def cur():
-    try:
-        import trino
-    except ImportError as exc:
-        pytest.skip(f"trino client not available: {exc}")
-    try:
-        conn = trino.dbapi.connect(
-            host=os.environ.get("TRINO_HOST", "trino-coordinator"),
-            port=int(os.environ.get("TRINO_PORT", "8080")),
-            user="root", catalog="iceberg", http_scheme="http",
-        )
-        c = conn.cursor()
-        c.execute("SELECT 1")
-        c.fetchall()
-    except Exception as exc:  # only infra unreachability skips; missing tables must fail loudly (RED)
-        pytest.skip(f"trino not reachable: {exc}")
-    try:
-        yield c
-    finally:
-        c.close()
-        conn.close()
 
 
 def _q(cur, sql):

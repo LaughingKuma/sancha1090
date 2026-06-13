@@ -72,21 +72,6 @@ def test_all_columns_nullable_matching_producer():
     assert all(not f.required for f in ai.ADSB_SCHEMA.fields)
 
 
-@pytest.fixture
-def local_catalog(tmp_path):
-    """A real on-disk PyIceberg catalog (sqlite + local warehouse) — higher fidelity for
-    the add_files reconciliation than mocking, and fully hermetic."""
-    from pyiceberg.catalog.sql import SqlCatalog
-
-    warehouse = tmp_path / "wh"
-    warehouse.mkdir()
-    return SqlCatalog(
-        "test",
-        uri=f"sqlite:///{tmp_path / 'catalog.db'}",
-        warehouse=f"file://{warehouse}",
-    )
-
-
 def test_ensure_adsb_namespace_and_table_is_idempotent(local_catalog):
     t1 = ai.ensure_adsb_namespace_and_table(local_catalog)
     t2 = ai.ensure_adsb_namespace_and_table(local_catalog)

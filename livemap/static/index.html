@@ -280,61 +280,9 @@
   </div>
 </div>
 
-<!-- North-pointing silhouettes — same shapes as map.js, reused by the fleet legend -->
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <defs>
-    <g id="sil-airliner" fill="currentColor">
-      <path fill-rule="evenodd" opacity="0.82" d="M32,3 L35,10 L34,24 L60,39 L60,43 L34,31 L33,48 L39,52 L39,55 L32,52 L25,55 L25,52 L31,48 L30,31 L4,43 L4,39 L30,24 L29,10 Z M32,5 L34.1,9.4 L29.9,9.4 Z"/>
-      <polygon opacity="0.3" points="32,5 34.1,9.4 29.9,9.4"/>
-      <ellipse cx="25.5" cy="29" rx="2" ry="3.4"/><ellipse cx="38.5" cy="29" rx="2" ry="3.4"/>
-    </g>
-    <g id="sil-widebody" fill="currentColor">
-      <path fill-rule="evenodd" opacity="0.82" d="M32,3 L37,12 L36,23 L61,38 L61,43 L36,31 L35,48 L42,53 L42,56 L32,53 L22,56 L22,53 L29,48 L28,31 L3,43 L3,38 L28,23 L27,12 Z M32,5.5 L34.4,10.8 L29.6,10.8 Z"/>
-      <polygon opacity="0.3" points="32,5.5 34.4,10.8 29.6,10.8"/>
-      <ellipse cx="24.5" cy="28.5" rx="2.5" ry="4"/><ellipse cx="39.5" cy="28.5" rx="2.5" ry="4"/>
-    </g>
-    <g id="sil-quad" fill="currentColor">
-      <path fill-rule="evenodd" opacity="0.82" d="M32,3 L35,10 L34,24 L60,39 L60,43 L34,31 L33,48 L39,52 L39,55 L32,52 L25,55 L25,52 L31,48 L30,31 L4,43 L4,39 L30,24 L29,10 Z M32,5 L34.1,9.4 L29.9,9.4 Z"/>
-      <polygon opacity="0.3" points="32,5 34.1,9.4 29.9,9.4"/>
-      <ellipse cx="27" cy="29" rx="2.5" ry="3.8"/><ellipse cx="37" cy="29" rx="2.5" ry="3.8"/>
-      <ellipse cx="20" cy="32" rx="2.5" ry="3.8"/><ellipse cx="44" cy="32" rx="2.5" ry="3.8"/>
-    </g>
-    <g id="sil-a380" fill="currentColor">
-      <path fill-rule="evenodd" opacity="0.82" d="M32,4 L34.3,6.8 L36,11 L36,21 L62,37 L62,42 L35.5,33 L34.5,49 L44,55 L44,58 L32,54.5 L20,58 L20,55 L29.5,49 L28.5,33 L2,42 L2,37 L28,21 L28,11 L29.7,6.8 Z M32,6.5 L34.5,11 L29.5,11 Z"/>
-      <polygon opacity="0.3" points="32,6.5 34.5,11 29.5,11"/>
-      <ellipse cx="41" cy="25.5" rx="2.8" ry="4.4"/><ellipse cx="50" cy="31" rx="2.6" ry="4.1"/>
-      <ellipse cx="23" cy="25.5" rx="2.8" ry="4.4"/><ellipse cx="14" cy="31" rx="2.6" ry="4.1"/>
-    </g>
-    <g id="sil-b747" fill="currentColor">
-      <path fill-rule="evenodd" opacity="0.82" d="M32,2 L35,7 L35.5,16 L34.5,19 L34,26 L58,43 L58,46.5 L34,35 L33.5,51 L41,56.5 L41,59.5 L32,56 L23,59.5 L23,56.5 L30.5,51 L30,35 L6,46.5 L6,43 L30,26 L29.5,19 L28.5,16 L29,7 Z M32,4 L34,7.4 L30,7.4 Z"/>
-      <polygon opacity="0.3" points="32,4 34,7.4 30,7.4"/>
-      <rect x="30" y="8.5" width="4" height="8.5" rx="2"/>
-      <ellipse cx="39.5" cy="30" rx="2.5" ry="4.2"/><ellipse cx="46.5" cy="35.5" rx="2.4" ry="3.9"/>
-      <ellipse cx="24.5" cy="30" rx="2.5" ry="4.2"/><ellipse cx="17.5" cy="35.5" rx="2.4" ry="3.9"/>
-    </g>
-    <g id="sil-regional" fill="currentColor">
-      <polygon points="32,7 34,13 33,24 55,30 55,33 33,28 32,48 37,52 37,54 32,51 27,54 27,52 31,48 31,28 9,33 9,30 31,24 30,13"/>
-      <circle cx="16" cy="26" r="4" opacity="0.8"/><circle cx="48" cy="26" r="4" opacity="0.8"/>
-    </g>
-    <g id="sil-ga" fill="currentColor">
-      <ellipse cx="32" cy="11" rx="9" ry="1.8" opacity="0.7"/>
-      <rect x="30.4" y="10" width="3.2" height="42" rx="1.6"/>
-      <rect x="7" y="25" width="50" height="3.6" rx="1.8"/>
-      <rect x="22" y="46" width="20" height="3" rx="1.5"/>
-    </g>
-    <g id="sil-heli" fill="currentColor">
-      <circle cx="32" cy="27" r="12" opacity="0.22"/>
-      <rect x="30.5" y="27" width="3" height="28" rx="1.5"/><rect x="28" y="51" width="8" height="3" rx="1.5"/>
-      <ellipse cx="32" cy="27" rx="5.5" ry="7.5"/>
-      <rect x="9" y="25.5" width="46" height="3" rx="1.5" transform="rotate(35 32 27)"/>
-      <rect x="9" y="25.5" width="46" height="3" rx="1.5" transform="rotate(-35 32 27)"/>
-    </g>
-  </defs>
-</svg>
-
 <script src="vendor/maplibre-gl.js"></script>
 <script src="vendor/deck.gl.min.js"></script>
 <!-- versioned URL evicts pre-no-cache copies browsers heuristic-cached; bump on release -->
-<script src="map.js?v=5.7.1"></script>
+<script src="map.js?v=5.7.2"></script>
 </body>
 </html>

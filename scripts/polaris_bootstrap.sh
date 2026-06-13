@@ -11,7 +11,7 @@ if [ $rc -eq 0 ]; then
   exit 0
 fi
 if echo "$out" | grep -q "already been bootstrapped"; then
-  echo "spike-bootstrap: realm POLARIS already bootstrapped, treating as success"
+  echo "polaris-bootstrap: realm POLARIS already bootstrapped, treating as success"
   exit 0
 fi
 exit $rc

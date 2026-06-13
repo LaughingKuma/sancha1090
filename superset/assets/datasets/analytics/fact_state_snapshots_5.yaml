@@ -29,19 +29,6 @@ metrics:
   extra: null
   warning_text: null
 columns:
-- column_name: snapshot_day
-  verbose_name: null
-  is_dttm: true
-  is_active: true
-  type: TIMESTAMP WITH TIME ZONE
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: null
-  description: null
-  python_date_format: null
-  datetime_format: null
-  extra: null
 - column_name: snapshot_time
   verbose_name: null
   is_dttm: true
@@ -164,19 +151,6 @@ columns:
   is_dttm: false
   is_active: true
   type: BOOLEAN
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: null
-  description: null
-  python_date_format: null
-  datetime_format: null
-  extra: null
-- column_name: snapshot_epoch
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: BIGINT
   advanced_data_type: null
   groupby: true
   filterable: true

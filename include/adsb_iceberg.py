@@ -15,6 +15,8 @@ from pyiceberg.types import (
     StringType,
 )
 
+from include.iceberg_rest import get_polaris_catalog
+
 
 NAMESPACE = "bronze"
 TABLE = "adsb_states"
@@ -76,16 +78,10 @@ TABLE_PROPERTIES = {
 _ENTRY_STATUS_ADDED = 1
 
 
-def get_catalog() -> Catalog:
-    from include.iceberg_rest import get_polaris_catalog
-
-    return get_polaris_catalog()
-
-
 def ensure_adsb_namespace_and_table(catalog: Optional[Catalog] = None) -> Table:
     """Idempotent. The bronze namespace already exists in Polaris (v2.1 bootstrap); the
     if_not_exists calls make this a no-op on re-run."""
-    cat = catalog or get_catalog()
+    cat = catalog or get_polaris_catalog()
     cat.create_namespace_if_not_exists(NAMESPACE)
     return cat.create_table_if_not_exists(
         QUALIFIED,

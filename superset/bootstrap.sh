@@ -19,7 +19,8 @@ superset init
 # Every *.yaml under /app/assets is read, run through os.path.expandvars so
 # placeholders like ${ANALYTICS_DB_URI} resolve from the container env, and
 # handed to ImportAssetsCommand — the same code path as /api/v1/assets/import/.
-# Upserts by UUID, so re-running keeps assets in sync on every start.
+# Charts/dashboards upsert by UUID, but datasets match on (database_id, catalog,
+# schema, table_name) — re-pointing a seeded instance needs a one-time metadata UPDATE.
 echo "Importing assets bundle..."
 python3 - <<'PY'
 import os
