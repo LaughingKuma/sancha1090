@@ -16,7 +16,7 @@ _HELI_CLASSES = {"Helicopter", "Gyrocopter", "Tiltrotor"}
 # "2/Jet") is curated — only 2-engine widebodies need listing; 4-engine types are quad by count.
 _WIDEBODY = {
     "A30B", "A306", "A310", "A3ST", "A332", "A333", "A338", "A339", "A359", "A35K",
-    "B762", "B763", "B764", "B772", "B77L", "B77W", "B778", "B779", "B788", "B789", "B78X",
+    "B762", "B763", "B764", "B772", "B773", "B77L", "B77W", "B778", "B779", "B788", "B789", "B78X",
 }
 
 

@@ -12,6 +12,7 @@ SAMPLE = (
     'Aircraft TypeDesignator,Class,Number+Engine Type,"MANUFACTURER, Model"\n'
     'B738,LandPlane,2/Jet,"BOEING, 737-800"\n'
     'A359,LandPlane,2/Jet,"AIRBUS, A-350-900 XWB"\n'
+    'B773,LandPlane,2/Jet,"BOEING, 777-300"\n'
     'A388,LandPlane,4/Jet,"AIRBUS, A-380-800"\n'
     'B744,LandPlane,4/Jet,"BOEING, 747-400"\n'
     'DH8D,LandPlane,2/Turboprop/Turboshaft,"DE HAVILLAND CANADA, DHC-8-400"\n'
@@ -31,6 +32,7 @@ def test_body_class_mapping():
     assert rows["A388"]["body_class"] == "quad"      # 4 engines
     assert rows["B744"]["body_class"] == "quad"
     assert rows["A359"]["body_class"] == "widebody"  # 2-jet, curated widebody set
+    assert rows["B773"]["body_class"] == "widebody"  # 777-300 (non-ER) — 2-jet, curated widebody set
     assert rows["B738"]["body_class"] == "narrowbody"  # 2-jet, not widebody
     assert rows["DH8D"]["body_class"] == "regional"  # 2-turboprop
     assert rows["C172"]["body_class"] == "ga"        # single

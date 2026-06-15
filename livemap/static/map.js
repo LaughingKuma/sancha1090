@@ -245,6 +245,26 @@ function stationVector(lon, lat) {
   return { nm, brg };
 }
 
+// Route endpoint: city with its code when we have a city name, bare code otherwise.
+const routeEnd = (city, code) => (city ? `${city} · ${code}` : (code ?? "—"));
+
+// ADS-B emitter category → ICAO wake-turbulence class (the terms ATC/pilots use), not the
+// raw DO-260 size names — so a 737 reads Medium, not "Large". B*/C* keep a vehicle-type label.
+const CATEGORY_LABEL = {
+  A1: "Light", A2: "Medium", A3: "Medium", A4: "Heavy", A5: "Heavy",
+  B1: "Glider", B2: "LTA", B4: "Ultralight", B6: "UAV", B7: "Space",
+  C1: "Surface", C2: "Surface", C3: "Obstacle",
+};
+// Wake class is a property of the airframe TYPE: per-typecode overrides first, then body_class
+// (curated from dim_aircraft_types), then the noisy ADS-B category (often A0 = "no info") as last resort.
+const WAKE_BY_BODY = { ga: "Light", regional: "Medium", narrowbody: "Medium", widebody: "Heavy", quad: "Heavy" };
+// A380 is a quad but its own ICAO wake class (Super); body_class can't express that.
+const WAKE_BY_TYPE = { A388: "Super" };
+const classLabel = (a) => {
+  if (a.is_helicopter === true) return null; // HELI badge already covers rotorcraft — no wake chip
+  return WAKE_BY_TYPE[a.typecode] ?? WAKE_BY_BODY[a.body_class] ?? CATEGORY_LABEL[a.category] ?? null;
+};
+
 // D-2-sourced rows carry an old departure time — show the clock only when it's today's leg
 function routeSuffix(r) {
   if (!r) return "";
@@ -487,6 +507,12 @@ function renderSpotlight() {
   const c = cardData(a);
   spEl("sp-callsign").textContent = c.callsign;
   spEl("sp-badges").innerHTML = c.badges;
+  const stEl = spEl("sp-state");
+  stEl.hidden = !c.state;
+  stEl.textContent = c.state || "";
+  const flagEl = spEl("sp-flag");
+  flagEl.hidden = !c.flagIso;
+  flagEl.className = c.flagIso ? `fi sp-flag fi-${c.flagIso}` : "fi sp-flag";
   spEl("sp-model").textContent = c.model;
   spEl("sp-org").textContent = c.org;
   spEl("sp-route").hidden = !c.route;
@@ -581,6 +607,15 @@ function detectAcquisitions() {
   }
   for (const [hex, ts] of lastSeen) if (t - ts > 600) lastSeen.delete(hex); // bound memory
 }
+
+// country NAME → ISO2 (built from flag-icons); drives the card flag chip. Empty until loaded.
+let countryIso2 = {};
+(async () => {
+  try {
+    const r = await fetch("country-iso2.json");
+    if (r.ok) countryIso2 = await r.json();
+  } catch {} // no map → no flags, never an error
+})();
 
 // Receiver coverage outline + dot — slow-changing, fetched separately from the 1 Hz aircraft poll.
 let outlineData = [];
@@ -861,21 +896,23 @@ const esc = (v) =>
 // one builder feeds both the hover card and the spotlight so the two can never drift apart
 function cardData(a) {
   const vs = verticalState(a.hex);
-  const vsMark = vs > 0 ? " ▲" : vs < 0 ? " ▼" : "";
   const fixTs = finiteTs(a.pos_ts, a.capture_ts);
   const fage = fixTs == null ? NaN : serverNow() - fixTs;
   const sv = stationVector(a.lon, a.lat);
   const model = a.aircraft_desc || a.typecode || "—";
+  const catLabel = classLabel(a);
   return {
     callsign: a.flight || a.hex || "UNKNOWN",
     badges:
       (a.is_military === true ? '<span class="badge">MIL</span>' : "") +
-      (a.is_helicopter ? '<span class="badge">HELI</span>' : ""),
+      (a.is_helicopter ? '<span class="badge">HELI</span>' : "") +
+      (catLabel ? `<span class="badge">${catLabel}</span>` : ""),
+    state: vs > 0 ? "▲ CLIMB" : vs < 0 ? "▼ DESC" : null,
     model: a.year ? `${model} · ${a.year}` : model,
     org: a.airline_name || a.own_op || "Unregistered callsign",
     // Backstory ring (v5.1): latest known route for this callsign from the flights catalog.
-    route: a.route ? `${a.route.origin} → ${a.route.dest}${routeSuffix(a.route)}` : null,
-    alt: a.alt_baro == null ? "—" : a.alt_baro === "ground" ? "GROUND" : `${a.alt_baro} ft${vsMark}`,
+    route: a.route ? `${routeEnd(a.route.origin_city, a.route.origin)} → ${routeEnd(a.route.dest_city, a.route.dest)}${routeSuffix(a.route)}` : null,
+    alt: a.alt_baro == null ? "—" : a.alt_baro === "ground" ? "GROUND" : `${a.alt_baro} ft`,
     spd: a.gs == null ? "—" : `${Math.round(a.gs)} kt`,
     hdg: a.track == null ? "—" : `${Math.round(a.track)}°`,
     rng: sv ? `${sv.nm.toFixed(1)} nm` : "—",
@@ -884,6 +921,7 @@ function cardData(a) {
     code: a.typecode || "—",
     hex: (a.hex || "—").toUpperCase(),
     origin: a.reg_country || "—",
+    flagIso: a.reg_country && Object.hasOwn(countryIso2, a.reg_country) ? countryIso2[a.reg_country] : null,
     recv: a.recv || "—",
     contact: !Number.isFinite(fage) ? "—" : fage < 5 ? "live" : `last fix ${Math.round(fage)} s ago`,
   };
@@ -896,7 +934,7 @@ function getTooltip(info) {
   if (selected && a.hex === selected.hex) return null;
   const c = cardData(a);
   const html =
-    `<div class="flight ${a.is_military === true ? "mil" : ""}">${esc(c.callsign)}${c.badges}</div>` +
+    `<div class="flight ${a.is_military === true ? "mil" : ""}">${c.flagIso ? `<span class="fi fi-${c.flagIso}"></span> ` : ""}${esc(c.callsign)}${c.badges}${c.state ? `<span class="tip-state">${c.state}</span>` : ""}</div>` +
     `<div class="model">${esc(c.model)}</div>` +
     `<div class="org">${esc(c.org)}</div>` +
     (c.route ? `<div class="route">${esc(c.route)}</div>` : "") +

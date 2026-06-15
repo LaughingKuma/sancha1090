@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 <link href="vendor/maplibre-gl.css" rel="stylesheet" />
+<link href="vendor/flag-icons/css/flag-icons.min.css" rel="stylesheet" />
 <style>
   :root {
     --void: #05080c;
@@ -156,10 +157,17 @@
     letter-spacing: 0.04em; color: var(--amber); flex: 1;
   }
   .spotlight.mil .sp-callsign { color: var(--mil); }
-  .sp-head .badge {
-    font-size: 8px; letter-spacing: 0.16em; padding: 2px 5px;
+  /* shared header chips (spotlight + tooltip): equal-height pills that line up */
+  .badge, .sp-state, .tip-state {
+    display: inline-flex; align-items: center; line-height: 1;
+    font-size: 8px; padding: 3px 5px;
     border: 1px solid currentColor; border-radius: 1px; text-transform: uppercase;
   }
+  .badge { letter-spacing: 0.16em; }
+  .sp-state, .tip-state { letter-spacing: 0.14em; color: var(--amber-dim); white-space: nowrap; }
+  /* center the badge cluster like the state pill so the header chips line up */
+  #sp-badges { display: inline-flex; align-items: center; gap: 6px; }
+  .sp-head .sp-flag { font-size: 13px; border-radius: 1px; box-shadow: 0 0 0 1px rgba(0,0,0,0.45); flex: 0 0 auto; }
   .sp-close {
     background: none; border: none; color: var(--ink-dim); cursor: pointer;
     font-size: 13px; padding: 2px 4px;
@@ -197,10 +205,7 @@
     display: flex; align-items: center; gap: 8px;
   }
   .ac-tip .flight.mil { color: var(--mil); }
-  .ac-tip .badge {
-    font-size: 8px; letter-spacing: 0.16em; padding: 2px 5px;
-    border: 1px solid currentColor; border-radius: 1px; text-transform: uppercase;
-  }
+  .ac-tip .flight .fi { font-size: 12px; border-radius: 1px; vertical-align: -1px; }
   .ac-tip .model { font-size: 11px; color: var(--ink); letter-spacing: 0.03em; margin-bottom: 2px; }
   .ac-tip .org { color: var(--ink-dim); margin-bottom: 7px; font-size: 10px; letter-spacing: 0.04em; }
   .ac-tip .route { color: var(--amber); margin: -5px 0 7px; font-size: 10px; letter-spacing: 0.04em; }
@@ -233,8 +238,10 @@
 
   <aside class="hud spotlight" id="spotlight" aria-label="Aircraft spotlight" hidden>
     <div class="sp-head">
+      <span class="fi sp-flag" id="sp-flag" hidden></span>
       <span class="sp-callsign" id="sp-callsign">—</span>
       <span id="sp-badges"></span>
+      <span class="sp-state" id="sp-state" hidden></span>
       <button type="button" class="sp-close" id="sp-close" aria-label="Close">✕</button>
     </div>
     <div class="sp-model" id="sp-model">—</div>
@@ -283,6 +290,6 @@
 <script src="vendor/maplibre-gl.js"></script>
 <script src="vendor/deck.gl.min.js"></script>
 <!-- versioned URL evicts pre-no-cache copies browsers heuristic-cached; bump on release -->
-<script src="map.js?v=5.7.2"></script>
+<script src="map.js?v=5.8.0"></script>
 </body>
 </html>
