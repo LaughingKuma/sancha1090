@@ -20,6 +20,7 @@
     --ink: #e8eef5;
     --ink-dim: #7e93a8;
     --mil: #ff3b30;
+    --teal: #4ea2ae;
     --grid: rgba(120, 170, 210, 0.05);
   }
 
@@ -168,6 +169,34 @@
   /* center the badge cluster like the state pill so the header chips line up */
   #sp-badges { display: inline-flex; align-items: center; gap: 6px; }
   .sp-head .sp-flag { font-size: 13px; border-radius: 1px; box-shadow: 0 0 0 1px rgba(0,0,0,0.45); flex: 0 0 auto; }
+  /* PR 1b-i: emergency (squawk 7700/7600/7500) — Medium intensity: thin rule + label, no fill/glow */
+  .spotlight.emerg { border-color: rgba(255,59,48,0.55); }
+  .spotlight.emerg .sp-callsign { color: var(--mil); }
+  .sp-emerg {
+    margin: -12px -14px 9px; padding: 5px 12px;
+    border-bottom: 1px solid rgba(255,59,48,0.45);
+    color: #ff7068; font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .sp-emerg::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--mil); flex: 0 0 auto;
+    box-shadow: 0 0 0 0 rgba(255,59,48,0.6); animation: emerg-pulse 2s infinite;
+  }
+  @keyframes emerg-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255,59,48,0.45); }
+    70% { box-shadow: 0 0 0 5px rgba(255,59,48,0); }
+    100% { box-shadow: 0 0 0 0 rgba(255,59,48,0); }
+  }
+  @media (prefers-reduced-motion: reduce) { .sp-emerg::before { animation: none; } }
+  /* MLAT vs ADS-B source — a Source row in both cards; MLAT (the rarer, interesting one) glows teal */
+  .sp-live dd.src-mlat, .ac-tip dd.src-mlat { color: var(--teal); }
+  /* tooltip emergency parity */
+  .ac-tip.emerg { border-color: var(--mil) !important; }
+  .ac-tip .flight.emerg { color: var(--mil); }
+  .tip-emerg {
+    color: #ff7068; font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase;
+    margin-bottom: 5px; padding-bottom: 4px; border-bottom: 1px solid rgba(255,59,48,0.4);
+  }
   .sp-close {
     background: none; border: none; color: var(--ink-dim); cursor: pointer;
     font-size: 13px; padding: 2px 4px;
@@ -237,6 +266,7 @@
   </div>
 
   <aside class="hud spotlight" id="spotlight" aria-label="Aircraft spotlight" hidden>
+    <div class="sp-emerg" id="sp-emerg" hidden></div>
     <div class="sp-head">
       <span class="fi sp-flag" id="sp-flag" hidden></span>
       <span class="sp-callsign" id="sp-callsign">—</span>
@@ -258,6 +288,7 @@
       <dt>ICAO</dt><dd id="sp-hex">—</dd>
       <dt>Origin</dt><dd id="sp-origin">—</dd>
       <dt>Recv</dt><dd id="sp-recv">—</dd>
+      <dt>Source</dt><dd id="sp-src">—</dd>
       <dt>Contact</dt><dd id="sp-contact">—</dd>
     </dl>
     <div class="sp-track" id="sp-track">—</div>
@@ -290,6 +321,6 @@
 <script src="vendor/maplibre-gl.js"></script>
 <script src="vendor/deck.gl.min.js"></script>
 <!-- versioned URL evicts pre-no-cache copies browsers heuristic-cached; bump on release -->
-<script type="module" src="map.js?v=5.8.1"></script>
+<script type="module" src="map.js?v=5.8.2"></script>
 </body>
 </html>

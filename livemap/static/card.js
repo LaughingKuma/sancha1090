@@ -2,6 +2,7 @@ import { S, serverNow } from "./state.js";
 import { verticalState } from "./altitude.js";
 import { finiteTs } from "./motion.js";
 import { stationVector, routeEnd, classLabel, routeSuffix } from "./geo.js";
+import { emergencyOf, sourceLabel, sourceKind } from "./telemetry.js";
 
 // ADS-B callsigns/hex are attacker-transmittable and deck.gl renders `html` as innerHTML
 const esc = (v) =>
@@ -43,6 +44,9 @@ export function cardData(a) {
     flagIso: a.reg_country && Object.hasOwn(S.countryIso2, a.reg_country) ? S.countryIso2[a.reg_country] : null,
     recv: a.recv || "—",
     contact: !Number.isFinite(fage) ? "—" : fage < 5 ? "live" : `last fix ${Math.round(fage)} s ago`,
+    emergency: emergencyOf(a), // { code, label } | null — controlled-lookup value
+    source: sourceLabel(a.position_source), // 'MLAT' | 'ADS-B' | '—'
+    sourceClass: sourceKind(a.position_source) === "mlat" ? "src-mlat" : "", // teal only for MLAT (the rarer one)
   };
 }
 
@@ -53,7 +57,8 @@ export function getTooltip(info) {
   if (S.selected && a.hex === S.selected.hex) return null;
   const c = cardData(a);
   const html =
-    `<div class="flight ${a.is_military === true ? "mil" : ""}">${c.flagIso ? `<span class="fi fi-${c.flagIso}"></span> ` : ""}${esc(c.callsign)}${c.badges}${c.state ? `<span class="tip-state">${c.state}</span>` : ""}</div>` +
+    (c.emergency ? `<div class="tip-emerg">${esc(c.emergency.code)} · ${esc(c.emergency.label)}</div>` : "") +
+    `<div class="flight ${a.is_military === true ? "mil" : ""}${c.emergency ? " emerg" : ""}">${c.flagIso ? `<span class="fi fi-${c.flagIso}"></span> ` : ""}${esc(c.callsign)}${c.badges}${c.state ? `<span class="tip-state">${c.state}</span>` : ""}</div>` +
     `<div class="model">${esc(c.model)}</div>` +
     `<div class="org">${esc(c.org)}</div>` +
     (c.route ? `<div class="route">${esc(c.route)}</div>` : "") +
@@ -68,7 +73,8 @@ export function getTooltip(info) {
     `<dt>ICAO</dt><dd>${esc(c.hex)}</dd>` +
     `<dt>Origin</dt><dd>${esc(c.origin)}</dd>` +
     `<dt>Recv</dt><dd>${esc(c.recv)}</dd>` +
+    `<dt>Source</dt><dd class="${c.sourceClass}">${esc(c.source)}</dd>` +
     `<dt>Contact</dt><dd>${esc(c.contact)}</dd>` +
     "</dl>";
-  return { html, className: "ac-tip" };
+  return { html, className: c.emergency ? "ac-tip emerg" : "ac-tip" };
 }

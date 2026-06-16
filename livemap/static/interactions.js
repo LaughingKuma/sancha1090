@@ -15,7 +15,13 @@ export function renderSpotlight() {
   spotlightEl.hidden = false;
   spotlightEl.classList.toggle("lost", !a);
   spEl("sp-lost").hidden = !!a;
-  if (!a) return; // keep last-rendered fields greyed under the LOST badge
+  if (!a) {
+    // a dropped contact is not an active emergency — clear the alert chrome (data fields stay greyed)
+    spotlightEl.classList.remove("emerg");
+    spEl("sp-emerg").hidden = true;
+    spEl("sp-src").className = ""; // drop the teal MLAT accent so the lost panel greys uniformly
+    return;
+  }
   spotlightEl.classList.toggle("mil", a.is_military === true);
   const c = cardData(a);
   spEl("sp-callsign").textContent = c.callsign;
@@ -26,6 +32,13 @@ export function renderSpotlight() {
   const flagEl = spEl("sp-flag");
   flagEl.hidden = !c.flagIso;
   flagEl.className = c.flagIso ? `fi sp-flag fi-${c.flagIso}` : "fi sp-flag";
+  spotlightEl.classList.toggle("emerg", !!c.emergency);
+  const emEl = spEl("sp-emerg");
+  emEl.hidden = !c.emergency;
+  if (c.emergency) emEl.textContent = `${c.emergency.code} · ${c.emergency.label}`;
+  const srcEl = spEl("sp-src");
+  srcEl.textContent = c.source;
+  srcEl.className = c.sourceClass;
   spEl("sp-model").textContent = c.model;
   spEl("sp-org").textContent = c.org;
   spEl("sp-route").hidden = !c.route;

@@ -3,9 +3,15 @@ import { RING_NM, AIRPORTS, RUNWAY_PATHS, RUNWAY_ENDS, AMBER, MIL, TEAL } from "
 import { SIL, CHEV_UP, CHEV_DOWN, zoomMult } from "./silhouettes.js";
 import { LABEL_ZOOM, LABEL_MAX, labelText, shadowPx, SHADOW_DIR } from "./altitude.js";
 import { frameData, metresBetween } from "./motion.js";
+import { emergencyOf } from "./telemetry.js";
 import { map, overlay } from "./mapsetup.js";
 
 const { IconLayer, ScatterplotLayer, PolygonLayer, PathLayer, TextLayer, PathStyleExtension } = deck;
+
+// deck layers can't read CSS media queries — gate the emergency pulse on the OS preference here.
+// typeof guard: a non-browser import (e.g. jsdom) lacks matchMedia → default to animated.
+const REDUCED_MOTION =
+  typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // Ring only when a hex is NEW or silent >10 s — per-fix pings (1 Hz) would be constant static.
 const PING_GAP_S = 10;
@@ -52,6 +58,9 @@ function buildLayers() {
   const labelZoom = LABEL_ZOOM + (S.snap.aircraft.length > LABEL_MAX ? 1 : 0);
   const showLabels = map.getZoom() >= labelZoom;
   const data = frameData(zoomMult(map.getZoom()));
+  const emergencyData = data.filter((d) => emergencyOf(d.a));
+  // free-running pulse (independent of poll freshness); frozen under reduced-motion
+  const pulsePhase = REDUCED_MOTION ? 0 : ((performance.now() / 1000) % 1.8) / 1.8;
   // elastic band: the wake terminates at the rendered icon in every state (tar1090's rule);
   // dimmer than recorded track, and suppressed mid-ease so it never sweeps the coverage hole
   const bridges = [];
@@ -284,6 +293,21 @@ function buildLayers() {
       getLineColor: [5, 9, 14, 255],
       lineWidthUnits: "pixels",
       getLineWidth: 1.6,
+      parameters: { depthTest: false },
+    }),
+    // PR 1b-i: always-on red pulse on emergency-squawk contacts — topmost so it's never occluded
+    // by the icon it alerts on; static ring under reduced-motion.
+    new ScatterplotLayer({
+      id: "emergency-pulse",
+      data: emergencyData,
+      getPosition: (d) => d.pos,
+      getRadius: REDUCED_MOTION ? 17 : 9 + 21 * pulsePhase, // constant accessor → animates as a uniform, no per-row upload
+      radiusUnits: "pixels",
+      stroked: true,
+      filled: false,
+      getLineColor: REDUCED_MOTION ? [...MIL, 210] : [...MIL, Math.round(210 * (1 - pulsePhase))],
+      getLineWidth: 2,
+      lineWidthUnits: "pixels",
       parameters: { depthTest: false },
     }),
   ];

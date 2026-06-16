@@ -1,5 +1,6 @@
 import collections
 import importlib.util
+import re
 import time
 from pathlib import Path
 
@@ -53,3 +54,13 @@ def test_history_still_filters_by_cutoff(livemap, monkeypatch):
     snaps = TestClient(livemap.app).get("/history", params={"s": 120}).json()["snapshots"]
     assert len(snaps) == 1
     assert snaps[0][0] == pytest.approx(now - 5)
+
+
+def test_aircraft_query_serves_emergency_and_source_fields(livemap):
+    # PR 1b-i: squawk drives the emergency banner/pulse; position_source drives the MLAT/ADS-B pill.
+    # Assert against the SELECT projection so an incidental substring elsewhere can't pass this.
+    m = re.search(r"SELECT(?P<select>.*?)FROM\s+mv_current_aircraft", livemap.QUERY, flags=re.I | re.S)
+    assert m, "aircraft query shape changed: missing SELECT ... FROM mv_current_aircraft"
+    select_list = m.group("select")
+    assert re.search(r"\bsquawk\b", select_list, flags=re.I)
+    assert re.search(r"\bposition_source\b", select_list, flags=re.I)
