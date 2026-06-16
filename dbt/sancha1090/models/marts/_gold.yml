@@ -44,7 +44,7 @@ models:
         tests:
           - accepted_values:
               arguments:
-                values: ['d0', 'd2']
+                values: ['d0', 'd2', 'backfill']
 
   - name: agg_flight_routes
     description: "Ground-truth top routes (both endpoints known, seen-in-context only) — counterpart to the inferred agg_route_traffic"

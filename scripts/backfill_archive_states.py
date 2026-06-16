@@ -312,6 +312,9 @@ def run_flights(args: argparse.Namespace) -> int:
                 ("departure", client.get_flights_departure),
             ):
                 for f in fetch(icao, begin_ts, end_ts):
+                    # first_seen is the partition key + dedup key; drop records OpenSky returns without it.
+                    if f.get("firstSeen") is None:
+                        continue
                     rows.append(flight_row(f, icao, direction, window_kind="backfill"))
                 calls += 1
 

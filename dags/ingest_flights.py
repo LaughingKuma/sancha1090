@@ -69,6 +69,9 @@ def ingest_flights():
                 else client.get_flights_departure
             )
             for f in fetch(icao, begin, until):
+                # first_seen is the partition key + dedup key; drop records OpenSky returns without it.
+                if f.get("firstSeen") is None:
+                    continue
                 rows.append(flight_row(f, icao, direction, window_kind))
 
         if not rows:

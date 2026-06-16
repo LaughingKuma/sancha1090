@@ -14,6 +14,7 @@ with deduped as (
                 committed_at desc
         ) as rn
     from {{ source('bronze', 'opensky_flights') }}
+    where first_seen is not null
 ),
 -- "Seen" = surfaced by the Japan-context feed (which covers the antenna's sky too);
 -- marts filter on this so routes are the ones flying over us, not anonymous catalogs.
