@@ -1,0 +1,74 @@
+import { S, serverNow } from "./state.js";
+import { verticalState } from "./altitude.js";
+import { finiteTs } from "./motion.js";
+import { stationVector, routeEnd, classLabel, routeSuffix } from "./geo.js";
+
+// ADS-B callsigns/hex are attacker-transmittable and deck.gl renders `html` as innerHTML
+const esc = (v) =>
+  String(v ?? "—")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+// one builder feeds both the hover card and the spotlight so the two can never drift apart
+export function cardData(a) {
+  const vs = verticalState(a.hex);
+  const fixTs = finiteTs(a.pos_ts, a.capture_ts);
+  const fage = fixTs == null ? NaN : serverNow() - fixTs;
+  const sv = stationVector(a.lon, a.lat);
+  const model = a.aircraft_desc || a.typecode || "—";
+  const catLabel = classLabel(a);
+  return {
+    callsign: a.flight || a.hex || "UNKNOWN",
+    badges:
+      (a.is_military === true ? '<span class="badge">MIL</span>' : "") +
+      (a.is_helicopter ? '<span class="badge">HELI</span>' : "") +
+      (catLabel ? `<span class="badge">${esc(catLabel)}</span>` : ""), // fixed lookup value, escaped as defense-in-depth
+    state: vs > 0 ? "▲ CLIMB" : vs < 0 ? "▼ DESC" : null,
+    model: a.year ? `${model} · ${a.year}` : model,
+    org: a.airline_name || a.own_op || "Unregistered callsign",
+    // Backstory ring (v5.1): latest known route for this callsign from the flights catalog.
+    route: a.route ? `${routeEnd(a.route.origin_city, a.route.origin)} → ${routeEnd(a.route.dest_city, a.route.dest)}${routeSuffix(a.route)}` : null,
+    alt: a.alt_baro == null ? "—" : a.alt_baro === "ground" ? "GROUND" : `${a.alt_baro} ft`,
+    spd: a.gs == null ? "—" : `${Math.round(a.gs)} kt`,
+    hdg: a.track == null ? "—" : `${Math.round(a.track)}°`,
+    rng: sv ? `${sv.nm.toFixed(1)} nm` : "—",
+    brg: sv ? `${Math.round(sv.brg)}°` : "—",
+    reg: a.registration || "—",
+    code: a.typecode || "—",
+    hex: (a.hex || "—").toUpperCase(),
+    origin: a.reg_country || "—",
+    flagIso: a.reg_country && Object.hasOwn(S.countryIso2, a.reg_country) ? S.countryIso2[a.reg_country] : null,
+    recv: a.recv || "—",
+    contact: !Number.isFinite(fage) ? "—" : fage < 5 ? "live" : `last fix ${Math.round(fage)} s ago`,
+  };
+}
+
+export function getTooltip(info) {
+  if (!info || !info.object) return null;
+  const a = info.object.a;
+  // the spotlight panel already shows the focused aircraft — a hover card would be a duplicate
+  if (S.selected && a.hex === S.selected.hex) return null;
+  const c = cardData(a);
+  const html =
+    `<div class="flight ${a.is_military === true ? "mil" : ""}">${c.flagIso ? `<span class="fi fi-${c.flagIso}"></span> ` : ""}${esc(c.callsign)}${c.badges}${c.state ? `<span class="tip-state">${c.state}</span>` : ""}</div>` +
+    `<div class="model">${esc(c.model)}</div>` +
+    `<div class="org">${esc(c.org)}</div>` +
+    (c.route ? `<div class="route">${esc(c.route)}</div>` : "") +
+    "<dl>" +
+    `<dt>Alt</dt><dd>${esc(c.alt)}</dd>` +
+    `<dt>Speed</dt><dd>${esc(c.spd)}</dd>` +
+    `<dt>Heading</dt><dd>${esc(c.hdg)}</dd>` +
+    `<dt>Range</dt><dd>${esc(c.rng)}</dd>` +
+    `<dt>Bearing</dt><dd>${esc(c.brg)}</dd>` +
+    `<dt>Reg</dt><dd>${esc(c.reg)}</dd>` +
+    `<dt>Code</dt><dd>${esc(c.code)}</dd>` +
+    `<dt>ICAO</dt><dd>${esc(c.hex)}</dd>` +
+    `<dt>Origin</dt><dd>${esc(c.origin)}</dd>` +
+    `<dt>Recv</dt><dd>${esc(c.recv)}</dd>` +
+    `<dt>Contact</dt><dd>${esc(c.contact)}</dd>` +
+    "</dl>";
+  return { html, className: "ac-tip" };
+}
