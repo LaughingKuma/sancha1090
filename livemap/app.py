@@ -1,6 +1,7 @@
 import asyncio
 import collections
 import contextlib
+import json
 import os
 import time
 from contextlib import asynccontextmanager
@@ -33,7 +34,8 @@ QUERY = """
     SELECT capture_ts, hex, flight, lat, lon, alt_baro, gs, track,
            typecode, aircraft_desc, registration, body_class, is_military, is_helicopter,
            airline_name, reg_country, recv, own_op, year, category,
-           squawk, position_source
+           squawk, position_source,
+           baro_rate, geom_rate, rssi, nav_altitude_mcp, nav_modes
     FROM mv_current_aircraft
     WHERE lat IS NOT NULL AND lon IS NOT NULL
 """
@@ -95,6 +97,14 @@ def _fetch() -> dict:
         flight = (a["flight"] or "").strip() or None
         a["flight"] = flight
         a["route"] = _routes.get(flight)
+        # jsonb arrives as JSON text over pgwire — coerce to a list (or None); never raise
+        nm = a.get("nav_modes")
+        if isinstance(nm, str):
+            try:
+                nm = json.loads(nm)
+            except (ValueError, TypeError):
+                nm = None
+        a["nav_modes"] = nm if isinstance(nm, list) else None
         aircraft.append(a)
     return {"server_ts": time.time(), "aircraft": aircraft}
 

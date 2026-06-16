@@ -64,3 +64,23 @@ def test_aircraft_query_serves_emergency_and_source_fields(livemap):
     select_list = m.group("select")
     assert re.search(r"\bsquawk\b", select_list, flags=re.I)
     assert re.search(r"\bposition_source\b", select_list, flags=re.I)
+
+
+def test_aircraft_query_serves_telemetry_fields(livemap):
+    # PR 1b-ii: V/S (baro/geom_rate), signal (rssi), nav-state (nav_altitude_mcp + nav_modes)
+    m = re.search(r"SELECT(?P<select>.*?)FROM\s+mv_current_aircraft", livemap.QUERY, flags=re.I | re.S)
+    assert m, "aircraft query shape changed"
+    sel = m.group("select")
+    for col in ("baro_rate", "geom_rate", "rssi", "nav_altitude_mcp", "nav_modes"):
+        assert re.search(rf"\b{col}\b", sel, flags=re.I), f"{col} not in SELECT projection"
+
+
+def test_fetch_normalizes_nav_modes(livemap, monkeypatch):
+    # jsonb over pgwire may arrive as a JSON string, a list, or null — all must land as list|None
+    def rows_with(nm):
+        monkeypatch.setattr(livemap, "_rw_rows", lambda *_args, **_kwargs: [{"capture_ts": None, "flight": "ANA1", "nav_modes": nm}])
+        return livemap._fetch()["aircraft"][0]["nav_modes"]
+    assert rows_with('["autopilot","vnav"]') == ["autopilot", "vnav"]  # json text → list
+    assert rows_with(["lnav"]) == ["lnav"]                              # already a list → passthrough
+    assert rows_with(None) is None                                     # null → None
+    assert rows_with("not json") is None                               # garbage → None

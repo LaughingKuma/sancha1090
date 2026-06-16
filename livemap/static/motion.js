@@ -1,7 +1,8 @@
 import { S, serverNow } from "./state.js";
 import { KT_TO_MS, MAX_DR_S, DR_HOLD_S, DR_PARK_S, WINDOW_S, MIL } from "./constants.js";
 import { silShape, sizeFor } from "./silhouettes.js";
-import { parseAlt, altTint, verticalState } from "./altitude.js";
+import { parseAlt, altTint } from "./altitude.js";
+import { verticalRate, vsState } from "./telemetry.js";
 
 // glide 0→15 s of lead, hold to 20 s, settle back onto the fix by 26 s — continuous, no jumps
 function drSeconds(age) {
@@ -84,6 +85,6 @@ export function frameData(zm) {
     const base = mil ? MIL : altTint(altFt);
     const tint =
       age >= DR_PARK_S ? base.map((c, k) => Math.round(c + STALE_BLEND * (STALE_GREY[k] - c))) : base;
-    return { a, pos: smoothPos(a.hex, deadReckon(a, age), pf), age, alpha, mil, shape, size, altFt, vs: verticalState(a.hex), tint };
+    return { a, pos: smoothPos(a.hex, deadReckon(a, age), pf), age, alpha, mil, shape, size, altFt, vs: vsState(verticalRate(a)), tint };
   });
 }

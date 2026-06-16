@@ -1,5 +1,4 @@
 import { AMBER } from "./constants.js";
-import { S } from "./state.js";
 
 // Altitude lives inside the amber palette: deep orange on the deck → pale amber at cruise.
 const ALT_RAMP = [
@@ -12,26 +11,6 @@ export function parseAlt(alt_baro) {
   // the API serializes alt_baro as a string (mixed "ground"/number column upstream)
   const n = typeof alt_baro === "number" ? alt_baro : parseFloat(alt_baro);
   return Number.isFinite(n) ? Math.max(0, n) : null;
-}
-// Rate from the trail buffer: newest fix vs the oldest fix inside a 20 s window —
-// instant deltas off 2 s-spaced fixes are too noisy to threshold.
-const VR_WINDOW_S = 20;
-const VR_MIN_BASE_S = 8;
-const VR_THRESH_FPM = 300;
-export function verticalState(hex) {
-  const tr = S.trails.get(hex);
-  if (!tr || tr.pts.length < 2) return 0;
-  const newest = tr.pts[tr.pts.length - 1];
-  if (newest.altFt == null) return 0;
-  let base = null;
-  for (const p of tr.pts) {
-    if (newest.ts - p.ts <= VR_WINDOW_S) { base = p; break; }
-  }
-  if (!base || base === newest || base.altFt == null) return 0;
-  const dt = newest.ts - base.ts;
-  if (dt < VR_MIN_BASE_S) return 0;
-  const fpm = ((newest.altFt - base.altFt) / dt) * 60;
-  return fpm > VR_THRESH_FPM ? 1 : fpm < -VR_THRESH_FPM ? -1 : 0;
 }
 export const LABEL_ZOOM = 10.5;
 export const LABEL_MAX = 40;

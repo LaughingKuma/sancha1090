@@ -20,6 +20,7 @@ export function renderSpotlight() {
     spotlightEl.classList.remove("emerg");
     spEl("sp-emerg").hidden = true;
     spEl("sp-src").className = ""; // drop the teal MLAT accent so the lost panel greys uniformly
+    spEl("sp-vs").className = ""; // and the climb/descent accent — the partial lost-grey wouldn't fully mute it
     return;
   }
   spotlightEl.classList.toggle("mil", a.is_military === true);
@@ -39,13 +40,20 @@ export function renderSpotlight() {
   const srcEl = spEl("sp-src");
   srcEl.textContent = c.source;
   srcEl.className = c.sourceClass;
+  spEl("sp-signal").textContent = c.signal;
   spEl("sp-model").textContent = c.model;
   spEl("sp-org").textContent = c.org;
   spEl("sp-route").hidden = !c.route;
   if (c.route) spEl("sp-route").textContent = c.route;
   spEl("sp-alt").textContent = c.alt;
+  const vsEl = spEl("sp-vs");
+  vsEl.textContent = c.vs;
+  vsEl.className = c.vsClass;
   spEl("sp-spd").textContent = c.spd;
   spEl("sp-hdg").textContent = c.hdg;
+  spEl("sp-nav").hidden = !c.nav;
+  spEl("sp-nav").previousElementSibling.hidden = !c.nav; // hide the <dt>Nav</dt> too when absent
+  if (c.nav) spEl("sp-nav").textContent = c.nav;
   spEl("sp-rng").textContent = c.rng;
   spEl("sp-brg").textContent = c.brg;
   spEl("sp-reg").textContent = c.reg;

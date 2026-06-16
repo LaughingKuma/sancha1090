@@ -1,6 +1,6 @@
 -- Migrate older deployments: CREATE ... IF NOT EXISTS can't change column shape, so an
 -- existing risingwave-data volume keeps the old MV and livemap then polls a missing column
--- forever. Sentinels: newest column added (own_op) OR a stale stored definition (old
+-- forever. Sentinels: newest column added (nav_modes) OR a stale stored definition (old
 -- staleness window — IF NOT EXISTS can't change that either); either drops the MV (+ its
 -- dependent mv_live_counts, which 04 recreates after this file). Bump a sentinel whenever
 -- this SELECT changes. Fresh / current volumes skip the drop.
@@ -10,7 +10,7 @@ SELECT (
     AND (
         NOT EXISTS (SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = 'mv_current_aircraft'
-                      AND column_name = 'own_op')
+                      AND column_name = 'nav_modes')
         OR EXISTS (SELECT 1 FROM rw_catalog.rw_materialized_views
                    WHERE name = 'mv_current_aircraft'
                      AND definition LIKE '%60 seconds%')
@@ -42,6 +42,11 @@ WITH typed AS (
         j ->> 'ownOp'                                 AS own_op,   -- registry owner/operator (FAA et al via readsb db)
         j ->> 'year'                                  AS year,     -- varchar like alt_baro: no cast risk
         j ->> 'squawk'                                AS squawk,
+        (j ->> 'baro_rate')::double precision          AS baro_rate,   -- barometric V/S, ft/min
+        (j ->> 'geom_rate')::double precision          AS geom_rate,   -- geometric V/S fallback when baro absent
+        (j ->> 'rssi')::double precision               AS rssi,        -- signal strength, dBFS (rooftop only)
+        (j ->> 'nav_altitude_mcp')::double precision   AS nav_altitude_mcp,  -- selected altitude (MCP/FCU)
+        j -> 'nav_modes'                               AS nav_modes,   -- autopilot modes (jsonb array), sparse
         -- multi-receiver seam: edge stamps a receiver id later; absent today → 'rooftop'
         coalesce(j ->> 'recv', 'rooftop')             AS recv,
         -- silver: dbFlags are exception flags — absence means FALSE, not unknown
@@ -93,7 +98,12 @@ SELECT
     al.country   AS airline_country,
     ctry.country AS reg_country,
     atype.body_class AS body_class,  -- silhouette class for livemap's per-type icons
-    l.recv
+    l.recv,
+    l.baro_rate,
+    l.geom_rate,
+    l.rssi,
+    l.nav_altitude_mcp,
+    l.nav_modes
 FROM latest l
 -- Airline of THIS flight (callsign), a different question than the airframe owner (leasing/codeshare).
 LEFT JOIN dim_airlines al

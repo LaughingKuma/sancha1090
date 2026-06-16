@@ -1,8 +1,7 @@
 import { S, serverNow } from "./state.js";
-import { verticalState } from "./altitude.js";
 import { finiteTs } from "./motion.js";
 import { stationVector, routeEnd, classLabel, routeSuffix } from "./geo.js";
-import { emergencyOf, sourceLabel, sourceKind } from "./telemetry.js";
+import { emergencyOf, sourceLabel, sourceKind, verticalRate, vsState, vsText, signalBars, signalText, navState } from "./telemetry.js";
 
 // ADS-B callsigns/hex are attacker-transmittable and deck.gl renders `html` as innerHTML
 const esc = (v) =>
@@ -15,7 +14,8 @@ const esc = (v) =>
 
 // one builder feeds both the hover card and the spotlight so the two can never drift apart
 export function cardData(a) {
-  const vs = verticalState(a.hex);
+  const rate = verticalRate(a);
+  const vdir = vsState(rate);
   const fixTs = finiteTs(a.pos_ts, a.capture_ts);
   const fage = fixTs == null ? NaN : serverNow() - fixTs;
   const sv = stationVector(a.lon, a.lat);
@@ -27,7 +27,11 @@ export function cardData(a) {
       (a.is_military === true ? '<span class="badge">MIL</span>' : "") +
       (a.is_helicopter ? '<span class="badge">HELI</span>' : "") +
       (catLabel ? `<span class="badge">${esc(catLabel)}</span>` : ""), // fixed lookup value, escaped as defense-in-depth
-    state: vs > 0 ? "▲ CLIMB" : vs < 0 ? "▼ DESC" : null,
+    state: vdir > 0 ? "▲ CLIMB" : vdir < 0 ? "▼ DESC" : null,
+    vs: vsText(rate),
+    vsClass: vdir > 0 ? "up" : vdir < 0 ? "dn" : "",
+    signal: signalText(signalBars(a.rssi)),
+    nav: navState(a),
     model: a.year ? `${model} · ${a.year}` : model,
     org: a.airline_name || a.own_op || "Unregistered callsign",
     // Backstory ring (v5.1): latest known route for this callsign from the flights catalog.
@@ -64,8 +68,10 @@ export function getTooltip(info) {
     (c.route ? `<div class="route">${esc(c.route)}</div>` : "") +
     "<dl>" +
     `<dt>Alt</dt><dd>${esc(c.alt)}</dd>` +
+    `<dt>V/S</dt><dd class="${c.vsClass}">${esc(c.vs)}</dd>` +
     `<dt>Speed</dt><dd>${esc(c.spd)}</dd>` +
     `<dt>Heading</dt><dd>${esc(c.hdg)}</dd>` +
+    (c.nav ? `<dt>Nav</dt><dd>${esc(c.nav)}</dd>` : "") +
     `<dt>Range</dt><dd>${esc(c.rng)}</dd>` +
     `<dt>Bearing</dt><dd>${esc(c.brg)}</dd>` +
     `<dt>Reg</dt><dd>${esc(c.reg)}</dd>` +
@@ -74,6 +80,7 @@ export function getTooltip(info) {
     `<dt>Origin</dt><dd>${esc(c.origin)}</dd>` +
     `<dt>Recv</dt><dd>${esc(c.recv)}</dd>` +
     `<dt>Source</dt><dd class="${c.sourceClass}">${esc(c.source)}</dd>` +
+    `<dt>Signal</dt><dd>${esc(c.signal)}</dd>` +
     `<dt>Contact</dt><dd>${esc(c.contact)}</dd>` +
     "</dl>";
   return { html, className: c.emergency ? "ac-tip emerg" : "ac-tip" };

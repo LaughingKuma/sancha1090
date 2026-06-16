@@ -190,6 +190,9 @@
   @media (prefers-reduced-motion: reduce) { .sp-emerg::before { animation: none; } }
   /* MLAT vs ADS-B source — a Source row in both cards; MLAT (the rarer, interesting one) glows teal */
   .sp-live dd.src-mlat, .ac-tip dd.src-mlat { color: var(--teal); }
+  /* PR 1b-ii: real broadcast V/S — climb green, descent amber (both cards) */
+  .sp-live dd.up, .ac-tip dd.up { color: #7ee08a; }
+  .sp-live dd.dn, .ac-tip dd.dn { color: #ffae6b; }
   /* tooltip emergency parity */
   .ac-tip.emerg { border-color: var(--mil) !important; }
   .ac-tip .flight.emerg { color: var(--mil); }
@@ -279,8 +282,10 @@
     <div class="sp-route" id="sp-route" hidden></div>
     <dl class="sp-live">
       <dt>Alt</dt><dd id="sp-alt">—</dd>
+      <dt>V/S</dt><dd id="sp-vs">—</dd>
       <dt>Speed</dt><dd id="sp-spd">—</dd>
       <dt>Heading</dt><dd id="sp-hdg">—</dd>
+      <dt>Nav</dt><dd id="sp-nav">—</dd>
       <dt>Range</dt><dd id="sp-rng">—</dd>
       <dt>Bearing</dt><dd id="sp-brg">—</dd>
       <dt>Reg</dt><dd id="sp-reg">—</dd>
@@ -289,6 +294,7 @@
       <dt>Origin</dt><dd id="sp-origin">—</dd>
       <dt>Recv</dt><dd id="sp-recv">—</dd>
       <dt>Source</dt><dd id="sp-src">—</dd>
+      <dt>Signal</dt><dd id="sp-signal">—</dd>
       <dt>Contact</dt><dd id="sp-contact">—</dd>
     </dl>
     <div class="sp-track" id="sp-track">—</div>
@@ -321,6 +327,6 @@
 <script src="vendor/maplibre-gl.js"></script>
 <script src="vendor/deck.gl.min.js"></script>
 <!-- versioned URL evicts pre-no-cache copies browsers heuristic-cached; bump on release -->
-<script type="module" src="map.js?v=5.8.2"></script>
+<script type="module" src="map.js?v=5.10"></script>
 </body>
 </html>
