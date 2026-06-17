@@ -188,6 +188,21 @@ data open:
 
 If you run an ADS-B receiver, feed these networks.
 
+And the open reference datasets that decide *how* an aircraft is drawn, not whether
+it appears:
+
+- **[Mictronics readsb database](https://github.com/Mictronics/readsb)** — current
+  ICAO operator codes → airline names, the same database tar1090 and adsbexchange
+  render, so callsign decoding tracks designator reassignments instead of going stale.
+- **[Wikidata](https://www.wikidata.org)** — cross-referenced offline to clean those
+  airline names into their public brand forms; baked static into the seed, never
+  queried at runtime.
+- **[ICAO Doc 8643](https://github.com/rikgale/ICAOList)** — type designators → the
+  silhouette each aircraft is drawn with.
+- **[tar1090](https://github.com/wiedehopf/tar1090)** — its ICAO 24-bit address →
+  country table drives the registration-country flags.
+- **[OpenFlights](https://github.com/jpatokal/openflights)** — airport names and coordinates.
+
 ## License & data attribution
 
 Code: MIT.
@@ -197,3 +212,11 @@ Data: live context and flight histories from the
 pre-pipeline historical positions contain data from
 [adsb.lol](https://adsb.lol), licensed under the
 [Open Database License (ODbL) 1.0](https://opendatacommons.org/licenses/odbl/1-0/).
+
+Reference data: airline operator codes from the
+[Mictronics readsb database](https://github.com/Mictronics/readsb), with brand-name
+cleanup cross-referenced against [Wikidata](https://www.wikidata.org)
+([CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)); aircraft type
+designators from ICAO Doc 8643; the ICAO 24-bit address → country table from
+[tar1090](https://github.com/wiedehopf/tar1090); airport data from
+[OpenFlights](https://github.com/jpatokal/openflights).

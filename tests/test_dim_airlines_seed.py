@@ -23,6 +23,17 @@ ANCHORS = {
     "AIH": ("Air Incheon", "South Korea"),
     "BOX": ("AeroLogic", "Germany"),
     "RAC": ("Ryukyu Air Commuter", "Japan"),
+    # v5.11 Wikidata name batch: AFL/SVA/AIC guard accepted brand/suffix cleanups; ATG/APJ guard the
+    # hand-curated _NAME entries (Wikidata's "Aerotrans" wrongly drops cargo, "Peach" is too terse);
+    # HTA/ORK guard rejected proposals where the Wikidata label was a DIFFERENT airline (must stay
+    # on the Mictronics name).
+    "AFL": ("Aeroflot", "Russia"),
+    "SVA": ("Saudia", "Saudi Arabia"),
+    "AIC": ("Air India", "India"),
+    "ATG": ("AeroTransCargo", "Moldova"),
+    "APJ": ("Peach Aviation", "Japan"),
+    "HTA": ("Heli Transair European Air Services", "Germany"),
+    "ORK": ("Orca Airways", "Canada"),
 }
 
 
