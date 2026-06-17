@@ -10,6 +10,8 @@ import pytest
 SEED = Path(__file__).resolve().parent.parent / "dbt/sancha1090/seeds/dim_airlines.csv"
 
 # The doc's "top airlines over Tokyo" sanity targets — their ICAO designator must resolve cleanly.
+# CPA/EVA/CAL also guard the Taiwan/HK country restoration; AIH guards the stale-code fix (OpenFlights
+# had it as a defunct "Alpine Air Chile"; ICAO reassigned AIH to Air Incheon).
 ANCHORS = {
     "ANA": ("All Nippon Airways", "Japan"),
     "JAL": ("Japan Airlines", "Japan"),
@@ -17,6 +19,7 @@ ANCHORS = {
     "UAL": ("United Airlines", "United States"),
     "EVA": ("EVA Air", "Taiwan"),
     "CAL": ("China Airlines", "Taiwan"),
+    "AIH": ("Air Incheon", "South Korea"),
 }
 
 

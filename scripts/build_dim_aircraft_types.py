@@ -4,6 +4,7 @@ import csv
 import io
 import sys
 import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 
 # ICAO Doc 8643 type designators (rikgale mirror): typecode, class, "N/EngineType", "MFR, Model".
@@ -69,7 +70,10 @@ def build(text: str) -> list[dict]:
 
 
 def main() -> int:
-    with urllib.request.urlopen(SOURCE_URL, timeout=30) as resp:
+    parsed = urlparse(SOURCE_URL)
+    if parsed.scheme != "https" or parsed.netloc != "raw.githubusercontent.com":
+        raise ValueError(f"unsupported source URL: {SOURCE_URL}")
+    with urllib.request.urlopen(SOURCE_URL, timeout=30) as resp:  # noqa: S310 — hardcoded https const, validated above
         rows = build(resp.read().decode("utf-8", errors="replace"))
     SEED.parent.mkdir(parents=True, exist_ok=True)
     with SEED.open("w", newline="") as fh:

@@ -5,6 +5,7 @@ import re
 import sys
 import urllib.request
 from itertools import pairwise
+from urllib.parse import urlparse
 from pathlib import Path
 
 
@@ -40,7 +41,10 @@ def flatten(entries: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
 
 
 def main() -> int:
-    with urllib.request.urlopen(SOURCE_URL, timeout=30) as resp:
+    parsed = urlparse(SOURCE_URL)
+    if parsed.scheme != "https" or parsed.netloc != "raw.githubusercontent.com":
+        raise ValueError(f"unsupported source URL: {SOURCE_URL}")
+    with urllib.request.urlopen(SOURCE_URL, timeout=30) as resp:  # noqa: S310 — hardcoded https const, validated above
         entries = parse(resp.read().decode("utf-8"))
     rows = flatten(entries)
     SEED.parent.mkdir(parents=True, exist_ok=True)

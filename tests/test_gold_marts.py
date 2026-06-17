@@ -98,10 +98,16 @@ def test_agg_airline_traffic_is_hourly(cur):
 
 def test_agg_country_traffic_adsb_japan_top(cur):
     rows = _q(cur, "SELECT reg_country, distinct_aircraft FROM gold.agg_country_traffic_adsb "
-                   "ORDER BY distinct_aircraft DESC LIMIT 1")
+                   "WHERE reg_country IS NOT NULL ORDER BY distinct_aircraft DESC LIMIT 3")
     # Contract (drift-proof): a non-null top country with a positive aircraft count.
     assert rows, "agg_country_traffic_adsb is empty"
     country, n = rows[0]
     assert country and n > 0, f"invalid top row: {rows[0]}"
-    # Anchor: the antenna is physically fixed in Tokyo, so Japan is structurally the top reg_country.
-    assert country == "Japan", f"expected Japan as top reg_country, got {country}"
+    # Anchor: the antenna is fixed in Tokyo, so Japan is always among the top reg_countries — but the
+    # Japan+ocean box also catches heavy transpacific US/China traffic, so a near-tie can edge Japan off
+    # strict #1 (seen US 684 / Japan 681). Assert top-3 membership rather than rank-1 to stay drift-proof,
+    # but require Japan to track the leader closely — a real regression (geo-filter/feed loss) would sink it.
+    counts = {c: cnt for c, cnt in rows}
+    assert "Japan" in counts, f"expected Japan among top-3 reg_countries, got {list(counts)}"
+    leader_n = rows[0][1]
+    assert counts["Japan"] >= 0.7 * leader_n, f"Japan far below leader: {counts['Japan']} vs {leader_n}"

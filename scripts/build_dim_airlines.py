@@ -1,53 +1,75 @@
 from __future__ import annotations
 
 import csv
-import io
+import json
 import re
 import sys
 import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 
 
-SOURCE_URL = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airlines.dat"
+# Mictronics readsb operators DB — the source tar1090/readsb/adsbexchange use; tracks current ICAO
+# Doc 8585 designators, unlike the frozen OpenFlights airlines.dat (stale codes, e.g. AIH was a
+# defunct "Alpine Air Chile" but ICAO reassigned it to Air Incheon).
+SOURCE_URL = "https://raw.githubusercontent.com/Mictronics/readsb/master/webapp/src/db/operators.json"
 SEED = Path(__file__).resolve().parent.parent / "dbt/sancha1090/seeds/dim_airlines.csv"
 
-# OpenFlights airlines.dat column order (headerless).
-_AIRLINE_ID, _NAME, _ALIAS, _IATA, _ICAO, _CALLSIGN, _COUNTRY, _ACTIVE = range(8)
 _DESIGNATOR = re.compile(r"[A-Z]{3}")
 
+# Mictronics flattens Taiwan and Hong Kong carriers to "China"; restore the registering jurisdiction
+# (separate CAA + reg prefix) for the ones that fly the Tokyo box. Codes verified against the source.
+_TAIWAN = {"CAL", "EVA", "FEA", "MDA", "SJX", "TNA", "TTW", "UIA"}
+_HONG_KONG = {"AHK", "CPA", "CRK", "HDA", "HKC", "HKE", "HKG", "HKJ", "JKT"}
 
-def _clean(v: str) -> str:
-    return "" if v == r"\N" else v
+# Brand/common name where Mictronics carries the verbose legal entity.
+_NAME = {
+    "EVA": "EVA Air",            # Eva Airways Corporation
+    "CPA": "Cathay Pacific",     # Cathay Pacific Airways
+    "UIA": "UNI Air",            # Uni Airways Corporation
+    "TNA": "TransAsia Airways",  # Transasia Airways
+    "KAL": "Korean Air",         # Korean Air Lines.
+}
+
+
+def _clean(name: str) -> str:
+    # Mictronics has SQL-escape artifacts: doubled apostrophes and trailing periods.
+    return name.replace("''", "'").strip().rstrip(".").strip()
 
 
 def build(text: str) -> list[dict]:
-    best: dict[str, tuple[int, dict]] = {}
-    for row in csv.reader(io.StringIO(text)):
-        if len(row) < 8 or not _DESIGNATOR.fullmatch(row[_ICAO]):
+    raw = json.loads(text)
+    rows = []
+    for icao in sorted(raw):
+        if not _DESIGNATOR.fullmatch(icao):
             continue
-        icao = row[_ICAO]
-        active = "Y" if row[_ACTIVE] == "Y" else "N"
-        airline_id = int(row[_AIRLINE_ID])
-        # Type-1 dedup: an active carrier wins its designator, then the lowest (canonical) id.
-        rank = (active != "Y", airline_id)
-        if icao not in best or rank < best[icao][0]:
-            best[icao] = (rank, {
-                "icao": icao,
-                "iata": _clean(row[_IATA]),
-                "name": _clean(row[_NAME]),
-                "callsign": _clean(row[_CALLSIGN]),
-                "country": _clean(row[_COUNTRY]),
-                "active": active,
-            })
-    return [best[k][1] for k in sorted(best)]
+        e = raw[icao]
+        country = e.get("c") or ""
+        if icao in _TAIWAN:
+            country = "Taiwan"
+        elif icao in _HONG_KONG:
+            country = "Hong Kong SAR of China"
+        rows.append({
+            "icao": icao,
+            "iata": "",  # Mictronics carries no IATA; column kept for schema stability (unused downstream)
+            "name": _NAME.get(icao, _clean(e.get("n") or "")),
+            "callsign": (e.get("r") or "").strip(),
+            "country": country,
+            "active": "Y",  # source curates to current operators; no per-row active flag
+        })
+    return rows
 
 
 def main() -> int:
-    with urllib.request.urlopen(SOURCE_URL, timeout=30) as resp:
+    parsed = urlparse(SOURCE_URL)
+    if parsed.scheme != "https" or parsed.netloc != "raw.githubusercontent.com":
+        raise ValueError(f"unsupported source URL: {SOURCE_URL}")
+    with urllib.request.urlopen(SOURCE_URL, timeout=30) as resp:  # noqa: S310 — hardcoded https const, validated above
         rows = build(resp.read().decode("utf-8"))
     SEED.parent.mkdir(parents=True, exist_ok=True)
     with SEED.open("w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["icao", "iata", "name", "callsign", "country", "active"])
+        w = csv.DictWriter(fh, fieldnames=["icao", "iata", "name", "callsign", "country", "active"],
+                           lineterminator="\n")
         w.writeheader()
         w.writerows(rows)
     print(f"wrote {len(rows)} airlines -> {SEED}")

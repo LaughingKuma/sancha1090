@@ -5,6 +5,7 @@ import io
 import re
 import sys
 import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 
 
@@ -41,7 +42,10 @@ def build(text: str) -> list[dict]:
 
 
 def main() -> int:
-    with urllib.request.urlopen(SOURCE_URL, timeout=30) as resp:
+    parsed = urlparse(SOURCE_URL)
+    if parsed.scheme != "https" or parsed.netloc != "raw.githubusercontent.com":
+        raise ValueError(f"unsupported source URL: {SOURCE_URL}")
+    with urllib.request.urlopen(SOURCE_URL, timeout=30) as resp:  # noqa: S310 — hardcoded https const, validated above
         rows = build(resp.read().decode("utf-8"))
     if not rows:  # never clobber a good committed seed with an empty parse (e.g. upstream returns nothing)
         raise SystemExit("build_dim_airports: parsed 0 airports from source; refusing to overwrite seed")
