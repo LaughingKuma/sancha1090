@@ -11,7 +11,8 @@ SEED = Path(__file__).resolve().parent.parent / "dbt/sancha1090/seeds/dim_airlin
 
 # The doc's "top airlines over Tokyo" sanity targets — their ICAO designator must resolve cleanly.
 # CPA/EVA/CAL also guard the Taiwan/HK country restoration; AIH guards the stale-code fix (OpenFlights
-# had it as a defunct "Alpine Air Chile"; ICAO reassigned AIH to Air Incheon).
+# had it as a defunct "Alpine Air Chile"; ICAO reassigned AIH to Air Incheon). BOX guards the mashed-name
+# cleanup (Mictronics "Aerologicleipzig"); RAC guards the code-level fix (Mictronics has it as Icar Air).
 ANCHORS = {
     "ANA": ("All Nippon Airways", "Japan"),
     "JAL": ("Japan Airlines", "Japan"),
@@ -20,6 +21,8 @@ ANCHORS = {
     "EVA": ("EVA Air", "Taiwan"),
     "CAL": ("China Airlines", "Taiwan"),
     "AIH": ("Air Incheon", "South Korea"),
+    "BOX": ("AeroLogic", "Germany"),
+    "RAC": ("Ryukyu Air Commuter", "Japan"),
 }
 
 

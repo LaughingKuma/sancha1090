@@ -22,14 +22,23 @@ _DESIGNATOR = re.compile(r"[A-Z]{3}")
 _TAIWAN = {"CAL", "EVA", "FEA", "MDA", "SJX", "TNA", "TTW", "UIA"}
 _HONG_KONG = {"AHK", "CPA", "CRK", "HDA", "HKC", "HKE", "HKG", "HKJ", "JKT"}
 
-# Brand/common name where Mictronics carries the verbose legal entity.
+# Brand/common name where Mictronics carries the verbose legal entity or a mashed-in hub city.
 _NAME = {
     "EVA": "EVA Air",            # Eva Airways Corporation
     "CPA": "Cathay Pacific",     # Cathay Pacific Airways
     "UIA": "UNI Air",            # Uni Airways Corporation
     "TNA": "TransAsia Airways",  # Transasia Airways
     "KAL": "Korean Air",         # Korean Air Lines.
+    "BOX": "AeroLogic",          # Mictronics mashes the hub city in: "Aerologicleipzig"
 }
+
+# Code-level upstream errors: Mictronics maps these designators to the wrong/stale operator entirely
+# (not just a messy name). Full-row corrections, verified against ICAO Doc 8585 / the live carrier.
+_FIX = {
+    "RAC": {"name": "Ryukyu Air Commuter", "callsign": "RYUKYU", "country": "Japan"},  # Mictronics: Icar Air / Bosnia (wrong)
+}
+
+assert not (_NAME.keys() & _FIX.keys()), f"overlapping designators in _NAME and _FIX: {_NAME.keys() & _FIX.keys()}"
 
 
 def _clean(name: str) -> str:
@@ -49,14 +58,16 @@ def build(text: str) -> list[dict]:
             country = "Taiwan"
         elif icao in _HONG_KONG:
             country = "Hong Kong SAR of China"
-        rows.append({
+        row = {
             "icao": icao,
             "iata": "",  # Mictronics carries no IATA; column kept for schema stability (unused downstream)
             "name": _NAME.get(icao, _clean(e.get("n") or "")),
             "callsign": (e.get("r") or "").strip(),
             "country": country,
             "active": "Y",  # source curates to current operators; no per-row active flag
-        })
+        }
+        row.update(_FIX.get(icao, {}))
+        rows.append(row)
     return rows
 
 
