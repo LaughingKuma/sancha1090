@@ -13,7 +13,7 @@ import pytest
 
 EXPECTED_DAGS = {
     "ingest_states": {
-        "schedule": "*/12 * * * *",
+        "schedule": "*/4 * * * *",
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {"fetch_region", "summarize"},

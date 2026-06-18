@@ -3,10 +3,10 @@
 OpenSky's REST API charges credits per /states/all call based on bounding
 box area. We pull a single Japan+ocean bbox (>400 sq deg = 4 credits) at the
 current ingest cadence, and must stay under the quota the API actually
-meters us at — observed live 2026-06-10 via x-rate-limit-remaining: the
-4000 registered tier. Active-feeder 8000 only accrues once the receiver
-logs >=30% monthly uptime (status recalculated ~2-hourly); raise the
-budget back to 8000 only after the header confirms the promotion.
+meters us at. The active-feeder 8000 tier (>=30% monthly receiver uptime)
+landed on 2026-06-18 — x-rate-limit-remaining read 7683 (> 4000 is only
+possible on the 8000 ceiling), confirming the promotion. The /flights
+bucket stays at the 4000 registered tier (header read 3970 same day).
 
 If this test fails: slow the schedule, drop regions, or shrink the bboxes.
 Note that splitting a region into smaller bboxes does NOT save credits — the
@@ -18,7 +18,7 @@ from __future__ import annotations
 from include.regions import REGIONS
 
 
-DAILY_CREDIT_BUDGET = 4000
+DAILY_CREDIT_BUDGET = 8000
 
 # OpenSky's tiered cost for /states/all with a bbox, by area in square degrees.
 CREDIT_TIERS = [
@@ -30,13 +30,13 @@ CREDIT_TIERS = [
 
 # Mirrors the cron in dags/ingest_states.py. Update both together — the
 # point of this test is to make that update conscious.
-INGEST_SCHEDULE = "*/12 * * * *"
-RUNS_PER_DAY = 24 * (60 // 12)  # = 120
+INGEST_SCHEDULE = "*/4 * * * *"
+RUNS_PER_DAY = 24 * (60 // 4)  # = 360
 
 # Retry budget: every fetch_region task can retry up to 3 times, and each
 # attempt's OpenSkyClient retries internally up to 5 times on 429/5xx. The
-# single Japan box at the current cadence sits far under the 4000 quota
-# (~480/day happy path), so this factor is now slack, not a tight constraint —
+# single Japan box at the */4 cadence sits far under the 8000 feeder quota
+# (~1440/day happy path), so this factor is now slack, not a tight constraint —
 # it stays as a deliberate margin if the box is split or the cadence raised.
 RETRY_BUDGET_FACTOR = 1.04
 

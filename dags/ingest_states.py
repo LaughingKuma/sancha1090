@@ -13,9 +13,9 @@ from include.regions import REGIONS
 
 @dag(
     dag_id="ingest_states",
-    description="Pull state vectors per region every 12 minutes",
+    description="Pull state vectors per region every 4 minutes",
     start_date=pendulum.datetime(2026, 5, 1, tz="UTC"),
-    schedule="*/12 * * * *",
+    schedule="*/4 * * * *",
     catchup=False,
     max_active_runs=1,
     default_args={
