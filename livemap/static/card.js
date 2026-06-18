@@ -62,7 +62,7 @@ export function getTooltip(info) {
   const c = cardData(a);
   const html =
     (c.emergency ? `<div class="tip-emerg">${esc(c.emergency.code)} · ${esc(c.emergency.label)}</div>` : "") +
-    `<div class="flight ${a.is_military === true ? "mil" : ""}${c.emergency ? " emerg" : ""}">${c.flagIso ? `<span class="fi fi-${c.flagIso}"></span> ` : ""}${esc(c.callsign)}${c.badges}${c.state ? `<span class="tip-state">${c.state}</span>` : ""}</div>` +
+    `<div class="flight ${a.is_military === true ? "mil" : ""}${c.emergency ? " emerg" : ""}">${c.flagIso ? `<span class="fi fi-${c.flagIso}"></span> ` : ""}${esc(c.callsign)}<span class="hdr-chips">${c.badges}${c.state ? `<span class="tip-state">${c.state}</span>` : ""}</span></div>` +
     `<div class="model">${esc(c.model)}</div>` +
     `<div class="org">${esc(c.org)}</div>` +
     (c.route ? `<div class="route">${esc(c.route)}</div>` : "") +

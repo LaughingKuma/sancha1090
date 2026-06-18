@@ -152,10 +152,10 @@
   }
   .spotlight[hidden], .spotlight [hidden] { display: none !important; }
   .spotlight.lost { filter: grayscale(0.8) brightness(0.8); }
-  .sp-head { display: flex; align-items: center; gap: 8px; }
+  .sp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding-right: 16px; }
   .sp-callsign {
     font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 17px;
-    letter-spacing: 0.04em; color: var(--amber); flex: 1;
+    letter-spacing: 0.04em; color: var(--amber); flex: 0 1 auto;
   }
   .spotlight.mil .sp-callsign { color: var(--mil); }
   /* shared header chips (spotlight + tooltip): equal-height pills that line up */
@@ -166,7 +166,8 @@
   }
   .badge { letter-spacing: 0.16em; }
   .sp-state, .tip-state { letter-spacing: 0.14em; color: var(--amber-dim); white-space: nowrap; }
-  /* center the badge cluster like the state pill so the header chips line up */
+  /* chips (badges + climb/descent state) wrap as one unit, left-aligned under the callsign, never spilling the panel edge */
+  .hdr-chips { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; flex: 0 1 auto; }
   #sp-badges { display: inline-flex; align-items: center; gap: 6px; }
   .sp-head .sp-flag { font-size: 13px; border-radius: 1px; box-shadow: 0 0 0 1px rgba(0,0,0,0.45); flex: 0 0 auto; }
   /* PR 1b-i: emergency (squawk 7700/7600/7500) — Medium intensity: thin rule + label, no fill/glow */
@@ -200,12 +201,14 @@
     color: #ff7068; font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase;
     margin-bottom: 5px; padding-bottom: 4px; border-bottom: 1px solid rgba(255,59,48,0.4);
   }
+  /* pinned top-right so it never wraps down with the header chips */
   .sp-close {
+    position: absolute; top: 9px; right: 10px; z-index: 2;
     background: none; border: none; color: var(--ink-dim); cursor: pointer;
     font-size: 13px; padding: 2px 4px;
   }
   .sp-close:hover { color: var(--ink); }
-  .sp-model { margin-top: 4px; font-size: 11px; color: var(--ink); letter-spacing: 0.03em; }
+  .sp-model { margin-top: 9px; font-size: 11px; color: var(--ink); letter-spacing: 0.03em; }
   .sp-org, .sp-route { font-size: 10px; color: var(--ink-dim); letter-spacing: 0.04em; margin-top: 2px; }
   .sp-route { color: var(--amber); }
   .sp-live { margin: 9px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; }
@@ -234,7 +237,7 @@
   .ac-tip .flight {
     font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 15px;
     letter-spacing: 0.04em; color: var(--amber); margin-bottom: 2px;
-    display: flex; align-items: center; gap: 8px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 5px 7px;
   }
   .ac-tip .flight.mil { color: var(--mil); }
   .ac-tip .flight .fi { font-size: 12px; border-radius: 1px; vertical-align: -1px; }
@@ -273,8 +276,10 @@
     <div class="sp-head">
       <span class="fi sp-flag" id="sp-flag" hidden></span>
       <span class="sp-callsign" id="sp-callsign">—</span>
-      <span id="sp-badges"></span>
-      <span class="sp-state" id="sp-state" hidden></span>
+      <span class="hdr-chips">
+        <span id="sp-badges"></span>
+        <span class="sp-state" id="sp-state" hidden></span>
+      </span>
       <button type="button" class="sp-close" id="sp-close" aria-label="Close">✕</button>
     </div>
     <div class="sp-model" id="sp-model">—</div>
