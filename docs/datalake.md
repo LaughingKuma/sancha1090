@@ -6,7 +6,8 @@ typed in **silver**, and are aggregated into consumer-facing **gold** marts — 
 by dbt-on-Trino and orchestrated by Airflow asset chains.
 
 It carries **two independent live feeds** that stay on separate refresh tracks and fuse
-in exactly one place (`gold.fct_flight_legs`):
+where one feed enriches the other — the OpenSky callsign backfill into `silver.fct_adsb_state`
+and the geometry/enrichment join in `gold.fct_flight_legs`:
 
 | Feed | Source | Bronze table | Coverage | Units |
 |------|--------|--------------|----------|-------|
@@ -53,12 +54,16 @@ flowchart TD
     %% ---- rooftop track: transform_adsb_silver (--select tag:adsb) ----
     BAS --> DAC["silver.dim_aircraft"]
     BAS --> FAS["silver.fct_adsb_state"]
+    BAS --> CBF["silver.int_adsb_callsign_backfill"]
     DAC --> FAS
+    CBF --> FAS
     FAS --> ACTA["gold.agg_country_traffic_adsb"]
+    FAS --> AATA["gold.agg_airline_traffic_adsb"]
 
     %% ---- cross-feed fusion ----
     FAS -. "military / crossed_antenna<br/>(antenna rollup)" .-> FFL
     DAC -. "airframe attrs" .-> FFL
+    BOS -. "nearest callsign<br/>(icao24 + ±10 min)" .-> CBF
 
     %% ---- conformed dim seeds (rooftop DAG seeds them) ----
     SEED["seeds: dim_airlines · dim_airports · dim_hex_country"]:::seed
@@ -70,8 +75,10 @@ flowchart TD
 ```
 
 The two tracks are deliberately separate so they each refresh on their own feed and never
-race each other's writes. The only join point is `fct_flight_legs`, which reads the OpenSky
-context fact for geometry and the rooftop tables for enrichment — see [fusion](#known-limitations).
+race each other's writes. They fuse in two read-only spots: the OpenSky callsign backfill into
+`silver.fct_adsb_state` (recovering blank rooftop callsigns from the context feed), and
+`gold.fct_flight_legs`, which reads the OpenSky context fact for geometry and the rooftop tables
+for enrichment — see [fusion](#known-limitations).
 
 ## Entity map
 
@@ -88,9 +95,12 @@ erDiagram
     fct_flight_legs }o--o| fct_adsb_state : "antenna rollup hex = lower(icao24)"
     fct_flight_legs ||--o{ agg_route_traffic : "aggregated by route"
     fct_adsb_state }o--o| dim_aircraft : "icao24 = lower(hex)"
-    fct_adsb_state }o--o| dim_airlines : "flight[1:3] = icao"
+    fct_adsb_state }o--o| dim_airlines : "callsign_filled[1:3] = icao"
     fct_adsb_state }o--o| dim_hex_country : "from_base(hex,16) in [lo,hi]"
+    fct_adsb_state }o--o| int_adsb_callsign_backfill : "blank callsign by (hex, capture_ts)"
+    int_adsb_callsign_backfill }o--o| opensky_states : "nearest icao24 within ±window"
     fct_adsb_state ||--o{ agg_country_traffic_adsb : "by reg_country"
+    fct_adsb_state ||--o{ agg_airline_traffic_adsb : "by airline"
     fact_state_snapshots }o--o| dim_airlines : "callsign[1:3] = icao"
     fact_state_snapshots ||--o{ agg_airline_traffic : "by hour, airline"
 ```
@@ -116,8 +126,10 @@ otherwise untagged. (The flights and archive-history lanes, not documented here,
 | `gold.agg_route_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
 | `silver.dim_aircraft` | `transform_adsb_silver` | `adsb_bronze_table` (rooftop) | `--select tag:adsb` |
 | `silver.fct_adsb_state` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
+| `silver.int_adsb_callsign_backfill` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
 | `silver.dim_airlines` / `dim_airports` / `dim_hex_country` (seeds) | `transform_adsb_silver` (`dbt seed`) | `adsb_bronze_table` | `tag:adsb` |
 | `gold.agg_country_traffic_adsb` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
+| `gold.agg_airline_traffic_adsb` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
 
 > **Bootstrap note.** `fct_flight_legs` is untagged (so it refreshes on the OpenSky context feed) but
 > reads `tag:adsb` relations (the dim seeds, `dim_aircraft`, `fct_adsb_state`). On a fresh
@@ -317,13 +329,17 @@ shared across both feeds.
 - **Notes:** decodes `readsb` `dbFlags` (read from `_raw_json`) into four 2-valued booleans —
   `COALESCE(...,0)` keeps them TRUE/FALSE (absence = FALSE, never NULL), so they survive `GROUP BY`
   and percentage math. The airline join answers "airline of *this flight*" (codeshare/leasing
-  aware), distinct from the airframe owner.
+  aware), distinct from the airframe owner — and now keys on **`callsign_filled`**, so blank-callsign
+  frames (the rarer Mode-S identity message, lost more at the range edge) still attribute once the
+  callsign is backfilled from the OpenSky feed (~2.8% of rows). Track provenance via `callsign_source`.
 
 | Column | Type | Meaning |
 |--------|------|---------|
 | `capture_ts` | `double` | Observation capture time, epoch seconds (from bronze). |
 | `hex` | `varchar` | ICAO 24-bit address; may carry a `~` prefix for non-ICAO (TIS-B/ADS-R) addresses. |
-| `flight` | `varchar` | Callsign from the Mode-S frame. |
+| `flight` | `varchar` | Raw callsign from the Mode-S frame (blank when the rarer identity message wasn't decoded). |
+| `callsign_filled` | `varchar` | `flight` if present, else the nearest OpenSky callsign for the same airframe (`int_adsb_callsign_backfill`). Drives the airline join. |
+| `callsign_source` | `varchar` | Provenance of `callsign_filled`: `adsb` (native), `opensky_backfill` (recovered), or NULL (no callsign in either feed). |
 | `lat` | `double` | WGS-84 latitude. |
 | `lon` | `double` | WGS-84 longitude. |
 | `alt_baro` | `varchar` | Barometric altitude — **string** (can be `'ground'`). |
@@ -336,9 +352,28 @@ shared across both feeds.
 | `registration` | `varchar` | Tail from `dim_aircraft`; NULL if airframe unknown. |
 | `typecode` | `varchar` | Type designator from `dim_aircraft`; NULL if unknown. |
 | `category` | `varchar` | Emitter category from `dim_aircraft`. |
-| `airline_name` | `varchar` | Operating airline (callsign ICAO-3 prefix → `dim_airlines`). |
+| `airline_name` | `varchar` | Operating airline (`callsign_filled` ICAO-3 prefix → `dim_airlines`). |
 | `airline_country` | `varchar` | Country of the operating airline. |
 | `reg_country` | `varchar` | Registration country (hex-block lookup via `dim_hex_country`). |
+
+### `silver.int_adsb_callsign_backfill` — blank-callsign recovery (cross-feed)
+
+- **Grain:** one row per `(hex, capture_ts)` rooftop frame that decoded a position but **no
+  callsign**, carrying the nearest OpenSky callsign for that airframe.
+- **Source:** **cross-feed** — `bronze.adsb_states` (blank-`flight` frames) joined to
+  `bronze.opensky_states` on `icao24 = hex`, picking the snapshot nearest in time within
+  `± var('callsign_backfill_window_s')` (600 s) via `row_number() = 1`.
+- **Notes:** single-valued by construction, so the LEFT join into `fct_adsb_state` preserves its
+  1:1-with-bronze rowcount. ADS-B identity messages broadcast ~10× less often than position (and
+  fail CRC more at the range edge), so ~4% of frames land blank; this recovers ~92% of them
+  (hex-minute grain). It does **not** invent callsigns — only fills from the same airframe at the
+  same instant in the context feed.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `hex` | `varchar` | ICAO 24-bit address (lowercase). Join key into `fct_adsb_state`. |
+| `capture_ts` | `double` | Rooftop frame capture time, epoch seconds. Join key. |
+| `filled_callsign` | `varchar` | Nearest OpenSky callsign for that airframe within the window. |
 
 ### `silver.dim_aircraft` — airframe dimension
 
@@ -413,9 +448,9 @@ shared across both feeds.
 
 ## Gold
 
-Consumer-facing marts. The four **v3.5** marts (`fct_flight_legs`, `agg_route_traffic`,
-`agg_airline_traffic`, `agg_country_traffic_adsb`) are documented first; three **legacy**
-OpenSky-context marts follow.
+Consumer-facing marts. The **v3.5** headline marts (`fct_flight_legs`, `agg_route_traffic`,
+`agg_airline_traffic`, `agg_country_traffic_adsb`) plus the rooftop `agg_airline_traffic_adsb`
+are documented first; three **legacy** OpenSky-context marts follow.
 
 ### `gold.fct_flight_legs` — inferred flight legs (headline)
 
@@ -510,6 +545,24 @@ OpenSky-context marts follow.
 | `observations` | `bigint` | Total rooftop ADS-B rows for this country. |
 | `military_observations` | `bigint` | Count of `is_military` observations. |
 
+### `gold.agg_airline_traffic_adsb` — rooftop by operating airline
+
+- **Grain:** one row per `(airline_name, airline_country)`. **Built on the rooftop DAG**
+  (`tag:adsb`), the deliberate rooftop-feed mirror of the OpenSky-context `agg_airline_traffic`.
+- **Purpose:** *which airlines this antenna actually receives* — a different view from the
+  wide-area context leaderboard, since coverage is the antenna footprint (Tokyo area).
+- **Notes:** attribution depends on the OpenSky callsign backfill in `fct_adsb_state`;
+  `backfilled_observations` quantifies how much of each airline's count exists only because of it.
+  GA/unresolved callsigns yield NULL `airline_name` and are excluded (`WHERE airline_name IS NOT NULL`).
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `airline_name` | `varchar` | Operating airline (`callsign_filled` prefix → `dim_airlines`). Grain key; not-null. |
+| `airline_country` | `varchar` | Country of the operating airline. Grain key. |
+| `distinct_aircraft` | `bigint` | Distinct airframes this airline flew through the antenna footprint. |
+| `observations` | `bigint` | Total rooftop ADS-B rows attributed to this airline. |
+| `backfilled_observations` | `bigint` | Of those, how many attribute only via the OpenSky callsign backfill. |
+
 ### Legacy OpenSky-context marts
 
 These predate v3.5 and are listed in `maintain_iceberg_marts` for OPTIMIZE compaction.
@@ -564,7 +617,9 @@ These predate v3.5 and are listed in `maintain_iceberg_marts` for OPTIMIZE compa
 | From | To | On | Kind |
 |------|----|----|------|
 | `fct_adsb_state` (`hex`) | `dim_aircraft` | `icao24 = lower(hex)` | LEFT, single-valued |
-| `fct_adsb_state` (`flight`) | `dim_airlines` | `icao = substr(trim(flight),1,3)` + `^[A-Z]{3}[0-9]` guard | LEFT |
+| `fct_adsb_state` (`callsign_filled`) | `dim_airlines` | `icao = substr(trim(callsign_filled),1,3)` + `^[A-Z]{3}[0-9]` guard | LEFT |
+| `fct_adsb_state` (`hex`,`capture_ts`) | `int_adsb_callsign_backfill` | `hex` AND `capture_ts` | LEFT, single-valued |
+| `int_adsb_callsign_backfill` (`hex`) | `bronze.opensky_states` | `icao24 = hex` AND `snapshot_time` within ±`callsign_backfill_window_s` | nearest, `row_number()=1` (cross-feed) |
 | `fct_adsb_state` (`hex`) | `dim_hex_country` | `try(from_base(lower(hex),16)) BETWEEN block_lo AND block_hi` | LEFT range |
 | `fact_state_snapshots` (`callsign`) | `dim_airlines` | `icao = substr(trim(callsign),1,3)` + guard | INNER (in `agg_airline_traffic`) |
 | `fct_flight_legs` (`first/last fix`) | `dim_airports` | nearest-airport haversine `≤ 100 km`, low-altitude only | LEFT, `row_number()=1` |
@@ -592,3 +647,7 @@ These predate v3.5 and are listed in `maintain_iceberg_marts` for OPTIMIZE compa
   rooftop enrichment (`is_military`, `crossed_antenna`) can lag by up to one OpenSky-context-tick interval;
   and on a fresh deploy `transform_adsb_silver` must run once before `transform_marts`.
 - **Legacy `agg_country_traffic` is point-in-time** — a latest-5-min snapshot, not full history.
+- **Backfilled callsigns are nearest-snapshot.** ~2.8% of `fct_adsb_state` rows take their callsign
+  from the OpenSky feed (`callsign_source = 'opensky_backfill'`); at a flight-leg turnaround inside
+  the ±10-min window the nearest OpenSky snapshot can carry the adjacent leg's callsign. Rare;
+  `callsign_source` lets consumers isolate or exclude backfilled rows.

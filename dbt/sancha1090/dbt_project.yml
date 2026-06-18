@@ -47,3 +47,4 @@ vars:
   legs_gap_min: 90        # new leg on a >90-min sample gap (lenient: keep long-haul whole where coverage allows)
   legs_snap_km: 100       # max airport snap distance from a low-altitude endpoint fix
   legs_cruise_alt_m: 3000 # below this an endpoint is a takeoff/landing; above it = overflight -> NULL endpoint
+  callsign_backfill_window_s: 600 # max gap to a same-airframe OpenSky snapshot when backfilling a blank ADS-B callsign

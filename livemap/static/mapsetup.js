@@ -1,5 +1,3 @@
-import { getTooltip } from "./card.js";
-
 const { MapboxOverlay } = deck;
 
 export const map = new maplibregl.Map({
@@ -14,7 +12,6 @@ map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom
 
 export const overlay = new MapboxOverlay({
   interleaved: true,
-  getTooltip,
   layers: [],
 });
 map.addControl(overlay);

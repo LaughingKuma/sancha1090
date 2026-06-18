@@ -224,6 +224,9 @@
   }
 
   /* ── Tooltip ──────────────────────────────────────────── */
+  /* hover card is our own fixed node now (interactions.js positions it, edge-clamped) — not deck's tooltip */
+  #hovercard { position: fixed; z-index: 60; pointer-events: none; }
+  #hovercard[hidden] { display: none; }
   .ac-tip {
     font-family: "Spline Sans Mono", monospace;
     background: rgba(5, 9, 14, 0.94) !important;

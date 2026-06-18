@@ -1,5 +1,5 @@
 import { S } from "./state.js";
-import { cardData } from "./card.js";
+import { cardData, hoverCardHTML } from "./card.js";
 import { rebuildSelectedSegments, pruneSelectedPts, pushFix } from "./trails.js";
 import { map, overlay } from "./mapsetup.js";
 
@@ -113,3 +113,45 @@ map.on("click", (e) => {
   if (pick && pick.object && pick.object.a.hex) selectAircraft(pick.object.a.hex);
   else clearSelection();
 });
+
+// Hover card — own DOM node (not deck's built-in tooltip, which anchors top-left at the cursor
+// and can't flip/clamp, so it clips off the bottom/right edges). Offset off the cursor + flipped
+// and clamped to the viewport so the whole card is always visible.
+const hoverEl = document.createElement("div");
+hoverEl.id = "hovercard";
+hoverEl.hidden = true;
+document.body.appendChild(hoverEl);
+// coalesce picks to one per frame — mousemove fires far faster than deck can pick
+let hoverRaf = 0, lastMove = null, dragging = false;
+const hideHover = () => {
+  hoverEl.hidden = true;
+  if (hoverRaf) { cancelAnimationFrame(hoverRaf); hoverRaf = 0; } // a queued frame must not re-open it with a stale fix
+  lastMove = null;
+};
+function placeHover(cx, cy) {
+  const OFF = 14, M = 8;
+  const w = hoverEl.offsetWidth, h = hoverEl.offsetHeight; // measured after innerHTML + unhide
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let left = cx + OFF + w > vw - M ? cx - OFF - w : cx + OFF; // flip left of cursor when it would overrun
+  let top = cy + OFF + h > vh - M ? cy - OFF - h : cy + OFF; // flip above the cursor likewise
+  hoverEl.style.left = `${Math.min(Math.max(left, M), Math.max(M, vw - M - w))}px`; // final clamp guarantees on-screen
+  hoverEl.style.top = `${Math.min(Math.max(top, M), Math.max(M, vh - M - h))}px`;
+}
+function pickHover() {
+  hoverRaf = 0;
+  const e = lastMove;
+  if (!e) return; // hidden (mouseout/dragstart) between scheduling this frame and its running
+  const pick = overlay._deck?.pickObject({ x: e.point.x, y: e.point.y, radius: 4, layerIds: ["planes"] });
+  const card = pick && pick.object ? hoverCardHTML(pick.object.a) : null;
+  if (!card) return hideHover();
+  hoverEl.className = card.emerg ? "ac-tip emerg" : "ac-tip";
+  hoverEl.innerHTML = card.html;
+  hoverEl.hidden = false;
+  placeHover(e.originalEvent.clientX, e.originalEvent.clientY);
+}
+map.on("mousemove", (e) => { if (dragging) return; lastMove = e; if (!hoverRaf) hoverRaf = requestAnimationFrame(pickHover); });
+map.on("mouseout", hideHover);
+map.on("dragstart", () => { dragging = true; hideHover(); }); // stay hidden through the whole pan, not just one frame
+map.on("dragend", () => { dragging = false; });
+// a click hands the plane to the spotlight — drop the transient hover card (no mousemove fires to re-pick + suppress it)
+map.on("click", hideHover);

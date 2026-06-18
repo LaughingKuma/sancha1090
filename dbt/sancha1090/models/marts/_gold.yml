@@ -26,6 +26,13 @@ models:
           - not_null
           - unique
 
+  - name: agg_airline_traffic_adsb
+    description: "Rooftop ADS-B feed by operating airline (mirror of the OpenSky context agg_airline_traffic); attribution leans on the OpenSky callsign backfill, surfaced via backfilled_observations"
+    columns:
+      - name: airline_name
+        tests:
+          - not_null
+
   - name: fact_flights
     description: "Ground-truth flight narratives from OpenSky flight summaries, deduped to one row per (icao24, first_seen), registry-enriched"
     columns:

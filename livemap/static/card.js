@@ -54,9 +54,10 @@ export function cardData(a) {
   };
 }
 
-export function getTooltip(info) {
-  if (!info || !info.object) return null;
-  const a = info.object.a;
+// Hover-card inner HTML for an aircraft; null when it shouldn't show. Positioned by a custom
+// onHover handler (interactions.js) because deck's built-in tooltip can't flip/clamp at viewport edges.
+export function hoverCardHTML(a) {
+  if (!a) return null;
   // the spotlight panel already shows the focused aircraft — a hover card would be a duplicate
   if (S.selected && a.hex === S.selected.hex) return null;
   const c = cardData(a);
@@ -83,5 +84,5 @@ export function getTooltip(info) {
     `<dt>Signal</dt><dd>${esc(c.signal)}</dd>` +
     `<dt>Contact</dt><dd>${esc(c.contact)}</dd>` +
     "</dl>";
-  return { html, className: c.emergency ? "ac-tip emerg" : "ac-tip" };
+  return { html, emerg: !!c.emergency };
 }
