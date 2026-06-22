@@ -1,0 +1,61 @@
+name: 'sancha1090'
+version: '1.0.0'
+config-version: 2
+
+profile: 'sancha1090'
+
+# Disable partial parsing: target/ is bind-mounted and persists across deploys/branches, so a stale
+# target/partial_parse.msgpack can retain deleted nodes (e.g. removed tests -> "missing relation" errors).
+# Full re-parse every invocation is cheap at this project size and keeps run/test/seed/parse deterministic.
+flags:
+  partial_parse: false
+
+test-paths: ["tests"]
+macro-paths: ["macros"]
+seed-paths: ["seeds"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Schema split: silver models land in silver_ch, marts in gold_ch; generate_schema_name uses +schema verbatim.
+models:
+  sancha1090:
+    staging:
+      +materialized: table
+      +schema: silver_ch
+    silver:
+      +materialized: table
+      +schema: silver_ch
+    marts:
+      +materialized: table
+      +schema: gold_ch
+
+seeds:
+  sancha1090:
+    +schema: silver_ch
+    dim_hex_country:
+      +tags: ['adsb']
+      # Routed to the `dim` database that backs the range_hashed dict (its source query reads
+      # dim.dim_hex_country). The one-time CH setup reloads the dict after seeding; LIFETIME keeps it
+      # fresh thereafter (the CSV is static), so no per-tick reseed/reload is needed.
+      +schema: dim
+      +column_types:
+        block_lo: UInt32
+        block_hi: UInt32
+    dim_airlines:
+      +tags: ['adsb']
+    dim_airports:
+      +tags: ['adsb']
+      +column_types:
+        lat: Float64
+        lon: Float64
+
+vars:
+  legs_gap_min: 90        # new leg on a >90-min sample gap (lenient: keep long-haul whole where coverage allows)
+  legs_snap_km: 100       # max airport snap distance from a low-altitude endpoint fix
+  legs_cruise_alt_m: 3000 # below this an endpoint is a takeoff/landing; above it = overflight -> NULL endpoint
+  callsign_backfill_window_s: 600 # max gap to a same-airframe OpenSky snapshot when backfilling a blank ADS-B callsign

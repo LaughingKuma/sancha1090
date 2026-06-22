@@ -1,0 +1,16 @@
+.env
+superset-metadata-backup-*.sql
+.venv/
+logs/
+__pycache__/
+*.pyc 
+.pytest_cache/
+dbt/sancha1090/target/
+dbt/sancha1090/dbt_packages/
+dbt/sancha1090/.user.yml
+
+# Garage config carries RPC secret + admin tokens
+config/garage.toml
+
+# Host-specific compose overrides (e.g. LAN port exposure); loaded via COMPOSE_FILE
+docker-compose.local.yml

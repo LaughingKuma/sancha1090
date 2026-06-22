@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+import hashlib
+from typing import Optional
+
+import sqlalchemy as sa
+
+from include.db import analytics_engine
+
+
+# Seam: tests point this at a schema-less sqlite mirror; production uses the public schema.
+_TABLE = "public.ingestion_manifest"
+
+_DDL = """
+CREATE TABLE IF NOT EXISTS public.ingestion_manifest (
+    object_uri            TEXT PRIMARY KEY,
+    loaded_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    snapshot_min          BIGINT,
+    snapshot_max          BIGINT,
+    row_count             INTEGER,
+    iceberg_committed_at  TIMESTAMPTZ,
+    ch_loaded_at          TIMESTAMPTZ
+)
+"""
+
+# Self-migrate existing prod tables: the CREATE above is a no-op once the table exists.
+_MIGRATE_DDL = "ALTER TABLE public.ingestion_manifest ADD COLUMN IF NOT EXISTS ch_loaded_at TIMESTAMPTZ"
+
+_table_ready = False
+_default_engine: Optional[sa.Engine] = None
+
+
+def _engine() -> sa.Engine:
+    # Memoized: an Engine owns a connection pool and is meant to be a long-lived singleton.
+    global _default_engine
+    if _default_engine is None:
+        _default_engine = analytics_engine()
+    return _default_engine
+
+
+def ensure_table(engine: Optional[sa.Engine] = None) -> None:
+    global _table_ready
+    eng = engine or _engine()
+    with eng.begin() as conn:
+        conn.execute(sa.text(_DDL))
+        # ADD COLUMN IF NOT EXISTS is Postgres-only; sqlite test tables already carry it via _DDL.
+        if eng.dialect.name == "postgresql":
+            conn.execute(sa.text(_MIGRATE_DDL))
+    if engine is None:
+        _table_ready = True
+
+
+def _pending_uris(uri_prefix: str, marker_col: str, engine: Optional[sa.Engine]) -> list[dict]:
+    eng = engine or _engine()
+    if engine is None and not _table_ready:
+        ensure_table()  # no-arg latches _table_ready so the DDL+ALTER runs once, not per call
+    # marker_col is an internal constant, never user input.
+    stmt = sa.text(
+        f"""
+        SELECT object_uri, snapshot_min, snapshot_max, row_count
+          FROM {_TABLE}
+         WHERE {marker_col} IS NULL
+           AND object_uri LIKE :prefix ESCAPE '\\'
+         ORDER BY loaded_at
+        """
+    )
+    # Escape LIKE wildcards so e.g. the _ in "flights_raw" matches literally, not any char.
+    escaped = uri_prefix.strip("/").replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+    with eng.begin() as conn:
+        return [
+            dict(r._mapping)
+            for r in conn.execute(stmt, {"prefix": f"%/{escaped}/%"}).fetchall()
+        ]
+
+
+def pending_uris(uri_prefix: str, engine: Optional[sa.Engine] = None) -> list[dict]:
+    # Prefix-scoped: the manifest is shared by the states and flights lanes, and each
+    # tableize DAG must only drain its own URIs (v5.1).
+    return _pending_uris(uri_prefix, "iceberg_committed_at", engine)
+
+
+def pending_ch_uris(uri_prefix: str, engine: Optional[sa.Engine] = None) -> list[dict]:
+    # Independent of the Iceberg marker so a ClickHouse outage can't stall the Iceberg drain (P2).
+    return _pending_uris(uri_prefix, "ch_loaded_at", engine)
+
+
+def batch_fingerprint(uris: list[str]) -> str:
+    return hashlib.sha256("\n".join(sorted(uris)).encode()).hexdigest()
+
+
+def already_appended(table, fingerprint: str) -> bool:
+    # Crash-recovery: if the last commit's snapshot already carries this batch's
+    # fingerprint, the Iceberg append succeeded on a prior attempt that died before
+    # marking the manifest. Skip the append; just reconcile the manifest.
+    current = table.current_snapshot()
+    return bool(
+        current
+        and current.summary
+        and current.summary.additional_properties.get("manifest_fingerprint") == fingerprint
+    )
+
+
+def _mark_loaded(uris: list[str], marker_col: str, engine: Optional[sa.Engine]) -> int:
+    if not uris:
+        return 0
+    eng = engine or _engine()
+    # marker_col is an internal constant, never user input.
+    stmt = sa.text(
+        f"""
+        UPDATE {_TABLE}
+           SET {marker_col} = CURRENT_TIMESTAMP
+         WHERE object_uri IN :uris
+           AND {marker_col} IS NULL
+        """
+    ).bindparams(sa.bindparam("uris", expanding=True))
+    with eng.begin() as conn:
+        result = conn.execute(stmt, {"uris": list(uris)})
+        return result.rowcount or 0
+
+
+def mark_iceberg_committed(uris: list[str], engine: Optional[sa.Engine] = None) -> int:
+    return _mark_loaded(uris, "iceberg_committed_at", engine)
+
+
+def mark_ch_loaded(uris: list[str], engine: Optional[sa.Engine] = None) -> int:
+    return _mark_loaded(uris, "ch_loaded_at", engine)
+
+
+def record_load(
+    object_uri: str,
+    snapshot_min: Optional[int],
+    snapshot_max: Optional[int],
+    row_count: int,
+    engine: Optional[sa.Engine] = None,
+) -> None:
+    eng = engine or _engine()
+    if engine is None and not _table_ready:
+        ensure_table()  # no-arg latches _table_ready so the DDL+ALTER runs once, not per call
+    stmt = sa.text(
+        f"""
+        INSERT INTO {_TABLE}
+            (object_uri, snapshot_min, snapshot_max, row_count)
+        VALUES (:uri, :smin, :smax, :rows)
+        ON CONFLICT (object_uri) DO NOTHING
+        """
+    )
+    with eng.begin() as conn:
+        conn.execute(
+            stmt,
+            {
+                "uri": object_uri,
+                "smin": snapshot_min,
+                "smax": snapshot_max,
+                "rows": row_count,
+            },
+        )

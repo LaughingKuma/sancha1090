@@ -1,0 +1,143 @@
+dashboard_title: ADS-B Live
+description: null
+css: ''
+slug: adsb-live
+certified_by: ''
+certification_details: ''
+published: true
+uuid: c93b7285-8d67-48c1-8fa5-521558a6f530
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    children:
+    - GRID_ID
+    id: ROOT_ID
+    type: ROOT
+  GRID_ID:
+    children:
+    - ROW-counts
+    - ROW-map
+    - ROW-airlines
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    type: GRID
+  HEADER_ID:
+    id: HEADER_ID
+    meta:
+      text: ADS-B Live
+    type: HEADER
+  ROW-counts:
+    children:
+    - CHART-airborne-now
+    - CHART-military-now
+    - CHART-helicopters-now
+    id: ROW-counts
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    type: ROW
+  ROW-map:
+    children:
+    - CHART-live-map
+    id: ROW-map
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    type: ROW
+  ROW-airlines:
+    children:
+    - CHART-by-airline
+    id: ROW-airlines
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    type: ROW
+  CHART-airborne-now:
+    children: []
+    id: CHART-airborne-now
+    meta:
+      chartId: 101
+      height: 18
+      sliceName: Airborne Now
+      uuid: 57f53e7d-a4ad-4d86-ae53-195e1e455adf
+      width: 4
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-counts
+    type: CHART
+  CHART-military-now:
+    children: []
+    id: CHART-military-now
+    meta:
+      chartId: 102
+      height: 18
+      sliceName: Military Now
+      uuid: 4ebbcdab-4bd9-45a1-af2f-b9145dbb99a8
+      width: 4
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-counts
+    type: CHART
+  CHART-helicopters-now:
+    children: []
+    id: CHART-helicopters-now
+    meta:
+      chartId: 103
+      height: 18
+      sliceName: Helicopters Now
+      uuid: 9b518015-7dd8-487c-94ef-837aa61bc9b9
+      width: 4
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-counts
+    type: CHART
+  CHART-live-map:
+    children: []
+    id: CHART-live-map
+    meta:
+      chartId: 104
+      height: 64
+      sliceName: Live Aircraft Map
+      uuid: 53e03c38-09bf-452b-abdb-64286aee8713
+      width: 12
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-map
+    type: CHART
+  CHART-by-airline:
+    children: []
+    id: CHART-by-airline
+    meta:
+      chartId: 105
+      height: 40
+      sliceName: Aircraft by Airline
+      uuid: 37a52e59-c5a9-4356-ab25-d8e6c11e4bb3
+      width: 12
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-airlines
+    type: CHART
+metadata:
+  color_scheme: supersetColors
+  refresh_frequency: 10
+  timed_refresh_immune_slices: []
+  expanded_slices: {}
+  label_colors: {}
+  shared_label_colors: []
+  map_label_colors: {}
+  color_scheme_domain: []
+  cross_filters_enabled: true
+  default_filters: '{}'
+version: 1.0.0

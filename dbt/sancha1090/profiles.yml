@@ -1,0 +1,22 @@
+sancha1090:
+  target: clickhouse
+  outputs:
+    clickhouse:
+      type: clickhouse
+      # http (clickhouse-connect) not native: the marts are server-side CTAS so no bulk rows cross the
+      # client, and http reuses the clickhouse-connect already baked for the per-tick loaders — native would
+      # add clickhouse-driver + setuptools(pkg_resources) for no throughput gain on this lane.
+      driver: http
+      host: "{{ env_var('CLICKHOUSE_HOST', 'clickhouse') }}"
+      port: "{{ env_var('CLICKHOUSE_PORT', '8123') | int }}"
+      user: "{{ env_var('CLICKHOUSE_USER', 'default') }}"
+      password: "{{ env_var('CLICKHOUSE_PASSWORD', '') }}"
+      schema: gold_ch        # default; silver models override to silver_ch via +schema
+      secure: false
+      threads: 4
+      connect_timeout: 10
+      send_receive_timeout: 300
+      # join_use_nulls=1 makes LEFT JOIN no-match fill NULL (not '' / 0) — required so every left-joined dim
+      # column (airline_name, registration, …) reads NULL on no-match instead of a non-NULL default.
+      custom_settings:
+        join_use_nulls: 1

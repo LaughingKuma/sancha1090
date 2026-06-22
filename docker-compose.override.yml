@@ -1,0 +1,29 @@
+networks:
+  default:
+    name: sancha1090_net
+    driver: bridge
+
+services:
+  airflow-scheduler:
+    volumes:
+      # livemap has no pytest of its own — mount it so in-container pytest can import app.py
+      - ./livemap:/opt/airflow/livemap:ro
+  airflow-apiserver:
+    ports:
+      - "127.0.0.1:38080:8080"
+  postgres-analytics:
+    ports:
+      - "127.0.0.1:35432:5432"
+  superset:
+    ports:
+      - "127.0.0.1:38088:8088"
+  risingwave:
+    ports:
+      - "127.0.0.1:34566:4566"
+  livemap:
+    ports:
+      - "127.0.0.1:38100:8000"
+  clickhouse:
+    ports:
+      - "127.0.0.1:38123:8123"   # HTTP
+      - "127.0.0.1:39000:9000"   # native

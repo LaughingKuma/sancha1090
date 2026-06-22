@@ -1,0 +1,54 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: "Bronze landing: the ClickHouse `bronze` database, loaded from the Garage S3 Parquet zone. dbt-clickhouse renders schema as the database and drops the catalog component."
+    database: bronze
+    schema: bronze
+    tables:
+      - name: opensky_states
+        description: "Aircraft state vectors loaded from the Garage Parquet landing zone"
+        columns:
+          - name: icao24
+            tests:
+              - not_null
+          - name: snapshot_time
+            tests:
+              - not_null
+      - name: adsb_states
+        description: "Byte-faithful readsb ADS-B state vectors; _raw_json holds the verbatim record"
+        columns:
+          - name: hex
+            tests:
+              - not_null
+      - name: opensky_flights
+        description: "Flight summaries (arrivals/departures) for the tracked JP airports; a flight can surface in multiple capture windows — dedupe downstream"
+        tags: ['flights']
+        columns:
+          - name: icao24
+            tests:
+              - not_null
+          - name: first_seen
+            tests:
+              # bronze is raw/byte-faithful to the source Parquet — a few historical-backfill rows carry a null
+              # first_seen; fact_flights filters them (where first_seen is not null), so warn, don't fail the raw layer.
+              - not_null:
+                  config:
+                    severity: warn
+      - name: aircraft_db
+        description: "Weekly snapshots of OpenSky's aircraft registry CSV (identity/operator layer); latest as_of_date wins downstream"
+        tags: ['flights']
+        columns:
+          - name: icao24
+            tests:
+              - not_null
+      - name: archive_states
+        description: "Backfilled pre-pipeline state snapshots (adsb.lol globe_history, ODbL); Japan-only, 12-min cadence, provenance in `source`"
+        tags: ['history']
+        columns:
+          - name: icao24
+            tests:
+              - not_null
+          - name: snapshot_time
+            tests:
+              - not_null

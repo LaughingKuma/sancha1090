@@ -1,0 +1,32 @@
+# Garage single-node config.
+#
+# Copy this file to config/garage.toml and fill in the three secret
+# fields below. config/garage.toml is gitignored.
+#
+# Generate each secret with: openssl rand -hex 32
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "lmdb"
+
+# Single-node cluster, no replication.
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+rpc_secret = "REPLACE_WITH_64_HEX_CHARS"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+root_domain = ".s3.garage.localhost"
+
+[s3_web]
+bind_addr = "[::]:3902"
+root_domain = ".web.garage.localhost"
+index = "index.html"
+
+[admin]
+api_bind_addr = "[::]:3903"
+admin_token = "REPLACE_WITH_64_HEX_CHARS"
+metrics_token = "REPLACE_WITH_64_HEX_CHARS"

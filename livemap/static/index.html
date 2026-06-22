@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SANCHA1090 · Tokyo ADS-B Live</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link href="vendor/maplibre-gl.css" rel="stylesheet" />
+<link href="vendor/flag-icons/css/flag-icons.min.css" rel="stylesheet" />
+<style>
+  :root {
+    --void: #05080c;
+    --panel: rgba(7, 12, 18, 0.72);
+    --hair: rgba(255, 176, 0, 0.18);
+    --hair-soft: rgba(120, 160, 200, 0.12);
+    --amber: #ffb000;
+    --amber-dim: #c8924a;
+    --ink: #e8eef5;
+    --ink-dim: #7e93a8;
+    --mil: #ff3b30;
+    --teal: #4ea2ae;
+    --grid: rgba(120, 170, 210, 0.05);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--void); overflow: hidden; }
+  body {
+    font-family: "Spline Sans Mono", ui-monospace, monospace;
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #map { position: fixed; inset: 0; }
+  /* Cool the basemap a touch and let the warm HUD pop against it */
+  #map .maplibregl-canvas { filter: saturate(0.85) brightness(0.92); }
+
+  /* Atmosphere: vignette + faint scanlines over the whole stage */
+  #stage::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 5;
+    background: radial-gradient(120% 90% at 50% 42%, transparent 55%, rgba(0,0,0,0.55) 100%);
+  }
+  #stage::after {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 5; opacity: 0.35;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.18) 2px 3px);
+    mix-blend-mode: multiply;
+  }
+
+  .hud { position: fixed; z-index: 10; pointer-events: none; }
+  .hud * { pointer-events: auto; }
+
+  /* ── Masthead ─────────────────────────────────────────── */
+  .masthead {
+    top: 18px; left: 18px;
+    border: 1px solid var(--hair);
+    background: var(--panel);
+    backdrop-filter: blur(9px) saturate(1.1);
+    padding: 14px 18px 13px;
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 11px), calc(100% - 11px) 100%, 0 100%);
+    box-shadow: 0 18px 40px -20px rgba(0,0,0,0.9), inset 0 0 0 1px rgba(255,255,255,0.02);
+  }
+  .masthead .kicker {
+    font-family: "Chakra Petch", sans-serif;
+    font-size: 10px; letter-spacing: 0.42em; text-transform: uppercase;
+    color: var(--amber-dim); margin: 0 0 4px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .live-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--mil);
+    box-shadow: 0 0 0 0 rgba(255,59,48,0.7); animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255,59,48,0.6); }
+    70% { box-shadow: 0 0 0 7px rgba(255,59,48,0); }
+    100% { box-shadow: 0 0 0 0 rgba(255,59,48,0); }
+  }
+  /* Respect users who opt out of motion: drop the decorative pulse */
+  @media (prefers-reduced-motion: reduce) {
+    .live-dot { animation: none; }
+  }
+  .masthead h1 {
+    font-family: "Chakra Petch", sans-serif;
+    font-weight: 700; font-size: 25px; letter-spacing: 0.02em;
+    margin: 0; line-height: 1; color: var(--ink);
+  }
+  .masthead h1 b { color: var(--amber); font-weight: 700; }
+  .masthead .sub {
+    margin-top: 7px; font-size: 10.5px; letter-spacing: 0.16em;
+    color: var(--ink-dim); text-transform: uppercase;
+  }
+
+  /* ── Telemetry strip ──────────────────────────────────── */
+  .telemetry {
+    top: 18px; right: 18px; display: flex; gap: 10px;
+  }
+  .stat {
+    border: 1px solid var(--hair-soft); background: var(--panel);
+    backdrop-filter: blur(9px); padding: 11px 15px 9px; min-width: 92px;
+    text-align: right;
+    clip-path: polygon(11px 0, 100% 0, 100% 100%, 0 100%, 0 11px);
+  }
+  .stat .num {
+    font-size: 27px; font-weight: 600; line-height: 1; color: var(--amber);
+    font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
+  }
+  .stat.mil .num { color: var(--mil); }
+  .stat .lbl {
+    margin-top: 6px; font-size: 9px; letter-spacing: 0.24em;
+    text-transform: uppercase; color: var(--ink-dim);
+  }
+
+  /* ── Legend / footer console ──────────────────────────── */
+  .console {
+    bottom: 18px; left: 18px;
+    border: 1px solid var(--hair-soft); background: var(--panel);
+    backdrop-filter: blur(9px); padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 9px;
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 11px 100%, 0 calc(100% - 11px));
+  }
+  .legend-row { display: flex; gap: 16px; align-items: center; }
+  .legend-row.fleet { gap: 11px; flex-wrap: wrap; }
+  .key { display: flex; align-items: center; gap: 7px; font-size: 10.5px; letter-spacing: 0.08em; color: var(--ink-dim); }
+  .legend-row.fleet .key { gap: 5px; font-size: 9.5px; }
+  .glyph { width: 11px; height: 11px; }
+  .glyph.lg { width: 15px; height: 15px; }
+  .glyph.amber { color: var(--amber); }
+  .glyph.mil { color: var(--mil); filter: drop-shadow(0 0 4px rgba(255,59,48,0.8)); }
+  .fade-bar {
+    width: 86px; height: 7px; border-radius: 1px;
+    background: linear-gradient(90deg, var(--amber), rgba(255,176,0,0.12));
+  }
+  /* altitude ramp legend — mirrors ALT_RAMP in map.js */
+  .alt-bar {
+    width: 86px; height: 7px; border-radius: 1px;
+    background: linear-gradient(90deg, #e06a00, #ffb000 50%, #ffe8b0);
+  }
+  .console .meta {
+    font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--amber-dim); border-top: 1px solid var(--hair-soft); padding-top: 8px;
+    display: flex; gap: 7px; align-items: center;
+  }
+  .console .meta .pip { width: 5px; height: 5px; border-radius: 50%; background: var(--amber); }
+
+  /* ── Spotlight panel (v5.6) ───────────────────────────── */
+  .spotlight {
+    top: 96px; right: 18px; width: 250px;
+    pointer-events: auto;
+    border: 1px solid var(--hair); background: var(--panel);
+    backdrop-filter: blur(9px); padding: 12px 14px;
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 11px), calc(100% - 11px) 100%, 0 100%);
+  }
+  .spotlight[hidden], .spotlight [hidden] { display: none !important; }
+  .spotlight.lost { filter: grayscale(0.8) brightness(0.8); }
+  .sp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding-right: 16px; }
+  .sp-callsign {
+    font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 17px;
+    letter-spacing: 0.04em; color: var(--amber); flex: 0 1 auto;
+  }
+  .spotlight.mil .sp-callsign { color: var(--mil); }
+  /* shared header chips (spotlight + tooltip): equal-height pills that line up */
+  .badge, .sp-state, .tip-state {
+    display: inline-flex; align-items: center; line-height: 1;
+    font-size: 8px; padding: 3px 5px;
+    border: 1px solid currentColor; border-radius: 1px; text-transform: uppercase;
+  }
+  .badge { letter-spacing: 0.16em; }
+  .sp-state, .tip-state { letter-spacing: 0.14em; color: var(--amber-dim); white-space: nowrap; }
+  /* chips (badges + climb/descent state) wrap as one unit, left-aligned under the callsign, never spilling the panel edge */
+  .hdr-chips { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; flex: 0 1 auto; }
+  #sp-badges { display: inline-flex; align-items: center; gap: 6px; }
+  .sp-head .sp-flag { font-size: 13px; border-radius: 1px; box-shadow: 0 0 0 1px rgba(0,0,0,0.45); flex: 0 0 auto; }
+  /* PR 1b-i: emergency (squawk 7700/7600/7500) — Medium intensity: thin rule + label, no fill/glow */
+  .spotlight.emerg { border-color: rgba(255,59,48,0.55); }
+  .spotlight.emerg .sp-callsign { color: var(--mil); }
+  .sp-emerg {
+    margin: -12px -14px 9px; padding: 5px 12px;
+    border-bottom: 1px solid rgba(255,59,48,0.45);
+    color: #ff7068; font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .sp-emerg::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--mil); flex: 0 0 auto;
+    box-shadow: 0 0 0 0 rgba(255,59,48,0.6); animation: emerg-pulse 2s infinite;
+  }
+  @keyframes emerg-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255,59,48,0.45); }
+    70% { box-shadow: 0 0 0 5px rgba(255,59,48,0); }
+    100% { box-shadow: 0 0 0 0 rgba(255,59,48,0); }
+  }
+  @media (prefers-reduced-motion: reduce) { .sp-emerg::before { animation: none; } }
+  /* MLAT vs ADS-B source — a Source row in both cards; MLAT (the rarer, interesting one) glows teal */
+  .sp-live dd.src-mlat, .ac-tip dd.src-mlat { color: var(--teal); }
+  /* PR 1b-ii: real broadcast V/S — climb green, descent amber (both cards) */
+  .sp-live dd.up, .ac-tip dd.up { color: #7ee08a; }
+  .sp-live dd.dn, .ac-tip dd.dn { color: #ffae6b; }
+  /* tooltip emergency parity */
+  .ac-tip.emerg { border-color: var(--mil) !important; }
+  .ac-tip .flight.emerg { color: var(--mil); }
+  .tip-emerg {
+    color: #ff7068; font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase;
+    margin-bottom: 5px; padding-bottom: 4px; border-bottom: 1px solid rgba(255,59,48,0.4);
+  }
+  /* pinned top-right so it never wraps down with the header chips */
+  .sp-close {
+    position: absolute; top: 9px; right: 10px; z-index: 2;
+    background: none; border: none; color: var(--ink-dim); cursor: pointer;
+    font-size: 13px; padding: 2px 4px;
+  }
+  .sp-close:hover { color: var(--ink); }
+  .sp-model { margin-top: 9px; font-size: 11px; color: var(--ink); letter-spacing: 0.03em; }
+  .sp-org, .sp-route { font-size: 10px; color: var(--ink-dim); letter-spacing: 0.04em; margin-top: 2px; }
+  .sp-route { color: var(--amber); }
+  .sp-live { margin: 9px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; }
+  .sp-live dt { color: var(--ink-dim); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; }
+  .sp-live dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; color: var(--ink); }
+  .sp-track {
+    margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--hair-soft);
+    font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--amber-dim);
+  }
+  .sp-lost {
+    margin-top: 7px; font-size: 9px; letter-spacing: 0.2em; color: var(--mil);
+    border: 1px solid var(--mil); padding: 3px 6px; text-align: center;
+  }
+
+  /* ── Tooltip ──────────────────────────────────────────── */
+  /* hover card is our own fixed node now (interactions.js positions it, edge-clamped) — not deck's tooltip */
+  #hovercard { position: fixed; z-index: 60; pointer-events: none; }
+  #hovercard[hidden] { display: none; }
+  .ac-tip {
+    font-family: "Spline Sans Mono", monospace;
+    background: rgba(5, 9, 14, 0.94) !important;
+    border: 1px solid var(--hair) !important;
+    color: var(--ink) !important;
+    font-size: 11px !important; line-height: 1.5 !important;
+    padding: 10px 12px !important; max-width: 240px;
+    box-shadow: 0 14px 36px -16px rgba(0,0,0,0.95);
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%);
+  }
+  .ac-tip .flight {
+    font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 15px;
+    letter-spacing: 0.04em; color: var(--amber); margin-bottom: 2px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 5px 7px;
+  }
+  .ac-tip .flight.mil { color: var(--mil); }
+  .ac-tip .flight .fi { font-size: 12px; border-radius: 1px; vertical-align: -1px; }
+  .ac-tip .model { font-size: 11px; color: var(--ink); letter-spacing: 0.03em; margin-bottom: 2px; }
+  .ac-tip .org { color: var(--ink-dim); margin-bottom: 7px; font-size: 10px; letter-spacing: 0.04em; }
+  .ac-tip .route { color: var(--amber); margin: -5px 0 7px; font-size: 10px; letter-spacing: 0.04em; }
+  .ac-tip dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; }
+  .ac-tip dt { color: var(--ink-dim); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; }
+  .ac-tip dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
+
+  @media (max-width: 620px) {
+    .masthead h1 { font-size: 20px; }
+    .telemetry { flex-direction: column; }
+    .stat { min-width: 78px; }
+    .spotlight { top: auto; bottom: 175px; left: 18px; right: 18px; width: auto; }
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="map"></div>
+
+  <div class="hud masthead">
+    <p class="kicker"><span class="live-dot"></span>Live · ADS-B Mesh</p>
+    <h1>SANCHA <b>1090</b></h1>
+    <div class="sub">Real-time aircraft surveillance</div>
+  </div>
+
+  <div class="hud telemetry">
+    <div class="stat"><div class="num" id="stat-total">—</div><div class="lbl">Tracked</div></div>
+    <div class="stat mil"><div class="num" id="stat-mil">—</div><div class="lbl">Military</div></div>
+  </div>
+
+  <aside class="hud spotlight" id="spotlight" aria-label="Aircraft spotlight" hidden>
+    <div class="sp-emerg" id="sp-emerg" hidden></div>
+    <div class="sp-head">
+      <span class="fi sp-flag" id="sp-flag" hidden></span>
+      <span class="sp-callsign" id="sp-callsign">—</span>
+      <span class="hdr-chips">
+        <span id="sp-badges"></span>
+        <span class="sp-state" id="sp-state" hidden></span>
+      </span>
+      <button type="button" class="sp-close" id="sp-close" aria-label="Close">✕</button>
+    </div>
+    <div class="sp-model" id="sp-model">—</div>
+    <div class="sp-org" id="sp-org">—</div>
+    <div class="sp-route" id="sp-route" hidden></div>
+    <dl class="sp-live">
+      <dt>Alt</dt><dd id="sp-alt">—</dd>
+      <dt>V/S</dt><dd id="sp-vs">—</dd>
+      <dt>Speed</dt><dd id="sp-spd">—</dd>
+      <dt>Heading</dt><dd id="sp-hdg">—</dd>
+      <dt>Nav</dt><dd id="sp-nav">—</dd>
+      <dt>Range</dt><dd id="sp-rng">—</dd>
+      <dt>Bearing</dt><dd id="sp-brg">—</dd>
+      <dt>Reg</dt><dd id="sp-reg">—</dd>
+      <dt>Code</dt><dd id="sp-code">—</dd>
+      <dt>ICAO</dt><dd id="sp-hex">—</dd>
+      <dt>Origin</dt><dd id="sp-origin">—</dd>
+      <dt>Recv</dt><dd id="sp-recv">—</dd>
+      <dt>Source</dt><dd id="sp-src">—</dd>
+      <dt>Signal</dt><dd id="sp-signal">—</dd>
+      <dt>Contact</dt><dd id="sp-contact">—</dd>
+    </dl>
+    <div class="sp-track" id="sp-track">—</div>
+    <div class="sp-lost" id="sp-lost" hidden>SIGNAL LOST</div>
+  </aside>
+
+  <div class="hud console">
+    <div class="legend-row">
+      <span class="key"><svg class="glyph amber" viewBox="0 0 64 64"><use href="#sil-airliner"/></svg>Civil</span>
+      <span class="key"><svg class="glyph mil" viewBox="0 0 64 64"><use href="#sil-airliner"/></svg>Military</span>
+    </div>
+    <div class="legend-row fleet">
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-a380"/></svg>A380</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-b747"/></svg>747</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-quad"/></svg>Quad</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-widebody"/></svg>Wide</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-airliner"/></svg>Narrow</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-regional"/></svg>Prop</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-ga"/></svg>GA</span>
+      <span class="key"><svg class="glyph amber lg" viewBox="0 0 64 64"><use href="#sil-heli"/></svg>Heli</span>
+    </div>
+    <div class="legend-row">
+      <span class="key">Fresh<span class="fade-bar"></span>120&nbsp;s</span>
+      <span class="key">GND<span class="alt-bar"></span>FL400</span>
+    </div>
+    <div class="meta"><span class="pip"></span><span id="meta-line">Connecting to stream…</span></div>
+  </div>
+</div>
+
+<script src="vendor/maplibre-gl.js"></script>
+<script src="vendor/deck.gl.min.js"></script>
+<!-- versioned URL evicts pre-no-cache copies browsers heuristic-cached; bump on release -->
+<script type="module" src="map.js?v=5.10"></script>
+</body>
+</html>

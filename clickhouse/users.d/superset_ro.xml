@@ -1,0 +1,23 @@
+<clickhouse>
+    <!-- P5 Superset cutover: a read-only CH user for Superset's clickhouse-connect connection. Superset
+         must not write CH (allow_dml:false enforces it app-side; readonly=2 enforces it server-side: SELECT
+         only, but session settings stay changeable so clickhouse-connect can negotiate per-query options).
+         Password reaches CH via from_env (CH_SUPERSET_PASSWORD, passed by the compose clickhouse service),
+         never inline — same no-secrets-in-config discipline as the Garage named collection. In-stack network
+         only; host ports stay loopback-bound via the override, so this is not LAN-exposed. -->
+    <profiles>
+        <superset_readonly>
+            <readonly>2</readonly>
+        </superset_readonly>
+    </profiles>
+    <users>
+        <superset_ro>
+            <password from_env="CH_SUPERSET_PASSWORD"/>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>superset_readonly</profile>
+            <quota>default</quota>
+        </superset_ro>
+    </users>
+</clickhouse>

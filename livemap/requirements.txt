@@ -1,0 +1,7 @@
+fastapi==0.136.3
+uvicorn==0.49.0
+psycopg2-binary==2.9.12
+# security floors for transitive deps (CVE-2026-48710, GHSA-vqfr-h8mv-ghfj, GHSA-65pc-fj4g-8rjx)
+starlette>=1.0.1
+h11>=0.16.0
+idna>=3.10

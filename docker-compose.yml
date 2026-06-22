@@ -1,0 +1,520 @@
+# Minimal Airflow stack, stage 2.
+# Just Postgres (metadata) + Airflow (api-server, scheduler, dag-processor).
+# LocalExecutor — no separate workers, no Redis.
+
+x-airflow-depends: &airflow-depends
+  postgres-airflow:
+    condition: service_healthy
+  airflow-init:
+    condition: service_completed_successfully
+
+# YAML anchor: define common config once, reuse in each Airflow service.
+# This is the same pattern the official Astronomer compose uses.
+x-airflow-common:
+  &airflow-common
+  build: .
+  image: sancha1090-airflow:latest
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_PG_USER:-airflow}:${AIRFLOW_PG_PASSWORD:?AIRFLOW_PG_PASSWORD must be set in .env}@postgres-airflow/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: 'true'
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SESSION_SECRET}
+    PYTHONPATH: /opt/airflow
+    OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID}
+    OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET}
+    # Receiver location for the range-outline compute — secret, set in .env; default = Carrot Tower.
+    LIVEMAP_FEEDER_LAT: ${LIVEMAP_FEEDER_LAT:-35.6434}
+    LIVEMAP_FEEDER_LON: ${LIVEMAP_FEEDER_LON:-139.6692}
+    # Object storage (Garage, S3-compatible).
+    S3_ENDPOINT: ${S3_ENDPOINT:-garage:3900}
+    S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+    S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+    S3_BUCKET: ${S3_BUCKET:-sancha1090}
+    ANALYTICS_PG_HOST: ${ANALYTICS_PG_HOST:-postgres-analytics}
+    ANALYTICS_PG_PORT: ${ANALYTICS_PG_PORT:-5432}
+    ANALYTICS_PG_DB: ${ANALYTICS_PG_DB:-analytics}
+    ANALYTICS_PG_USER: ${ANALYTICS_PG_USER:-analytics}
+    ANALYTICS_PG_PASSWORD: ${ANALYTICS_PG_PASSWORD:?ANALYTICS_PG_PASSWORD must be set in .env}
+    # R2 buffer (only the backfill_from_buffer DAG uses these).
+    R2_ENDPOINT: ${R2_ENDPOINT:-}
+    R2_ACCESS_KEY: ${R2_ACCESS_KEY:-}
+    R2_SECRET: ${R2_SECRET:-}
+    R2_BUCKET: ${R2_BUCKET:-opensky-vps-buffer}
+    # ClickHouse batch warehouse (canonical). Defaults reach the in-network service;
+    # the default user is open within the stack with no password (clickhouse/users.d).
+    CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-clickhouse}
+    CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
+    CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+    CLICKHOUSE_DB: ${CLICKHOUSE_DB:-bronze}
+    # ch_serving_parity gate connects as the read-only superset_ro user (the actual serving identity) to catch
+    # credential/permission drift, so the airflow tasks need these too. Username is fixed (not env-overridable)
+    # to match clickhouse/users.d/superset_ro.xml — same as the superset service.
+    CH_SUPERSET_USER: superset_ro
+    CH_SUPERSET_PASSWORD: ${CH_SUPERSET_PASSWORD:-}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./include:/opt/airflow/include
+    - ./plugins:/opt/airflow/plugins
+    - ./config:/opt/airflow/config
+    - ./dbt:/opt/airflow/dbt
+    - ./scripts:/opt/airflow/scripts:ro
+    - ./tests:/opt/airflow/tests:ro
+    - ./pytest.ini:/opt/airflow/pytest.ini:ro
+    # ro: lets test_superset_bundle validate the dataset YAMLs in the container run
+    - ./superset:/opt/airflow/superset:ro
+    # ro: lets test_adsb_schema validate the bronze.adsb_states DDL vs ADSB_COLUMNS in the container run
+    - ./clickhouse:/opt/airflow/clickhouse:ro
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres-airflow:
+      condition: service_healthy
+
+services:
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    user: "0:0"
+    command:
+      - -c
+      - |
+        if [[ -z "${AIRFLOW_UID}" ]]; then
+          echo "ERROR: AIRFLOW_UID is not set. Add 'AIRFLOW_UID=\$(id -u)' to .env"
+          exit 1
+        fi
+        mkdir -p /sources/logs /sources/dags /sources/plugins /sources/include /sources/config
+        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins,include,config}
+        exec /entrypoint airflow db migrate
+    volumes:
+      - .:/sources
+    restart: "no"
+
+  postgres-airflow:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${AIRFLOW_PG_USER:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_PG_PASSWORD:?AIRFLOW_PG_PASSWORD must be set in .env}
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-airflow-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${AIRFLOW_PG_USER:-airflow}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  postgres-analytics:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${ANALYTICS_PG_USER:-analytics}
+      POSTGRES_PASSWORD: ${ANALYTICS_PG_PASSWORD:?ANALYTICS_PG_PASSWORD must be set in .env}
+      POSTGRES_DB: ${ANALYTICS_PG_DB:-analytics}
+    expose:
+      - "5432"
+    volumes:
+      - postgres-analytics-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${ANALYTICS_PG_USER:-analytics}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  postgres-superset:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${SUPERSET_PG_USER:-superset}
+      POSTGRES_PASSWORD: ${SUPERSET_PG_PASSWORD:?SUPERSET_PG_PASSWORD must be set in .env}
+      POSTGRES_DB: superset
+    expose:
+      - "5432"
+    volumes:
+      - postgres-superset-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${SUPERSET_PG_USER:-superset}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  superset:
+    build: ./superset
+    image: sancha1090-superset:latest
+    depends_on:
+      postgres-superset:
+        condition: service_healthy
+      postgres-analytics:
+        condition: service_healthy
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:?SUPERSET_SECRET_KEY must be set in .env}
+      DATABASE_DIALECT: postgresql
+      DATABASE_USER: ${SUPERSET_PG_USER:-superset}
+      DATABASE_PASSWORD: ${SUPERSET_PG_PASSWORD:?SUPERSET_PG_PASSWORD must be set in .env}
+      DATABASE_HOST: postgres-superset
+      DATABASE_PORT: 5432
+      DATABASE_DB: superset
+      ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
+      ADMIN_FIRST_NAME: ${SUPERSET_ADMIN_FIRST_NAME:-Admin}
+      ADMIN_LAST_NAME: ${SUPERSET_ADMIN_LAST_NAME:-User}
+      ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:?SUPERSET_ADMIN_PASSWORD must be set in .env}
+      ANALYTICS_DB_URI: >-
+        postgresql+psycopg2://${ANALYTICS_PG_USER:-analytics}:${ANALYTICS_PG_PASSWORD:?ANALYTICS_PG_PASSWORD must be set in .env}@postgres-analytics:5432/${ANALYTICS_PG_DB:-analytics}
+      # P5: ClickHouse read-only creds for the clickhouse.yaml connection; bootstrap.sh expandvars resolves them.
+      # Username is fixed (not env-overridable) to match clickhouse/users.d/superset_ro.xml — the XML element
+      # IS the user name, so an override would silently fail auth and break every CH-backed dashboard.
+      CH_SUPERSET_USER: superset_ro
+      CH_SUPERSET_PASSWORD: ${CH_SUPERSET_PASSWORD:?CH_SUPERSET_PASSWORD must be set in .env}
+      MAPBOX_API_KEY: ${MAPBOX_API_KEY:-}
+    volumes:
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+      - ./superset/bootstrap.sh:/app/docker/bootstrap.sh:ro
+      - ./superset/assets:/app/assets:ro
+      - superset-home:/app/superset_home
+    expose:
+      - "8088"
+    command: ["/bin/bash", "/app/docker/bootstrap.sh"]
+    restart: unless-stopped
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on: *airflow-depends
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on: *airflow-depends
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on: *airflow-depends
+
+  garage:
+    image: dxflrs/garage:v2.3.0
+    # v2.3 native single-node bootstrap: auto layout, auto-create the access
+    # key from GARAGE_DEFAULT_ACCESS_KEY/SECRET_KEY, auto-create the bucket
+    # from GARAGE_DEFAULT_BUCKET, and grant the key full access. Replaces
+    # the layout/bucket/key/allow CLI dance from earlier Garage versions.
+    command: ["/garage", "server", "--single-node", "--default-access-key", "--default-bucket"]
+    environment:
+      GARAGE_DEFAULT_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+      GARAGE_DEFAULT_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+      GARAGE_DEFAULT_BUCKET: ${S3_BUCKET:-sancha1090}
+    volumes:
+      - ./config/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    expose:
+      - "3900"   # S3 API
+      - "3903"   # Admin API (loopback inside container)
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 10s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  redpanda:
+    image: redpandadata/redpanda:v26.1.9
+    # v4 ADS-B live hot path: single-node Kafka broker, tuned tiny (~1 GiB). Two Kafka
+    # listeners — internal (redpanda:9092) for in-stack consumers (RisingWave, v4.1) and
+    # external (19092) advertised on the LAN so the antenna edge bridge can publish.
+    # Minutes of retention only (set per-topic); the cold path owns durability.
+    command:
+      - redpanda
+      - start
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      # external advertise MUST be an address the edge can reach (the main PC's LAN IP),
+      # not localhost — that mismatch is the classic "connects then can't produce" failure.
+      - --advertise-kafka-addr=internal://redpanda:9092,external://${REDPANDA_EXTERNAL_HOST:-localhost}:19092
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --default-log-level=info
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    expose:
+      - "9092"    # internal Kafka (in-stack consumers)
+      - "19092"   # external Kafka (LAN-published via docker-compose.local.yml)
+      - "9644"    # admin API (loopback inside container)
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  redpanda-init:
+    image: redpandadata/redpanda:v26.1.9
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      RPK_BROKERS: redpanda:9092
+    # Idempotently ensure the one hot-path topic: 1 partition (hex keying gives
+    # per-aircraft ordering), ~35 min retention (covers mv_track_positions' 30-min
+    # window on MV recreation; durability lives in the cold path, not here). Retention
+    # is ENFORCED, not just set-on-create — auto_create_topics is on, so a producer
+    # racing init could otherwise create adsb.live with the 7-day cluster default.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        rpk topic create adsb.live -p 1 -r 1 -c retention.ms=2100000 2>/dev/null || true
+        rpk topic alter-config adsb.live --set retention.ms=2100000
+        # assert the contract held, else fail so Compose surfaces it (subshell drops
+        # pipefail so grep -q closing the pipe early can't SIGPIPE rpk into a false fail)
+        if ! (set +o pipefail; rpk topic describe adsb.live -c | grep -qE '^retention.ms[[:space:]]+2100000'); then
+          echo "adsb.live retention.ms != 2100000" >&2; exit 1
+        fi
+        # 1-partition contract (hex keying = per-aircraft ordering); can't be auto-fixed, so fail loud
+        if ! (set +o pipefail; rpk topic describe adsb.live | grep -qE '^PARTITIONS[[:space:]]+1[[:space:]]*$'); then
+          echo "adsb.live must have exactly 1 partition" >&2; exit 1
+        fi
+        rpk topic list
+    restart: "no"
+
+  risingwave:
+    image: risingwavelabs/risingwave:v2.8.4
+    # v4.1 live hot path consumer: enriched MVs over adsb.live, read by Superset on PG-wire.
+    # single_node embeds meta + state on one volume — no MinIO/extra-Postgres sidecars.
+    command:
+      - single_node
+      - --store-directory=/var/lib/risingwave
+      # defaults self-size to a large host-RAM fraction and all 28 cores — cap both
+      - --total-memory-bytes=4294967296
+      - --parallelism=4
+      # compactor floor fix — see config/risingwave.toml
+      - --config-path=/risingwave.toml
+    environment:
+      ENABLE_TELEMETRY: "false"
+    volumes:
+      - ./config/risingwave.toml:/risingwave.toml:ro
+      - risingwave-data:/var/lib/risingwave
+    expose:
+      - "4566"   # PG-wire (Superset + psql; loopback host port via override)
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '> /dev/tcp/127.0.0.1/4566'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  risingwave-init:
+    image: postgres:15
+    depends_on:
+      risingwave:
+        condition: service_healthy
+      # CREATE SOURCE validates the topic exists — racing redpanda-init loses the source/MVs
+      redpanda-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./risingwave/sql:/sql:ro
+    # Apply the RisingWave DDL (source/dims/MVs) in lexical order; every statement is
+    # IF NOT EXISTS so re-runs are no-ops — same one-shot pattern as redpanda-init.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        for f in /sql/*.sql; do
+          echo "applying $$f"
+          psql -v ON_ERROR_STOP=1 -h risingwave -p 4566 -U root -d dev -f "$$f"
+        done
+    restart: "no"
+
+  risingwave-seed:
+    image: sancha1090-airflow:latest
+    depends_on:
+      risingwave-init:
+        condition: service_completed_successfully
+    environment:
+      PYTHONPATH: /opt/airflow
+    volumes:
+      - ./include:/opt/airflow/include:ro
+      - ./dbt:/opt/airflow/dbt:ro
+    # First-boot dim seed via the SAME loader the weekly DAG runs (no drift); no-op when
+    # dims hold rows — else a fresh install serves null enrichment until the DAG first fires.
+    entrypoint: ["python", "-m", "include.risingwave_dims"]
+    command: ["--if-empty"]
+    restart: "no"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.5.1   # spike-validated tag (s3() Garage path-style first try)
+    environment:
+      # Reuse the existing Garage S3 creds — no new secret. The named collection reads the two
+      # key vars via from_env (clickhouse/config.d/named_collection_garage.xml) so they never
+      # appear inline in SQL. ENDPOINT/BUCKET are passed through for the P2 s3()->INSERT load
+      # and the P8 endpoint swap; the named collection's url is literal for now.
+      CH_S3_ENDPOINT: ${S3_ENDPOINT:-garage:3900}
+      CH_S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+      CH_S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+      CH_S3_BUCKET: ${S3_BUCKET:-sancha1090}
+      # P5: the read-only superset_ro user's password, read by clickhouse/users.d/superset_ro.xml via from_env.
+      CH_SUPERSET_PASSWORD: ${CH_SUPERSET_PASSWORD:?CH_SUPERSET_PASSWORD must be set in .env}
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro      # named collection + s3 client + listen
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro        # open default user within the stack network
+      - clickhouse-data:/var/lib/clickhouse                           # ACTIVE data dir — local SSD ONLY, never NFS
+    expose:
+      - "8123"   # HTTP
+      - "9000"   # native TCP
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  clickhouse-init:
+    image: clickhouse/clickhouse-server:26.5.1
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    volumes:
+      - ./clickhouse/sql:/sql:ro
+    # Apply the batch-warehouse DDL (bronze/dims/dict) in lexical order; every statement is
+    # IF NOT EXISTS so re-runs are no-ops — same one-shot pattern as risingwave-init. The
+    # smoke read (clickhouse/smoke/99_smoke.sql) is deliberately outside this mount so a flaky
+    # Garage read can never red schema provisioning.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        for f in /sql/*.sql; do
+          echo "applying $$f"
+          clickhouse-client -h clickhouse --multiquery < "$$f"
+        done
+    restart: "no"
+
+  clickhouse-marts-init:
+    image: sancha1090-airflow:latest
+    # Match the airflow services' uid so dbt can write logs/ + target/ in the bind-mounted project dir.
+    user: "${AIRFLOW_UID:-50000}:0"
+    depends_on:
+      clickhouse-init:
+        condition: service_completed_successfully
+      # backfill_aircraft_db reads the Garage Parquet via s3() — wait for it.
+      garage:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /opt/airflow
+      # HOME=/home/airflow so dbt's python finds its ~/.local site-packages (where the image installs it);
+      # /tmp would point user-site at an empty dir and break `import dbt.cli`.
+      HOME: /home/airflow
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-clickhouse}
+      CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-bronze}
+    volumes:
+      # rw (not ro): dbt writes its logs/ + target/ under the project dir, same as the airflow services.
+      - ./dbt:/opt/airflow/dbt
+      - ./include:/opt/airflow/include:ro
+    # First-boot CH marts bootstrap (idempotent, same steps as scripts/ch_setup_marts.sh minus the optional
+    # heavy archive backfill): seed the dims (silver_ch + dim.dim_hex_country) -> reload the range_hashed dict
+    # -> load bronze.aircraft_db, so the first transform_* tick has its seed/registry/dict deps. The optional
+    # archive-history backfill (agg_hourly_traffic_history) stays a manual step — see the README.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        cd /opt/airflow/dbt/sancha1090 && dbt seed --profiles-dir . --target clickhouse --no-use-colors
+        cd /opt/airflow && python -c "from include.clickhouse import bootstrap_marts; print(bootstrap_marts())"
+    restart: "no"
+
+  livemap:
+    build: ./livemap
+    image: sancha1090-livemap:latest
+    # Server-side cache: one background poll into the MV, fanned out to every browser tab.
+    depends_on:
+      risingwave:
+        condition: service_healthy
+      # the MV is created by risingwave-init — wait for it or first-boot polls hit a missing relation
+      risingwave-init:
+        condition: service_completed_successfully
+    environment:
+      # Real antenna coords are a secret — set in the gitignored .env; default is the public
+      # Carrot Tower landmark so the showcase never carries the rooftop location.
+      LIVEMAP_FEEDER_LAT: ${LIVEMAP_FEEDER_LAT:-35.6434}
+      LIVEMAP_FEEDER_LON: ${LIVEMAP_FEEDER_LON:-139.6692}
+      # 0.5s halves the cache-staleness term of end-to-end latency vs tar1090; the MV is tiny
+      LIVEMAP_POLL_SECONDS: "0.5"
+    volumes:
+      # static stays baked into the image for releases; the bind-mount serves edits live so
+      # frontend tweaks don't force the rebuild+restart that used to blank trails for 30 min
+      - ./livemap/static:/app/static:ro
+    expose:
+      - "8000"   # served on loopback via override (127.0.0.1:38100)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  # Pin existing names so renaming COMPOSE_PROJECT_NAME doesn't orphan data.
+  postgres-airflow-data:
+    name: opensky_postgres-airflow-data
+  postgres-analytics-data:
+    name: opensky_postgres-analytics-data
+  postgres-superset-data:
+    name: opensky_postgres-superset-data
+  garage-meta:
+    name: opensky_garage-meta
+  garage-data:
+    name: opensky_garage-data
+  superset-home:
+    name: opensky_superset-home
+  redpanda-data:
+    name: opensky_redpanda-data
+  risingwave-data:
+    name: opensky_risingwave-data
+  clickhouse-data:
+    name: opensky_clickhouse-data

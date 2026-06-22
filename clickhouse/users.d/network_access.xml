@@ -1,0 +1,17 @@
+<clickhouse>
+    <!-- The 26.5.1 image ships users.d/default-user.xml pinning the `default` user to localhost
+         (::1, 127.0.0.1), which blocks clickhouse-init and the P2+ Airflow writer from reaching
+         it over the compose network. A config.d <users> override does NOT win over the image's
+         users.d, so the policy must live here in users.d. Bind-mounting our users.d shadows the
+         image's default-user.xml and supplies the network policy explicitly: open within the
+         stack, same trust model as risingwave-init (root, no password, in-network). Host ports
+         stay loopback-bound (override) and the network is internal, so this is not LAN-exposed.
+         The default user's profile/quota/password still come from the image's users.xml. -->
+    <users>
+        <default>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+        </default>
+    </users>
+</clickhouse>

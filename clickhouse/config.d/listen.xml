@@ -1,0 +1,8 @@
+<clickhouse>
+    <!-- Bind-mounting our config.d over /etc/clickhouse-server/config.d shadows the official
+         image's docker_related_config.xml, which is what makes the server listen on 0.0.0.0.
+         Restore it so in-network containers (clickhouse-init, and the P2+ Airflow writer) can
+         reach native :9000 / HTTP :8123. Host ports stay loopback-bound via the override. -->
+    <listen_host>0.0.0.0</listen_host>
+    <listen_try>1</listen_try>
+</clickhouse>

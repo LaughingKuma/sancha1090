@@ -1,0 +1,512 @@
+dashboard_title: OpenSky Live Aircraft Tracking — Japan
+description: null
+css: ''
+slug: null
+certified_by: ''
+certification_details: ''
+published: false
+uuid: c40f8128-f133-46cd-9d03-2533141d764d
+position:
+  CHART-1iinurado12ez-WuizdA9:
+    children: []
+    id: CHART-1iinurado12ez-WuizdA9
+    meta:
+      chartId: 7
+      height: 28
+      sliceName: Total Airborne Aircraft
+      uuid: d661d9f3-81a8-41c4-a458-7ee5698252ea
+      width: 3
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-FmHZ98htB5gu2WJCQSd9U
+    - ROW-Xpylkru291OcvM_QS8LtJ
+    type: CHART
+  CHART-QF7GiYkqcorYxTtRG_I4Z:
+    children: []
+    id: CHART-QF7GiYkqcorYxTtRG_I4Z
+    meta:
+      chartId: 11
+      height: 50
+      sliceName: Speed vs altitude
+      uuid: 544428ef-83c1-4630-8253-40cdb5e96b5a
+      width: 6
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-0mkoyh8mStk6lgA59ms1j
+    - ROW-oIvZ5HOXyV3a6RIdeddAZ
+    type: CHART
+  CHART-SrcpnL3yiNtLhH8lL8dew:
+    children: []
+    id: CHART-SrcpnL3yiNtLhH8lL8dew
+    meta:
+      chartId: 12
+      height: 50
+      sliceName: Anomaly Map
+      uuid: fe234934-2384-4abc-ae78-056276908c34
+      width: 12
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-dZrL31qHDoYHqrh1ZUyIP
+    - ROW-ak2P4NWu4mMCZkMyF2nCr
+    type: CHART
+  CHART-apNZB494EAyR1TpAWAx8P:
+    children: []
+    id: CHART-apNZB494EAyR1TpAWAx8P
+    meta:
+      chartId: 3
+      height: 32
+      sliceName: Top 15 Countries by Airborne Aircraft
+      uuid: f9ddf320-8f4d-4902-a0f2-ec1ba8cc7f25
+      width: 9
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-FmHZ98htB5gu2WJCQSd9U
+    - ROW-Xpylkru291OcvM_QS8LtJ
+    type: CHART
+  CHART-eGcO1ylbcu3N-V0Vd6K3r:
+    children: []
+    id: CHART-eGcO1ylbcu3N-V0Vd6K3r
+    meta:
+      chartId: 8
+      height: 50
+      sliceName: OpenSky Live Map — Japan
+      uuid: d930bd78-71a2-486b-a0b1-3e2b0117f4a3
+      width: 12
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-FmHZ98htB5gu2WJCQSd9U
+    - ROW-nKQy-NvyIiANzLOt6gRTl
+    type: CHART
+  CHART-o7XLd6VlTlGRVvV2_uWdN:
+    children: []
+    id: CHART-o7XLd6VlTlGRVvV2_uWdN
+    meta:
+      chartId: 13
+      height: 50
+      sliceName: Recent Anomalies
+      uuid: f4cbf1a1-d611-45af-b222-a72a47a6a0cb
+      width: 8
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-dZrL31qHDoYHqrh1ZUyIP
+    - ROW-IJRuMbHtrdqNOtsa2zJna
+    type: CHART
+  CHART-qrKzMoA5XDZTxBKP88kam:
+    children: []
+    id: CHART-qrKzMoA5XDZTxBKP88kam
+    meta:
+      chartId: 10
+      height: 50
+      sliceName: Altitude distribution
+      uuid: afb8c77c-1dc7-4558-b4b4-22f6be2e40c9
+      width: 6
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-0mkoyh8mStk6lgA59ms1j
+    - ROW-oIvZ5HOXyV3a6RIdeddAZ
+    type: CHART
+  CHART-qrTmxQ4Ocejao7JLIs7CZ:
+    children: []
+    id: CHART-qrTmxQ4Ocejao7JLIs7CZ
+    meta:
+      chartId: 2
+      height: 50
+      sliceName: Anomaly Type Breakdown
+      uuid: ee139245-7250-42db-bd86-c06624dec0f5
+      width: 4
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-dZrL31qHDoYHqrh1ZUyIP
+    - ROW-IJRuMbHtrdqNOtsa2zJna
+    type: CHART
+  CHART-uRj5DFBP8DmhKJq1hJslg:
+    children: []
+    id: CHART-uRj5DFBP8DmhKJq1hJslg
+    meta:
+      chartId: 9
+      height: 50
+      sliceName: Unique aircraft per hour
+      uuid: e071d249-3be2-409a-9aee-dc2f62d5b0c2
+      width: 12
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-0mkoyh8mStk6lgA59ms1j
+    - ROW-S3-dxnCYcFNb170lfVlKb
+    type: CHART
+  DASHBOARD_VERSION_KEY: v2
+  GRID_ID:
+    children:
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    type: GRID
+  HEADER_ID:
+    id: HEADER_ID
+    meta:
+      text: OpenSky Live Aircraft Tracking — Japan
+    type: HEADER
+  ROOT_ID:
+    children:
+    - GRID_ID
+    id: ROOT_ID
+    type: ROOT
+  ROW-IJRuMbHtrdqNOtsa2zJna:
+    children:
+    - CHART-qrTmxQ4Ocejao7JLIs7CZ
+    - CHART-o7XLd6VlTlGRVvV2_uWdN
+    id: ROW-IJRuMbHtrdqNOtsa2zJna
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-dZrL31qHDoYHqrh1ZUyIP
+    type: ROW
+  ROW-S3-dxnCYcFNb170lfVlKb:
+    children:
+    - CHART-uRj5DFBP8DmhKJq1hJslg
+    id: ROW-S3-dxnCYcFNb170lfVlKb
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-0mkoyh8mStk6lgA59ms1j
+    type: ROW
+  ROW-Xpylkru291OcvM_QS8LtJ:
+    children:
+    - CHART-1iinurado12ez-WuizdA9
+    - CHART-apNZB494EAyR1TpAWAx8P
+    id: ROW-Xpylkru291OcvM_QS8LtJ
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-FmHZ98htB5gu2WJCQSd9U
+    type: ROW
+  ROW-ak2P4NWu4mMCZkMyF2nCr:
+    children:
+    - CHART-SrcpnL3yiNtLhH8lL8dew
+    id: ROW-ak2P4NWu4mMCZkMyF2nCr
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-dZrL31qHDoYHqrh1ZUyIP
+    type: ROW
+  ROW-nKQy-NvyIiANzLOt6gRTl:
+    children:
+    - CHART-eGcO1ylbcu3N-V0Vd6K3r
+    id: ROW-nKQy-NvyIiANzLOt6gRTl
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-FmHZ98htB5gu2WJCQSd9U
+    type: ROW
+  ROW-oIvZ5HOXyV3a6RIdeddAZ:
+    children:
+    - CHART-qrKzMoA5XDZTxBKP88kam
+    - CHART-QF7GiYkqcorYxTtRG_I4Z
+    id: ROW-oIvZ5HOXyV3a6RIdeddAZ
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    - TAB-0mkoyh8mStk6lgA59ms1j
+    type: ROW
+  TAB-0mkoyh8mStk6lgA59ms1j:
+    children:
+    - ROW-S3-dxnCYcFNb170lfVlKb
+    - ROW-oIvZ5HOXyV3a6RIdeddAZ
+    id: TAB-0mkoyh8mStk6lgA59ms1j
+    meta:
+      defaultText: Tab title
+      placeholder: Tab title
+      text: Trends
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    type: TAB
+  TAB-FmHZ98htB5gu2WJCQSd9U:
+    children:
+    - ROW-Xpylkru291OcvM_QS8LtJ
+    - ROW-nKQy-NvyIiANzLOt6gRTl
+    id: TAB-FmHZ98htB5gu2WJCQSd9U
+    meta:
+      defaultText: Tab title
+      placeholder: Tab title
+      text: Live
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    type: TAB
+  TAB-dZrL31qHDoYHqrh1ZUyIP:
+    children:
+    - ROW-ak2P4NWu4mMCZkMyF2nCr
+    - ROW-IJRuMbHtrdqNOtsa2zJna
+    id: TAB-dZrL31qHDoYHqrh1ZUyIP
+    meta:
+      defaultText: Tab title
+      placeholder: Tab title
+      text: Anomalies
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-yvAorp6rGGDvZ_fvEM3zV
+    type: TAB
+  TABS-yvAorp6rGGDvZ_fvEM3zV:
+    children:
+    - TAB-FmHZ98htB5gu2WJCQSd9U
+    - TAB-0mkoyh8mStk6lgA59ms1j
+    - TAB-dZrL31qHDoYHqrh1ZUyIP
+    id: TABS-yvAorp6rGGDvZ_fvEM3zV
+    meta: {}
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    type: TABS
+metadata:
+  color_scheme_domain: []
+  shared_label_colors:
+  - africa
+  - altitude_too_high
+  - east_asia
+  - europe
+  - middle_east
+  - north_america
+  - oceania
+  - south_america
+  - south_asia
+  - velocity_too_high
+  map_label_colors:
+    SUM(airborne_aircraft): '#1FA8C9'
+    south_america: '#1f77b4'
+    oceania: '#ff7f0e'
+    east_asia: '#2ca02c'
+    europe: '#d62728'
+    north_america: '#9467bd'
+    south_asia: '#8c564b'
+    africa: '#e377c2'
+    middle_east: '#7f7f7f'
+    SUM(unique_aircraft): '#1FA8C9'
+    baro_altitude_m: '#1FA8C9'
+    velocity_too_high: '#1f77b4'
+    altitude_too_high: '#ff7f0e'
+  label_colors: {}
+  chart_configuration:
+    '2':
+      id: 2
+      crossFilters:
+        scope: global
+        chartsInScope:
+        - 3
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+    '3':
+      id: 3
+      crossFilters:
+        scope: global
+        chartsInScope:
+        - 2
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+    '8':
+      id: 8
+      crossFilters:
+        scope: global
+        chartsInScope:
+        - 2
+        - 3
+        - 7
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+    '9':
+      id: 9
+      crossFilters:
+        scope: global
+        chartsInScope:
+        - 2
+        - 3
+        - 7
+        - 8
+        - 10
+        - 11
+        - 12
+        - 13
+    '12':
+      id: 12
+      crossFilters:
+        scope: global
+        chartsInScope:
+        - 2
+        - 3
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 13
+    '13':
+      id: 13
+      crossFilters:
+        scope: global
+        chartsInScope:
+        - 2
+        - 3
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+  global_chart_configuration:
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+    chartsInScope:
+    - 2
+    - 3
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+  native_filter_configuration:
+  - id: NATIVE_FILTER-VlUMJnPCC-FyFG0CGV79w
+    type: NATIVE_FILTER
+    name: Region
+    filterType: filter_select
+    description: ''
+    targets:
+    - column:
+        name: region
+      datasetUuid: 6c03563a-f561-46b7-afd3-3b0d36872142
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded:
+      - 2
+      - 3
+      - 7
+      - 9
+      - 12
+      - 13
+    controlValues:
+      enableEmptyFilter: false
+      defaultToFirstItem: false
+      creatable: true
+      multiSelect: true
+      searchAllOptions: false
+      inverseSelection: false
+    defaultDataMask:
+      extraFormData: {}
+      filterState: {}
+      ownState: {}
+    cascadeParentIds: []
+    sortMetric: null
+  - name: Time Range
+    filterType: filter_time
+    description: ''
+    type: NATIVE_FILTER
+    defaultValueQueriesData: null
+    defaultValue: true
+    requiredFirst: {}
+    controlValues:
+      enableEmptyFilter: false
+    scope:
+      rootPath:
+      - TAB-0mkoyh8mStk6lgA59ms1j
+      - TAB-dZrL31qHDoYHqrh1ZUyIP
+      excluded: []
+    defaultDataMask:
+      extraFormData:
+        time_range: Last day
+      filterState:
+        value: Last day
+    id: NATIVE_FILTER-UHGRG4nTDuLspat-7AP_e
+  - id: NATIVE_FILTER-9cZrefdjuPrtgUAPJ72Ar
+    type: NATIVE_FILTER
+    name: Country
+    filterType: filter_select
+    description: ''
+    targets:
+    - column:
+        name: origin_country
+      datasetUuid: 6c03563a-f561-46b7-afd3-3b0d36872142
+    scope:
+      rootPath:
+      - TAB-FmHZ98htB5gu2WJCQSd9U
+      - TAB-0mkoyh8mStk6lgA59ms1j
+      - TAB-dZrL31qHDoYHqrh1ZUyIP
+      excluded: []
+    controlValues:
+      enableEmptyFilter: false
+      defaultToFirstItem: false
+      creatable: true
+      multiSelect: true
+      searchAllOptions: false
+      inverseSelection: false
+      sortAscending: true
+    defaultDataMask:
+      extraFormData: {}
+      filterState: {}
+      ownState: {}
+    cascadeParentIds: []
+    sortMetric: null
+  chart_customization_config: []
+  color_scheme: ''
+  refresh_frequency: 0
+  expanded_slices: {}
+  timed_refresh_immune_slices: []
+  cross_filters_enabled: true
+  default_filters: '{}'
+theme_uuid: null
+version: 1.0.0

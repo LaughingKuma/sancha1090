@@ -1,0 +1,165 @@
+slice_name: Speed vs altitude
+description: null
+certified_by: null
+certification_details: null
+viz_type: bubble_v2
+params:
+  datasource: 5__table
+  viz_type: bubble_v2
+  matrixify_enable: false
+  matrixify_mode_columns: disabled
+  matrixify_dimension_selection_mode_columns: members
+  matrixify_dimension_columns:
+    dimension: ''
+    values: []
+  matrixify_topn_value_columns: 10
+  matrixify_all_sort_by_columns: a_to_z
+  matrixify_topn_order_columns: true
+  matrixify_show_column_headers: true
+  matrixify_fit_columns_dynamically: true
+  matrixify_mode_rows: disabled
+  matrixify_dimension_selection_mode_rows: members
+  matrixify_dimension_rows:
+    dimension: ''
+    values: []
+  matrixify_topn_value_rows: 10
+  matrixify_all_sort_by_rows: a_to_z
+  matrixify_topn_order_rows: true
+  matrixify_show_row_labels: true
+  matrixify_row_height: 300
+  matrixify_charts_per_row: 4
+  matrixify_cell_title_template: ''
+  series: region
+  entity: icao24
+  x:
+    expressionType: SIMPLE
+    column:
+      advanced_data_type: null
+      certification_details: null
+      certified_by: null
+      column_name: velocity_mps
+      description: null
+      expression: null
+      filterable: true
+      groupby: true
+      id: 32
+      is_certified: false
+      is_dttm: false
+      python_date_format: null
+      type: DOUBLE PRECISION
+      type_generic: 0
+      uuid: eb1a0c06-62c4-4fb2-9321-8c16c89d90d8
+      verbose_name: null
+      warning_markdown: null
+    aggregate: AVG
+    sqlExpression: null
+    datasourceWarning: false
+    hasCustomLabel: false
+    label: AVG(velocity_mps)
+    optionName: metric_2ahaln7appx_rio1xr05jl
+  y:
+    expressionType: SIMPLE
+    column:
+      advanced_data_type: null
+      certification_details: null
+      certified_by: null
+      column_name: baro_altitude_m
+      description: null
+      expression: null
+      filterable: true
+      groupby: true
+      id: 31
+      is_certified: false
+      is_dttm: false
+      python_date_format: null
+      type: DOUBLE PRECISION
+      type_generic: 0
+      uuid: aca15f83-d78e-4914-8308-b033ccd49b81
+      verbose_name: null
+      warning_markdown: null
+    aggregate: AVG
+    sqlExpression: null
+    datasourceWarning: false
+    hasCustomLabel: false
+    label: AVG(baro_altitude_m)
+    optionName: metric_byek63cawn_xrssljnqc5g
+  adhoc_filters:
+  - expressionType: SIMPLE
+    subject: snapshot_time
+    operator: TEMPORAL_RANGE
+    comparator: No filter
+    clause: WHERE
+    sqlExpression: null
+    isExtra: false
+    isNew: false
+    datasourceWarning: false
+    filterOptionName: filter_zf9mkj1456n_r1xt8lk2grm
+  - expressionType: SIMPLE
+    subject: baro_altitude_m
+    operator: '>'
+    operatorId: GREATER_THAN
+    comparator: 0
+    clause: WHERE
+    sqlExpression: null
+    isExtra: false
+    isNew: false
+    datasourceWarning: false
+    filterOptionName: filter_0smblatqjz6_x3ykit1ixy
+  - expressionType: SIMPLE
+    subject: baro_altitude_m
+    operator: <
+    operatorId: LESS_THAN
+    comparator: '16000'
+    clause: WHERE
+    sqlExpression: null
+    isExtra: false
+    isNew: false
+    datasourceWarning: false
+    filterOptionName: filter_q00csdylzn_fwq5mct946p
+  - expressionType: SIMPLE
+    subject: velocity_mps
+    operator: <
+    operatorId: LESS_THAN
+    comparator: '370'
+    clause: WHERE
+    sqlExpression: null
+    isExtra: false
+    isNew: false
+    datasourceWarning: false
+    filterOptionName: filter_abrrfv3aoxt_m5h9i55ctyn
+  size: count
+  row_limit: '20000'
+  color_scheme: supersetColors
+  show_legend: true
+  legendType: scroll
+  legendOrientation: top
+  max_bubble_size: '25'
+  tooltipSizeFormat: SMART_NUMBER
+  opacity: 0.6
+  x_axis_label: ''
+  xAxisLabelRotation: 0
+  xAxisLabelInterval: auto
+  x_axis_title_margin: 15
+  xAxisFormat: SMART_NUMBER
+  y_axis_label: ''
+  yAxisLabelRotation: 0
+  y_axis_title_margin: 15
+  y_axis_format: SMART_NUMBER
+  truncateXAxis: true
+  truncateYAxis: false
+  y_axis_bounds:
+  - null
+  - null
+  extra_form_data: {}
+  dashboards: []
+query_context: '{"datasource":{"id":5,"type":"table"},"force":false,"queries":[{"filters":[{"col":"snapshot_time","op":"TEMPORAL_RANGE","val":"No
+  filter"},{"col":"baro_altitude_m","op":">","val":0},{"col":"baro_altitude_m","op":"<","val":"16000"},{"col":"velocity_mps","op":"<","val":"370"}],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":["icao24","region"],"metrics":[{"expressionType":"SIMPLE","column":{"advanced_data_type":null,"certification_details":null,"certified_by":null,"column_name":"velocity_mps","description":null,"expression":null,"filterable":true,"groupby":true,"id":32,"is_certified":false,"is_dttm":false,"python_date_format":null,"type":"DOUBLE
+  PRECISION","type_generic":0,"uuid":"eb1a0c06-62c4-4fb2-9321-8c16c89d90d8","verbose_name":null,"warning_markdown":null},"aggregate":"AVG","sqlExpression":null,"datasourceWarning":false,"hasCustomLabel":false,"label":"AVG(velocity_mps)","optionName":"metric_2ahaln7appx_rio1xr05jl"},{"expressionType":"SIMPLE","column":{"advanced_data_type":null,"certification_details":null,"certified_by":null,"column_name":"baro_altitude_m","description":null,"expression":null,"filterable":true,"groupby":true,"id":31,"is_certified":false,"is_dttm":false,"python_date_format":null,"type":"DOUBLE
+  PRECISION","type_generic":0,"uuid":"aca15f83-d78e-4914-8308-b033ccd49b81","verbose_name":null,"warning_markdown":null},"aggregate":"AVG","sqlExpression":null,"datasourceWarning":false,"hasCustomLabel":false,"label":"AVG(baro_altitude_m)","optionName":"metric_byek63cawn_xrssljnqc5g"},"count"],"annotation_layers":[],"row_limit":20000,"series_limit":0,"group_others_when_limit_reached":false,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{}}],"form_data":{"datasource":"5__table","viz_type":"bubble_v2","matrixify_enable":false,"matrixify_mode_columns":"disabled","matrixify_dimension_selection_mode_columns":"members","matrixify_dimension_columns":{"dimension":"","values":[]},"matrixify_topn_value_columns":10,"matrixify_all_sort_by_columns":"a_to_z","matrixify_topn_order_columns":true,"matrixify_show_column_headers":true,"matrixify_fit_columns_dynamically":true,"matrixify_mode_rows":"disabled","matrixify_dimension_selection_mode_rows":"members","matrixify_dimension_rows":{"dimension":"","values":[]},"matrixify_topn_value_rows":10,"matrixify_all_sort_by_rows":"a_to_z","matrixify_topn_order_rows":true,"matrixify_show_row_labels":true,"matrixify_row_height":300,"matrixify_charts_per_row":4,"matrixify_cell_title_template":"","series":"region","entity":"icao24","x":{"expressionType":"SIMPLE","column":{"advanced_data_type":null,"certification_details":null,"certified_by":null,"column_name":"velocity_mps","description":null,"expression":null,"filterable":true,"groupby":true,"id":32,"is_certified":false,"is_dttm":false,"python_date_format":null,"type":"DOUBLE
+  PRECISION","type_generic":0,"uuid":"eb1a0c06-62c4-4fb2-9321-8c16c89d90d8","verbose_name":null,"warning_markdown":null},"aggregate":"AVG","sqlExpression":null,"datasourceWarning":false,"hasCustomLabel":false,"label":"AVG(velocity_mps)","optionName":"metric_2ahaln7appx_rio1xr05jl"},"y":{"expressionType":"SIMPLE","column":{"advanced_data_type":null,"certification_details":null,"certified_by":null,"column_name":"baro_altitude_m","description":null,"expression":null,"filterable":true,"groupby":true,"id":31,"is_certified":false,"is_dttm":false,"python_date_format":null,"type":"DOUBLE
+  PRECISION","type_generic":0,"uuid":"aca15f83-d78e-4914-8308-b033ccd49b81","verbose_name":null,"warning_markdown":null},"aggregate":"AVG","sqlExpression":null,"datasourceWarning":false,"hasCustomLabel":false,"label":"AVG(baro_altitude_m)","optionName":"metric_byek63cawn_xrssljnqc5g"},"adhoc_filters":[{"expressionType":"SIMPLE","subject":"snapshot_time","operator":"TEMPORAL_RANGE","comparator":"No
+  filter","clause":"WHERE","sqlExpression":null,"isExtra":false,"isNew":false,"datasourceWarning":false,"filterOptionName":"filter_zf9mkj1456n_r1xt8lk2grm"},{"expressionType":"SIMPLE","subject":"baro_altitude_m","operator":">","operatorId":"GREATER_THAN","comparator":0,"clause":"WHERE","sqlExpression":null,"isExtra":false,"isNew":false,"datasourceWarning":false,"filterOptionName":"filter_0smblatqjz6_x3ykit1ixy"},{"expressionType":"SIMPLE","subject":"baro_altitude_m","operator":"<","operatorId":"LESS_THAN","comparator":"16000","clause":"WHERE","sqlExpression":null,"isExtra":false,"isNew":false,"datasourceWarning":false,"filterOptionName":"filter_q00csdylzn_fwq5mct946p"},{"expressionType":"SIMPLE","subject":"velocity_mps","operator":"<","operatorId":"LESS_THAN","comparator":"370","clause":"WHERE","sqlExpression":null,"isExtra":false,"isNew":false,"datasourceWarning":false,"filterOptionName":"filter_abrrfv3aoxt_m5h9i55ctyn"}],"size":"count","row_limit":"20000","color_scheme":"supersetColors","show_legend":true,"legendType":"scroll","legendOrientation":"top","max_bubble_size":"25","tooltipSizeFormat":"SMART_NUMBER","opacity":0.6,"x_axis_label":"","xAxisLabelRotation":0,"xAxisLabelInterval":"auto","x_axis_title_margin":15,"xAxisFormat":"SMART_NUMBER","y_axis_label":"","yAxisLabelRotation":0,"y_axis_title_margin":15,"y_axis_format":"SMART_NUMBER","truncateXAxis":true,"truncateYAxis":false,"y_axis_bounds":[null,null],"extra_form_data":{},"dashboards":[],"force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
+cache_timeout: null
+uuid: 544428ef-83c1-4630-8253-40cdb5e96b5a
+version: 1.0.0
+dataset_uuid: 6c03563a-f561-46b7-afd3-3b0d36872142

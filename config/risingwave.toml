@@ -1,0 +1,5 @@
+# At our 4 GiB cap, single_node's derived compactor budget (10% minus meta cache) lands
+# under the compactor's hard floor (2 x sstable_size) and panics at startup. An explicit
+# limit is an accounting ceiling, not a reservation — the ~12 msg/s workload uses far less.
+[storage]
+compactor_memory_limit_mb = 1024
