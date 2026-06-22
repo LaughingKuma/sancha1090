@@ -29,40 +29,33 @@ EXPECTED_DAGS = {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"ensure_bronze_tables", "dbt_run_trino", "dbt_test_trino"},
+        "task_ids": {"dbt_run_ch", "dbt_test_ch", "ensure_ch_mvs"},
+        # dbt_run_ch builds; dbt_test_ch + ensure_ch_mvs are all_success leaves, so a run OR test failure
+        # propagates (upstream_failed) and reds the run — nothing masks a dbt failure.
+        "downstream_task_ids": {
+            "dbt_run_ch": {"dbt_test_ch", "ensure_ch_mvs"},
+        },
     },
     "transform_adsb_silver": {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"dbt_seed", "dbt_run", "dbt_test"},
+        "task_ids": {"dbt_run_ch", "dbt_test_ch"},
+        "downstream_task_ids": {
+            "dbt_run_ch": {"dbt_test_ch"},
+        },
     },
     "tableize_states": {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"load_pending_to_iceberg"},
+        "task_ids": {"load_pending_to_clickhouse"},
     },
     "tableize_adsb": {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"add_pending_to_iceberg"},
-    },
-    "maintain_iceberg_states": {
-        "schedule": "30 3 * * *",
-        "catchup": False,
-        "max_active_runs": 1,
-        "task_ids": {"ensure_bronze_tables", "optimize_bronze", "expire_bronze", "orphans_bronze"},
-    },
-    "maintain_iceberg_marts": {
-        "schedule": "30 4 * * *",
-        "catchup": False,
-        "max_active_runs": 1,
-        "task_ids": {
-            "optimize_silver", "expire_silver", "orphans_silver",
-            "optimize_gold", "expire_gold", "orphans_gold",
-        },
+        "task_ids": {"load_adsb_to_clickhouse"},
     },
     "maintain_adsb_schema": {
         "schedule": "35 4 * * 1",
@@ -82,16 +75,23 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"refresh"},
     },
-    "backup_polaris": {
-        "schedule": "0 2 * * *",
-        "catchup": False,
-        "max_active_runs": 1,
-        "task_ids": {"dump_to_garage"},
-    },
     "backfill_from_buffer": {
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {"sync_r2_to_garage"},
+    },
+    "ch_incremental_mvs_init": {
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"create_and_seed"},
+    },
+    "ch_serving_parity": {
+        "schedule": "*/15 * * * *",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"gate"},
+        # Protection gate must run on a clean deploy without a manual unpause (compose defaults paused=true).
+        "is_paused_upon_creation": False,
     },
     "ingest_flights": {
         "schedule": "30 14 * * *",
@@ -103,21 +103,23 @@ EXPECTED_DAGS = {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"load_pending_to_iceberg"},
+        "task_ids": {"load_pending_to_clickhouse"},
     },
     "ingest_aircraft_db": {
         "schedule": "0 17 * * 0",
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"download_and_land", "tableize"},
+        "task_ids": {"download_and_land", "load_to_clickhouse"},
     },
     "transform_flights": {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {
-            "ensure_bronze_tables", "dbt_seed", "dbt_run", "dbt_test",
-            "push_flight_routes",
+        "task_ids": {"dbt_run_ch", "dbt_test_ch", "push_flight_routes"},
+        # Linear gate: build -> test -> publish. A run or test failure reds the run and withholds the RW publish.
+        "downstream_task_ids": {
+            "dbt_run_ch": {"dbt_test_ch"},
+            "dbt_test_ch": {"push_flight_routes"},
         },
     },
 }
@@ -173,3 +175,21 @@ def test_dag_structure(dagbag, dag_id, expected):
         f"  Expected: {sorted(expected['task_ids'])}\n"
         f"  Actual:   {sorted(actual_task_ids)}"
     )
+
+    for task_id, downstream in expected.get("downstream_task_ids", {}).items():
+        actual = dag.get_task(task_id).downstream_task_ids
+        assert actual == downstream, (
+            f"{dag_id}.{task_id} downstream expected {sorted(downstream)}, got {sorted(actual)}"
+        )
+
+    for task_id, trigger_rule in expected.get("trigger_rules", {}).items():
+        actual = dag.get_task(task_id).trigger_rule
+        assert actual == trigger_rule, (
+            f"{dag_id}.{task_id} trigger_rule expected {trigger_rule!r}, got {actual!r}"
+        )
+
+    if "is_paused_upon_creation" in expected:
+        assert dag.is_paused_upon_creation == expected["is_paused_upon_creation"], (
+            f"{dag_id}.is_paused_upon_creation expected {expected['is_paused_upon_creation']}, "
+            f"got {dag.is_paused_upon_creation}"
+        )

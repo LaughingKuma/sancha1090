@@ -1,11 +1,11 @@
 # sancha1090: a local-first data platform
 
 A local-first platform that turns a live rooftop ADS-B receiver over Tokyo into
-both a real-time map and a full Iceberg lakehouse. The receiver's own feed drives
-a streaming hot path (Redpanda → RisingWave) for what's overhead *right now*, and
-Airflow-orchestrated bronze/silver/gold marts (Garage S3 + Polaris catalog + Trino
-+ dbt + Superset) for the accumulated history — all on a single host in Docker
-Compose, no cloud accounts.
+both a real-time map and a full columnar data warehouse. The receiver's own feed
+drives a streaming hot path (Redpanda → RisingWave) for what's overhead *right now*,
+and Airflow-orchestrated bronze/silver/gold marts (Garage S3 → ClickHouse → dbt →
+Superset) for the accumulated history — all on a single host in Docker Compose,
+no cloud accounts.
 
 The receiver is the anchor: everything it hears is ground truth. Around it, the
 [OpenSky Network](https://opensky-network.org) adds the rings the antenna can't
@@ -19,14 +19,14 @@ headed). The two feeds stay on separate refresh tracks and fuse in
 
 ## Architecture
 
-The antenna feed and the OpenSky context feed both land in Iceberg bronze and stay
+The antenna feed and the OpenSky context feed both land in ClickHouse bronze and stay
 on separate refresh tracks (partitioned by dbt tag so they never race), fusing only
 in `gold.fct_flight_legs`:
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/architecture-dark.svg">
-    <img src="docs/architecture.svg" alt="sancha1090 medallion lakehouse: a rooftop ADS-B antenna plus OpenSky context feed flow through bronze → silver → gold to Trino + Superset" width="520">
+    <img src="docs/architecture.svg" alt="sancha1090 medallion warehouse: a rooftop ADS-B antenna plus OpenSky context feed flow through bronze → silver → gold to ClickHouse + Superset" width="520">
   </picture>
 </p>
 
@@ -34,6 +34,66 @@ Provenance for both feeds lives in Postgres (`public.ingestion_manifest` for the
 OpenSky context feed, `public.adsb_ingestion_manifest` for the rooftop antenna) —
 one row per landed file. See
 [`docs/datalake.md`](docs/datalake.md) for the full lineage, entity map, and per-table schema.
+
+## Architecture evolution
+
+### What was — the Iceberg lakehouse (v2–v5.12)
+
+sancha1090 began as a **local-first medallion lakehouse**: the rooftop antenna + the
+OpenSky network feeding **bronze → silver → gold** Iceberg tables on **Garage (S3) + a
+Polaris REST catalog + Trino**, transformed by **dbt-on-Trino** and served to Superset. It
+was deliberately the full open-table-format stack — schema evolution, time-travel,
+zero-copy `add_files` ingest, a catalog service — and it ran the whole thing on one box.
+Eighteen released versions evolved it from a world sweep to a focused Japan feed with a live
+map, flight legs, and airline analytics.
+
+### Why it changed — right-sizing to the workload (v6.0)
+
+ADS-B is **append-heavy, time-ordered telemetry** — the canonical columnar-OLAP workload. As
+the data grew toward hundreds of millions of rows, the distributed-query-engine + catalog
+stack was paying its full operational cost (JVM heap tuning, worker OOM from view
+re-expansion, OPTIMIZE-vs-rebuild races, a separate metastore) for none of its
+multi-engine / petabyte benefit on a single host. **v6.0 replaces the Iceberg + Polaris +
+Trino batch warehouse with ClickHouse** — keeping Postgres for manifests/metadata and
+RisingWave for the live hot path. The result: one engine instead of three services,
+self-maintaining aggregates, and an entire class of operational gotchas deleted. The
+migration landed as eight reviewed, parity-gated phases; the lakehouse history lives at the
+`v5.12` tag.
+
+## Benchmarks — why ClickHouse
+
+ClickHouse **re-measured on the production box** at v6.0 (warm, server-side; the live ~21.6 M-row
+`bronze.adsb_states`). The **Trino + Iceberg** column is the pre-migration 2026-06-19 spike baseline
+(~19.2 M rows) — the lakehouse was retired at v6.0, so those are the last measured figures, not
+re-runnable. Answers are identical across engines (the window count = **28 aircraft**, `max(r_dst)` =
+**166.453 nm**), so the queries are equivalent; speedups are approximate (different row counts).
+
+| Query | Trino + Iceberg (spike) | ClickHouse (re-measured) | Speedup |
+|-------|------------------------:|-------------------------:|--------:|
+| Point-in-time aircraft count (2-min window) | ~5.1 s | **3 ms** | ~1700× |
+| Max receiver range (`max(r_dst)`) | ~5.0 s | **8 ms** | ~600× |
+| Airline traffic rollup (full scan + regex + `uniqExact`) | ~5.0 s | **155 ms** | ~30× |
+| Day-of-week / time-of-day scan | ~4.8 s | **14 ms** | ~340× |
+
+The window query prunes via the `capture_ts` sort key — reading only the 2-minute window out of
+21.6 M rows — where Trino full-scanned the unpartitioned Iceberg table (flat ~5 s). At a 10× synthetic
+**192 M rows the windowed query stayed flat** (27 ms, spike projection) while a full scan grows linearly.
+
+**Honest trade-offs** (the part that makes it engineering, not a sales pitch):
+
+- **Ingest is no longer zero-copy.** Iceberg `add_files` registered edge Parquet for free;
+  ClickHouse physically materializes it — but a full 19.2 M-row load is **12 s**, ~2 min
+  projected at 200 M.
+- **Naive storage is bigger, not smaller** (3.96 GiB vs 1.5 GB Parquet) — the verbatim
+  `_raw_json` column is 39%; tuned with codecs + cold-tiering it shrinks.
+- **Eventual-merge reads.** Self-maintaining aggregates need `…Merge()`/`FINAL` — a real
+  footgun the mart layer must respect.
+- **Mart maintenance got cheaper:** cheap aggregates became incremental views that update on
+  insert, retiring the scheduled rebuild and the OOM / OPTIMIZE-race failure modes entirely.
+
+The hardest mart — flight-leg **sessionization** (an ordered cross-row window that can't be
+incremental) — was ported with **exact parity** (143,605 legs, identical boundaries) at
+116 ms, spill-safe under a tight memory cap.
 
 ## Quickstart
 
@@ -53,6 +113,13 @@ Common tasks are wrapped in a `Makefile` — `make` lists them (`make up`, `make
 
 First boot: ~3–5 min for image builds + initial Postgres migrations.
 Airflow UI at <http://localhost:38080> (admin / admin).
+
+`docker compose up` bootstraps the ClickHouse marts automatically: `clickhouse-init` provisions the
+bronze/dim schemas + the hex-country dictionary, then the one-shot **`clickhouse-marts-init`** seeds the
+dims, reloads the dict, and loads the aircraft registry — so the first transform run has its seed/registry/dict
+dependencies. (The optional multi-year **archive-history** backfill is a separate manual step:
+`scripts/ch_setup_marts.sh` runs the full setup including the archive, and `scripts/ch_seed_live_archive.sh`
+backfills the accumulator's pre-window history.)
 
 Trigger `ingest_states` in Airflow to start populating; `tableize_states`
 and `transform_marts` cascade automatically via asset events.
@@ -118,12 +185,12 @@ over the 120 s window.
 ## Tech stack
 
 - Apache Airflow 3.2 — TaskFlow, dynamic task mapping, asset chains
-- Apache Iceberg via PyIceberg + Apache Polaris REST catalog
-- dbt-trino for silver/gold marts
-- Trino as the query engine over Iceberg
-- Garage as a local S3-compatible object store
+- ClickHouse — the columnar batch warehouse (bronze raw landing + silver/gold marts,
+  self-maintaining `AggregatingMergeTree` views for the cheap aggregates)
+- dbt-clickhouse for the silver/gold mart builds
+- Garage as a local S3-compatible object store (the Parquet landing zone)
 - polars + pyarrow for in-memory transforms
-- Three Postgres instances (Airflow metadata, Polaris+manifest, Superset metadata)
+- Three Postgres instances (Airflow metadata, ingestion manifests, Superset metadata)
 - Redpanda — single-node Kafka broker carrying the v4 ADS-B live hot path (edge → `adsb.live`)
 - RisingWave — streaming engine materializing the live enriched views off `adsb.live` (v4.1)
 - FastAPI + maplibre + deck.gl — the `livemap` live aircraft map over RisingWave (v4.3)
@@ -134,9 +201,9 @@ over the 120 s window.
 | Service              | Role                                              |
 |----------------------|---------------------------------------------------|
 | `postgres-airflow`   | Airflow metadata: DAG runs, XCom, etc.            |
-| `postgres-analytics` | Polaris metastore + `public.ingestion_manifest`   |
+| `postgres-analytics` | Ingestion manifests (`ingestion_manifest` + `adsb_ingestion_manifest`) |
 | `postgres-superset`  | Superset metadata                                 |
-| `garage`             | Raw parquet + Iceberg warehouse (S3-compatible)   |
+| `garage`             | Raw parquet landing zone (S3-compatible)          |
 
 The rule: don't mix orchestration metadata with analytical data. A
 runaway query that locks tables shouldn't be able to take down the

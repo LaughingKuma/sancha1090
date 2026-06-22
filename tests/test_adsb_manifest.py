@@ -101,6 +101,35 @@ def test_newest_adsb_rotation_end_none_when_empty(adsb_manifest_eng):
     assert am.newest_adsb_rotation_end(engine=adsb_manifest_eng) is None
 
 
+def test_pending_ch_adsb_uris_independent_of_iceberg_marker(adsb_manifest_eng):
+    # CH marker advances separately from the Iceberg marker (P2 non-blocking invariant).
+    _adsb(adsb_manifest_eng, "a.parquet")
+    _adsb(adsb_manifest_eng, "b.parquet")
+    am.mark_iceberg_committed({"a.parquet": 111}, engine=adsb_manifest_eng)
+
+    iceberg_pending = [p["filename"] for p in am.pending_adsb_uris(engine=adsb_manifest_eng)]
+    ch_pending = [p["filename"] for p in am.pending_ch_adsb_uris(engine=adsb_manifest_eng)]
+    assert iceberg_pending == ["b.parquet"]            # 'a' committed to Iceberg
+    assert sorted(ch_pending) == ["a.parquet", "b.parquet"]  # both still CH-pending
+    assert ch_pending and all("s3_uri" in p for p in am.pending_ch_adsb_uris(engine=adsb_manifest_eng))
+
+
+def test_mark_ch_loaded_idempotent_and_excludes_committed(adsb_manifest_eng):
+    _adsb(adsb_manifest_eng, "a.parquet")
+    _adsb(adsb_manifest_eng, "b.parquet")
+    n1 = am.mark_ch_loaded(["a.parquet"], engine=adsb_manifest_eng)
+    n2 = am.mark_ch_loaded(["a.parquet"], engine=adsb_manifest_eng)
+    assert n1 == 1
+    assert n2 == 0
+    assert [p["filename"] for p in am.pending_ch_adsb_uris(engine=adsb_manifest_eng)] == ["b.parquet"]
+    # CH marker must not have advanced the Iceberg marker.
+    assert len(am.pending_adsb_uris(engine=adsb_manifest_eng)) == 2
+
+
+def test_mark_ch_loaded_empty_is_noop(adsb_manifest_eng):
+    assert am.mark_ch_loaded([], engine=adsb_manifest_eng) == 0
+
+
 def test_mark_iceberg_committed_sets_snapshot_per_file_and_is_idempotent(adsb_manifest_eng):
     _adsb(adsb_manifest_eng, "x.parquet")
     _adsb(adsb_manifest_eng, "y.parquet")

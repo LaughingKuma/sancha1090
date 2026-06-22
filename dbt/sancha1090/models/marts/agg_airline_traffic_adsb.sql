@@ -1,4 +1,4 @@
-{{ config(materialized='table', tags=['adsb']) }}
+{{ config(materialized='table', tags=['adsb', 'ch_mv']) }}
 
 -- Rooftop ADS-B feed by operating airline (callsign -> dim_airlines); the deliberate mirror of the
 -- OpenSky context agg_airline_traffic, but scoped to what THIS antenna actually received. backfilled_obs

@@ -77,7 +77,7 @@ def backfill_from_buffer():
                 if not entry.path.endswith(".parquet"):
                     continue
 
-                # Mirror the R2 path under the Garage bucket so Iceberg/manifest URIs stay consistent.
+                # Mirror the R2 path under the Garage bucket so the manifest URIs stay consistent.
                 relative = entry.path[len(f"{r2_bucket}/"):]
                 target_uri = f"s3://{garage_bucket}/{relative}"
                 if target_uri in existing:

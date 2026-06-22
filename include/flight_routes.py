@@ -4,16 +4,19 @@ import os
 
 from psycopg2.extras import execute_values
 
-from include.db import rw_connect, trino_connect
+from include.clickhouse import ch_client
+from include.db import rw_connect
 
 # Route memory horizon: callsigns map to stable scheduled legs, so the latest flight
 # within a week is a reliable backstory for an aircraft flying that callsign today.
 LOOKBACK_DAYS = int(os.environ.get("FLIGHT_ROUTES_LOOKBACK_DAYS", "7"))
+# CH gold-lane schema for the routes source (P3 built marts into gold_ch); one constant so P7's rename is a one-liner.
+CH_GOLD_SCHEMA = os.environ.get("CH_GOLD_SCHEMA", "gold_ch")
 
 
 def _compute() -> list[tuple]:
     # Latest known route per callsign; both endpoints resolved so the tooltip line
-    # always reads "XXX → YYY".
+    # always reads "XXX → YYY". now('UTC') matches the UTC-stored first_seen (== fact_flights' window).
     sql = f"""
     WITH ranked AS (
       SELECT
@@ -24,26 +27,24 @@ def _compute() -> list[tuple]:
         dest_icao,
         coalesce(dest_iata, dest_icao) AS dest_code,
         dest_city,
-        cast(to_unixtime(first_seen) AS bigint) AS departed_epoch,
+        toInt64(toUnixTimestamp(first_seen)) AS departed_epoch,
         row_number() OVER (PARTITION BY callsign ORDER BY first_seen DESC) AS rn
-      FROM gold.fact_flights
+      FROM {CH_GOLD_SCHEMA}.fact_flights
       WHERE callsign IS NOT NULL
         AND origin_icao IS NOT NULL
         AND dest_icao IS NOT NULL
         AND origin_icao <> dest_icao
-        AND first_seen > current_timestamp - INTERVAL '{LOOKBACK_DAYS}' DAY
+        AND first_seen > now('UTC') - INTERVAL {LOOKBACK_DAYS} DAY
     )
     SELECT callsign, origin_icao, origin_code, origin_city,
            dest_icao, dest_code, dest_city, departed_epoch
     FROM ranked WHERE rn = 1
     """
-    conn = trino_connect("gold")
+    client = ch_client()
     try:
-        cur = conn.cursor()
-        cur.execute(sql)
-        return cur.fetchall()
+        return client.query(sql).result_rows
     finally:
-        conn.close()
+        client.close()
 
 
 def refresh_flight_routes() -> int:

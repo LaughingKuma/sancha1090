@@ -6,7 +6,7 @@ with latest_ts as (
 recent as (
     select *
     from {{ ref('stg_states') }}
-    where snapshot_time >= (select ts - interval '5' minute from latest_ts)
+    where snapshot_time >= (select ts - {% if target.type == 'clickhouse' %}INTERVAL 5 MINUTE{% else %}interval '5' minute{% endif %} from latest_ts)
       and on_ground = false
       and latitude is not null
       and longitude is not null

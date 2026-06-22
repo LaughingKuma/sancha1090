@@ -69,21 +69,9 @@ models:
         tests:
           - not_null
 
-  - name: agg_hourly_traffic_history
-    description: "Pre-pipeline hourly aggregates at the agg_hourly_traffic grain"
-    columns:
-      - name: snapshot_hour
-        tests:
-          - not_null
-          - unique
-
-  - name: agg_hourly_traffic_live_archive
-    description: "Insert-only accumulator of settled live hours; closes the gap behind the 30-day window"
-    columns:
-      - name: snapshot_hour
-        tests:
-          - not_null
-          - unique
+  # agg_hourly_traffic_history + agg_hourly_traffic_live_archive are tag:ch_mv segments folded into the
+  # self-maintaining agg_hourly_traffic_acc MV — they aren't standalone served relations on ClickHouse, so
+  # their snapshot_hour not_null/unique coverage lives on the served agg_hourly_traffic view above.
 
   - name: agg_airport_daily
     description: "Daily arrivals/departures per tracked airport (JST days); extended backwards by the v5.2 flights backfill"

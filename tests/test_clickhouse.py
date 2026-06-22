@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from include import clickhouse as ch
+
+
+class _Arrow(SimpleNamespace):
+    pass
+
+
+def test_insert_arrow_best_effort_swallows_failures(monkeypatch):
+    # The P2 invariant: a CH failure must never raise out of the dual-write.
+    def boom():
+        raise RuntimeError("CH down")
+
+    monkeypatch.setattr(ch, "ch_client", boom)
+    ok, rows = ch.insert_arrow_best_effort("opensky_states", _Arrow(num_rows=5))
+    assert ok is False
+    assert rows == 0
+
+
+def test_insert_arrow_best_effort_happy_path(monkeypatch):
+    calls = {}
+
+    fake = SimpleNamespace(
+        insert_arrow=lambda t, a, **_kw: calls.update(table=t, rows=a.num_rows),
+        close=lambda: calls.update(closed=True),
+    )
+    monkeypatch.setattr(ch, "ch_client", lambda: fake)
+    ok, rows = ch.insert_arrow_best_effort("opensky_states", _Arrow(num_rows=7))
+    assert (ok, rows) == (True, 7)
+    assert calls == {"table": "opensky_states", "rows": 7, "closed": True}
+
+
+def test_command_best_effort_swallows_failures(monkeypatch):
+    monkeypatch.setattr(ch, "ch_client", lambda: (_ for _ in ()).throw(RuntimeError("nope")))
+    assert ch.command_best_effort("INSERT ...") is False
+
+
+def test_chunks_single_when_no_size_or_oversize():
+    assert list(ch._chunks([1, 2, 3], None)) == [[1, 2, 3]]
+    assert list(ch._chunks([1, 2, 3], 10)) == [[1, 2, 3]]
+    assert list(ch._chunks([1, 2, 3, 4, 5], 2)) == [[1, 2], [3, 4], [5]]
+
+
+def test_reset_aborts_before_clearing_markers_when_truncate_fails(monkeypatch):
+    # A CH-down reset must NOT wipe the Postgres markers (that would make the backfill re-INSERT
+    # duplicates into the still-populated tables — plain MergeTree has no dedup).
+    from include import adsb_manifest as am
+    from include import manifest
+
+    monkeypatch.setattr(manifest, "ensure_table", lambda *_a, **_k: None)
+    monkeypatch.setattr(am, "ensure_table", lambda *_a, **_k: None)
+
+    class _DownClient:
+        def command(self, _sql, **_kw):
+            raise RuntimeError("CH down")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ch, "ch_client", lambda: _DownClient())
+
+    cleared = {"markers": False}
+
+    def _engine_must_not_be_used():
+        cleared["markers"] = True
+        raise AssertionError("markers cleared despite failed TRUNCATE")
+
+    monkeypatch.setattr(ch, "analytics_engine", _engine_must_not_be_used)
+
+    with pytest.raises(RuntimeError):
+        ch.reset_ch_bronze()
+    assert cleared["markers"] is False
+
+
+def _seed_adsb(eng, filename):
+    from include import adsb_manifest as am
+
+    am.record_bundle(
+        engine=eng, filename=filename, process_uuid="5f3b0bb5-7da1-48d5-be0c-9cff1808a86f",
+        stream="adsb_state", hostname="h", rotation_start_ts="2026-06-19T00:00:00Z",
+        rotation_end_ts="2026-06-19T01:00:00Z", complete=True, schema_version=1, row_count=5,
+        s3_uri=f"s3://sancha1090/bronze/adsb_state/dt=2026-06-19/{filename}",
+        manifest_s3_uri=f"s3://sancha1090/bronze/adsb_state/dt=2026-06-19/{filename}.manifest.json",
+    )
+
+
+def _stub_adsb_reads(monkeypatch, *, fail_for=()):
+    # Stub the Garage filesystem + per-file pyarrow read so the loader is testable offline.
+    import pyarrow as pa
+
+    from include import s3_helpers
+
+    monkeypatch.setattr(s3_helpers, "garage_pyarrow_fs", lambda: object())
+
+    def fake_read(_fs, s3_uri):
+        if any(f in s3_uri for f in fail_for):
+            raise RuntimeError("S3 read 400")
+        return pa.table({"hex": ["a", "b", "c"]})  # 3 rows so ch_loaded (rows) != files
+
+    monkeypatch.setattr(ch, "_read_adsb_table", fake_read)
+
+
+def test_safe_identifier_accepts_valid_rejects_injection():
+    assert ch._safe_identifier("bronze") == "bronze"
+    for bad in ("bronze; DROP TABLE x", "a-b", "1bad", "a b", ""):
+        with pytest.raises(ValueError):
+            ch._safe_identifier(bad)
+
+
+def test_load_adsb_skips_unreadable_file_and_loads_rest(adsb_manifest_eng, monkeypatch):
+    from include import adsb_manifest as am
+
+    _seed_adsb(adsb_manifest_eng, "good.parquet")
+    _seed_adsb(adsb_manifest_eng, "bad.parquet")
+    _stub_adsb_reads(monkeypatch, fail_for=("bad.parquet",))
+    monkeypatch.setattr(ch, "insert_arrow_best_effort", lambda _t, a, **_k: (True, a.num_rows))
+
+    out = ch.load_adsb_pending_to_ch(engine=adsb_manifest_eng)
+
+    # ch_loaded is ROWS (3 from the one good file), files is the file count — same shape as states/flights.
+    assert out == {"ch_loaded": 3, "files": 1, "ok": False}  # good loaded, bad skipped (not fatal)
+    # The unreadable file stays CH-pending so a later run retries it; the good one is marked.
+    assert [p["filename"] for p in am.pending_ch_adsb_uris(engine=adsb_manifest_eng)] == ["bad.parquet"]
+
+
+def test_load_adsb_non_blocking_when_insert_fails(adsb_manifest_eng, monkeypatch):
+    from include import adsb_manifest as am
+
+    _seed_adsb(adsb_manifest_eng, "x.parquet")
+    _stub_adsb_reads(monkeypatch)
+    monkeypatch.setattr(ch, "insert_arrow_best_effort", lambda *_a, **_k: (False, 0))
+
+    out = ch.load_adsb_pending_to_ch(engine=adsb_manifest_eng)
+
+    assert out == {"ch_loaded": 0, "files": 0, "ok": False}
+    assert [p["filename"] for p in am.pending_ch_adsb_uris(engine=adsb_manifest_eng)] == ["x.parquet"]
+
+
+def test_load_adsb_chunks_backlog(adsb_manifest_eng, monkeypatch):
+    from include import adsb_manifest as am
+
+    _seed_adsb(adsb_manifest_eng, "a.parquet")
+    _seed_adsb(adsb_manifest_eng, "b.parquet")
+    _stub_adsb_reads(monkeypatch)
+    inserts = []
+    monkeypatch.setattr(ch, "insert_arrow_best_effort",
+                        lambda _t, a, **_k: inserts.append(a.num_rows) or (True, a.num_rows))
+
+    out = ch.load_adsb_pending_to_ch(engine=adsb_manifest_eng, batch_files=1)
+
+    assert out == {"ch_loaded": 6, "files": 2, "ok": True}  # 2 files × 3 rows
+    assert len(inserts) == 2  # one INSERT per file, not one oversized batch
+    assert am.pending_ch_adsb_uris(engine=adsb_manifest_eng) == []

@@ -18,9 +18,13 @@ CREATE TABLE IF NOT EXISTS public.ingestion_manifest (
     snapshot_min          BIGINT,
     snapshot_max          BIGINT,
     row_count             INTEGER,
-    iceberg_committed_at  TIMESTAMPTZ
+    iceberg_committed_at  TIMESTAMPTZ,
+    ch_loaded_at          TIMESTAMPTZ
 )
 """
+
+# Self-migrate existing prod tables: the CREATE above is a no-op once the table exists.
+_MIGRATE_DDL = "ALTER TABLE public.ingestion_manifest ADD COLUMN IF NOT EXISTS ch_loaded_at TIMESTAMPTZ"
 
 _table_ready = False
 _default_engine: Optional[sa.Engine] = None
@@ -39,21 +43,23 @@ def ensure_table(engine: Optional[sa.Engine] = None) -> None:
     eng = engine or _engine()
     with eng.begin() as conn:
         conn.execute(sa.text(_DDL))
+        # ADD COLUMN IF NOT EXISTS is Postgres-only; sqlite test tables already carry it via _DDL.
+        if eng.dialect.name == "postgresql":
+            conn.execute(sa.text(_MIGRATE_DDL))
     if engine is None:
         _table_ready = True
 
 
-def pending_uris(uri_prefix: str, engine: Optional[sa.Engine] = None) -> list[dict]:
-    # Prefix-scoped: the manifest is shared by the states and flights lanes, and each
-    # tableize DAG must only drain its own URIs (v5.1).
+def _pending_uris(uri_prefix: str, marker_col: str, engine: Optional[sa.Engine]) -> list[dict]:
     eng = engine or _engine()
     if engine is None and not _table_ready:
-        ensure_table(eng)
+        ensure_table()  # no-arg latches _table_ready so the DDL+ALTER runs once, not per call
+    # marker_col is an internal constant, never user input.
     stmt = sa.text(
         f"""
         SELECT object_uri, snapshot_min, snapshot_max, row_count
           FROM {_TABLE}
-         WHERE iceberg_committed_at IS NULL
+         WHERE {marker_col} IS NULL
            AND object_uri LIKE :prefix ESCAPE '\\'
          ORDER BY loaded_at
         """
@@ -65,6 +71,17 @@ def pending_uris(uri_prefix: str, engine: Optional[sa.Engine] = None) -> list[di
             dict(r._mapping)
             for r in conn.execute(stmt, {"prefix": f"%/{escaped}/%"}).fetchall()
         ]
+
+
+def pending_uris(uri_prefix: str, engine: Optional[sa.Engine] = None) -> list[dict]:
+    # Prefix-scoped: the manifest is shared by the states and flights lanes, and each
+    # tableize DAG must only drain its own URIs (v5.1).
+    return _pending_uris(uri_prefix, "iceberg_committed_at", engine)
+
+
+def pending_ch_uris(uri_prefix: str, engine: Optional[sa.Engine] = None) -> list[dict]:
+    # Independent of the Iceberg marker so a ClickHouse outage can't stall the Iceberg drain (P2).
+    return _pending_uris(uri_prefix, "ch_loaded_at", engine)
 
 
 def batch_fingerprint(uris: list[str]) -> str:
@@ -83,21 +100,30 @@ def already_appended(table, fingerprint: str) -> bool:
     )
 
 
-def mark_iceberg_committed(uris: list[str], engine: Optional[sa.Engine] = None) -> int:
+def _mark_loaded(uris: list[str], marker_col: str, engine: Optional[sa.Engine]) -> int:
     if not uris:
         return 0
     eng = engine or _engine()
+    # marker_col is an internal constant, never user input.
     stmt = sa.text(
         f"""
         UPDATE {_TABLE}
-           SET iceberg_committed_at = CURRENT_TIMESTAMP
+           SET {marker_col} = CURRENT_TIMESTAMP
          WHERE object_uri IN :uris
-           AND iceberg_committed_at IS NULL
+           AND {marker_col} IS NULL
         """
     ).bindparams(sa.bindparam("uris", expanding=True))
     with eng.begin() as conn:
         result = conn.execute(stmt, {"uris": list(uris)})
         return result.rowcount or 0
+
+
+def mark_iceberg_committed(uris: list[str], engine: Optional[sa.Engine] = None) -> int:
+    return _mark_loaded(uris, "iceberg_committed_at", engine)
+
+
+def mark_ch_loaded(uris: list[str], engine: Optional[sa.Engine] = None) -> int:
+    return _mark_loaded(uris, "ch_loaded_at", engine)
 
 
 def record_load(
@@ -109,7 +135,7 @@ def record_load(
 ) -> None:
     eng = engine or _engine()
     if engine is None and not _table_ready:
-        ensure_table(eng)
+        ensure_table()  # no-arg latches _table_ready so the DDL+ALTER runs once, not per call
     stmt = sa.text(
         f"""
         INSERT INTO {_TABLE}

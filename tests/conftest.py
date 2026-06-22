@@ -35,6 +35,7 @@ CREATE TABLE adsb_ingestion_manifest (
     landed_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     iceberg_committed_at    TIMESTAMP,
     iceberg_snapshot_id     INTEGER,
+    ch_loaded_at            TIMESTAMP,
     provenance              TEXT DEFAULT 'live'
 )
 """
@@ -47,27 +48,42 @@ def dagbag() -> DagBag:
 
 
 @pytest.fixture(scope="session")
-def cur():
+def ch_cur():
+    # Live ClickHouse cursor-shim for the serving-mart integration tests: skips when CH is unreachable
+    # (host / CI without the stack), runs for real inside the airflow containers; missing tables fail RED.
     try:
-        import trino
+        import clickhouse_connect
     except ImportError as exc:
-        pytest.skip(f"trino client not available: {exc}")
+        pytest.skip(f"clickhouse-connect not available: {exc}")
     try:
-        conn = trino.dbapi.connect(
-            host=os.environ.get("TRINO_HOST", "trino-coordinator"),
-            port=int(os.environ.get("TRINO_PORT", "8080")),
-            user="root", catalog="iceberg", http_scheme="http",
+        client = clickhouse_connect.get_client(
+            host=os.environ.get("CLICKHOUSE_HOST", "clickhouse"),
+            port=int(os.environ.get("CLICKHOUSE_PORT", "8123")),
+            username=os.environ.get("CLICKHOUSE_USER", "default"),
+            password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
+            settings={"join_use_nulls": 1},
         )
-        c = conn.cursor()
-        c.execute("SELECT 1")
-        c.fetchall()
-    except Exception as exc:  # only infra unreachability skips; missing tables must fail loudly (RED)
-        pytest.skip(f"trino not reachable: {exc}")
+        client.query("SELECT 1")
+    except clickhouse_connect.driver.exceptions.OperationalError as exc:
+        # Only network unreachability skips; config/auth/programming errors fail loudly (RED).
+        pytest.skip(f"clickhouse not reachable: {exc}")
+
+    class _Cur:
+        # Minimal DBAPI-ish shim so the mart tests can keep `cur.execute(sql); cur.fetchall()`.
+        def __init__(self, c):
+            self._c = c
+            self._rows: list = []
+
+        def execute(self, sql, params=None):
+            self._rows = self._c.query(sql, parameters=params or {}).result_rows
+
+        def fetchall(self):
+            return self._rows
+
     try:
-        yield c
+        yield _Cur(client)
     finally:
-        c.close()
-        conn.close()
+        client.close()
 
 
 @pytest.fixture
@@ -77,17 +93,3 @@ def adsb_manifest_eng(monkeypatch):
     with e.begin() as conn:
         conn.execute(sa.text(_SQLITE_DDL))
     return e
-
-
-@pytest.fixture
-def local_catalog(tmp_path):
-    # Hermetic on-disk catalog; in-fixture import keeps pyiceberg off unrelated tests' collection path.
-    from pyiceberg.catalog.sql import SqlCatalog
-
-    warehouse = tmp_path / "wh"
-    warehouse.mkdir()
-    return SqlCatalog(
-        "test",
-        uri=f"sqlite:///{tmp_path / 'catalog.db'}",
-        warehouse=f"file://{warehouse}",
-    )

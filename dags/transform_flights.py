@@ -7,12 +7,12 @@ from airflow.providers.standard.operators.bash import BashOperator
 
 from include.assets import bronze_flights_table
 
-_DBT = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target trino --no-use-colors"
+_DBT_CH = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target clickhouse --no-use-colors"
 
 
 @dag(
     dag_id="transform_flights",
-    description="Build tag:flights dbt models from bronze flights/registry, then push routes to RisingWave",
+    description="Build tag:flights dbt-clickhouse models from bronze flights/registry, then push routes to RisingWave",
     schedule=[bronze_flights_table],
     catchup=False,
     max_active_runs=1,
@@ -25,42 +25,26 @@ _DBT = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target tr
 )
 def transform_flights():
 
-    @task
-    def ensure_bronze_tables() -> None:
-        # Blank-warehouse safety: the dbt sources must exist (even empty) regardless of
-        # whether ingest_aircraft_db/ingest_flights ran yet; idempotent in steady state.
-        from include import flights_iceberg as fib
-
-        fib.ensure_flights_table()
-        fib.ensure_aircraft_db_table()
-
-    # The lane's cross-lane seed deps (registry -> dim_hex_country; fact_flights ->
-    # dim_airports; agg_operator_traffic -> dim_airlines), so a blank warehouse converges
-    # no matter which transform lane runs first. fact_flights' other cross-lane ref,
-    # fact_state_snapshots, self-heals via transform_marts on the 12-min states tick.
-    dbt_seed = BashOperator(
-        task_id="dbt_seed",
-        bash_command=_DBT.format(cmd="seed --select dim_hex_country dim_airports dim_airlines"),
+    # The lane refs its cross-lane seed deps (registry -> dim_hex_country; fact_flights -> dim_airports;
+    # agg_operator_traffic -> dim_airlines), seeded once by the clickhouse-marts-init service / ch_setup_marts.sh.
+    dbt_run_ch = BashOperator(
+        task_id="dbt_run_ch",
+        bash_command=_DBT_CH.format(cmd="run --select tag:flights"),
     )
-
-    dbt_run = BashOperator(
-        task_id="dbt_run",
-        bash_command=_DBT.format(cmd="run --select tag:flights"),
-    )
-
-    dbt_test = BashOperator(
-        task_id="dbt_test",
-        bash_command=_DBT.format(cmd="test --select tag:flights"),
+    dbt_test_ch = BashOperator(
+        task_id="dbt_test_ch",
+        bash_command=_DBT_CH.format(cmd="test --select tag:flights"),
     )
 
     @task
     def push_flight_routes() -> int:
-        # Same Trino→RisingWave versioned-publish path as the range outline.
+        # CH -> RisingWave versioned publish: only after a fresh, test-passing gold_ch.fact_flights build.
         from include.flight_routes import refresh_flight_routes
 
         return refresh_flight_routes()
 
-    ensure_bronze_tables() >> dbt_seed >> dbt_run >> dbt_test >> push_flight_routes()
+    # Linear gate: build -> test -> publish. A run or test failure reds the run and withholds the RW publish.
+    dbt_run_ch >> dbt_test_ch >> push_flight_routes()
 
 
 transform_flights()

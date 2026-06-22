@@ -1,4 +1,4 @@
-{{ config(materialized='table', tags=['adsb']) }}
+{{ config(materialized='table', tags=['adsb', 'ch_mv']) }}
 
 -- Rooftop feed by registration country; the deliberate mirror of the OpenSky context agg_country_traffic.
 select

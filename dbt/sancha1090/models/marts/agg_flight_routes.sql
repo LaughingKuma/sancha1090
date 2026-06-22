@@ -3,7 +3,7 @@
 -- Ground-truth top routes from flight summaries — the counterpart to the INFERRED
 -- agg_route_traffic (state-vector sessionization), which stays untouched for the arc map.
 select
-    origin_icao || ' → ' || dest_icao as route,
+    {% if target.type == 'clickhouse' %}concat(origin_icao, ' → ', dest_icao){% else %}origin_icao || ' → ' || dest_icao{% endif %} as route,
     origin_icao,
     origin_iata,
     origin_city,

@@ -30,9 +30,13 @@ CREATE TABLE IF NOT EXISTS public.adsb_ingestion_manifest (
     landed_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
     iceberg_committed_at    TIMESTAMPTZ,
     iceberg_snapshot_id     BIGINT,
+    ch_loaded_at            TIMESTAMPTZ,
     provenance              TEXT        NOT NULL DEFAULT 'live'
 )
 """
+
+# Self-migrate existing prod tables: the CREATE above is a no-op once the table exists.
+_MIGRATE_DDL = "ALTER TABLE public.adsb_ingestion_manifest ADD COLUMN IF NOT EXISTS ch_loaded_at TIMESTAMPTZ"
 
 _INDEX_DDL = """
 CREATE INDEX IF NOT EXISTS adsb_ingestion_manifest_pending_idx
@@ -58,13 +62,16 @@ def ensure_table(engine: Optional[sa.Engine] = None) -> None:
     with eng.begin() as conn:
         conn.execute(sa.text(_DDL))
         conn.execute(sa.text(_INDEX_DDL))
+        # ADD COLUMN IF NOT EXISTS is Postgres-only; sqlite test tables already carry it via _DDL.
+        if eng.dialect.name == "postgresql":
+            conn.execute(sa.text(_MIGRATE_DDL))
     if engine is None:
         _table_ready = True
 
 
-def _ensure_once(eng: sa.Engine, engine_arg: Optional[sa.Engine]) -> None:
+def _ensure_once(engine_arg: Optional[sa.Engine]) -> None:
     if engine_arg is None and not _table_ready:
-        ensure_table(eng)
+        ensure_table()  # no-arg latches _table_ready so the DDL+ALTER runs once, not per call
 
 
 def record_bundle(
@@ -87,7 +94,7 @@ def record_bundle(
     engine: Optional[sa.Engine] = None,
 ) -> None:
     eng = engine or _engine()
-    _ensure_once(eng, engine)
+    _ensure_once(engine)
     stmt = sa.text(
         f"""
         INSERT INTO {_TABLE}
@@ -116,7 +123,7 @@ def already_ingested(filenames: list[str], engine: Optional[sa.Engine] = None) -
     if not filenames:
         return set()
     eng = engine or _engine()
-    _ensure_once(eng, engine)
+    _ensure_once(engine)
     stmt = sa.text(
         f"SELECT filename FROM {_TABLE} WHERE filename IN :names"
     ).bindparams(sa.bindparam("names", expanding=True))
@@ -128,7 +135,7 @@ def newest_adsb_rotation_end(engine: Optional[sa.Engine] = None) -> Optional[dat
     """Newest adsb_state close time on record — the stale-check baseline for runs that land
     nothing new, where current-run results can't reveal a silent producer."""
     eng = engine or _engine()
-    _ensure_once(eng, engine)
+    _ensure_once(engine)
     stmt = sa.text(f"SELECT max(rotation_end_ts) FROM {_TABLE} WHERE stream = 'adsb_state'")
     with eng.begin() as conn:
         val = conn.execute(stmt).scalar()
@@ -138,19 +145,29 @@ def newest_adsb_rotation_end(engine: Optional[sa.Engine] = None) -> Optional[dat
     return datetime.fromisoformat(val.replace("Z", "+00:00")) if isinstance(val, str) else val
 
 
-def pending_adsb_uris(engine: Optional[sa.Engine] = None) -> list[dict]:
+def _pending_adsb_uris(marker_col: str, engine: Optional[sa.Engine]) -> list[dict]:
     eng = engine or _engine()
-    _ensure_once(eng, engine)
+    _ensure_once(engine)
+    # marker_col is an internal constant, never user input.
     stmt = sa.text(
         f"""
         SELECT filename, s3_uri
           FROM {_TABLE}
-         WHERE stream = 'adsb_state' AND iceberg_committed_at IS NULL
+         WHERE stream = 'adsb_state' AND {marker_col} IS NULL
          ORDER BY landed_at
         """
     )
     with eng.begin() as conn:
         return [dict(r._mapping) for r in conn.execute(stmt).fetchall()]
+
+
+def pending_adsb_uris(engine: Optional[sa.Engine] = None) -> list[dict]:
+    return _pending_adsb_uris("iceberg_committed_at", engine)
+
+
+def pending_ch_adsb_uris(engine: Optional[sa.Engine] = None) -> list[dict]:
+    # Independent of the Iceberg marker so a ClickHouse outage can't stall the Iceberg drain (P2).
+    return _pending_adsb_uris("ch_loaded_at", engine)
 
 
 def mark_iceberg_committed(
@@ -159,7 +176,7 @@ def mark_iceberg_committed(
     if not snapshot_by_filename:
         return 0
     eng = engine or _engine()
-    _ensure_once(eng, engine)
+    _ensure_once(engine)
     stmt = sa.text(
         f"""
         UPDATE {_TABLE}
@@ -175,3 +192,20 @@ def mark_iceberg_committed(
             result = conn.execute(stmt, {"sid": sid, "filename": filename})
             updated += result.rowcount or 0
     return updated
+
+
+def mark_ch_loaded(filenames: list[str], engine: Optional[sa.Engine] = None) -> int:
+    if not filenames:
+        return 0
+    eng = engine or _engine()
+    _ensure_once(engine)
+    stmt = sa.text(
+        f"""
+        UPDATE {_TABLE}
+           SET ch_loaded_at = CURRENT_TIMESTAMP
+         WHERE filename IN :names
+           AND ch_loaded_at IS NULL
+        """
+    ).bindparams(sa.bindparam("names", expanding=True))
+    with eng.begin() as conn:
+        return conn.execute(stmt, {"names": list(filenames)}).rowcount or 0

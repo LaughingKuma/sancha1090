@@ -33,9 +33,9 @@ lint: ## Ruff check (real bugs only: F,B,ARG)
 	$(RUFF) check $(RUFF_ARGS) .
 
 parse: ## Validate the dbt project (no warehouse needed)
-	$(SCHED) "cd /opt/airflow/dbt/sancha1090 && dbt parse --profiles-dir . --target trino"
+	$(SCHED) "cd /opt/airflow/dbt/sancha1090 && dbt parse --profiles-dir . --target clickhouse"
 
 dbt: ## dbt in the scheduler (ARGS="run --select tag:adsb")
-	$(SCHED) "cd /opt/airflow/dbt/sancha1090 && dbt $(ARGS) --profiles-dir . --target trino --no-use-colors"
+	$(SCHED) "cd /opt/airflow/dbt/sancha1090 && dbt $(ARGS) --profiles-dir . --target clickhouse --no-use-colors"
 
 check: lint parse test ## lint + parse + test

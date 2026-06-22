@@ -23,9 +23,15 @@ select
     l.operatorcallsign,
     l.operatoricao,
     l.owner,
+    {% if target.type == 'clickhouse' %}
+    {{ ch_hex_country('l.icao24') }} as country_of_registration,
+    {% else %}
     hc.country as country_of_registration,
+    {% endif %}
     l.as_of_date
 from latest l
+{% if target.type != 'clickhouse' %}
 left join {{ ref('dim_hex_country') }} hc
     on try(from_base(l.icao24, 16)) between hc.block_lo and hc.block_hi
+{% endif %}
 where l.rn = 1

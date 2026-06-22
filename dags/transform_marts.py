@@ -7,12 +7,12 @@ from airflow.providers.standard.operators.bash import BashOperator
 
 from include.assets import bronze_states_table
 
-_DBT = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target trino --no-use-colors"
+_DBT_CH = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target clickhouse --no-use-colors"
 
 
 @dag(
     dag_id="transform_marts",
-    description="Build dbt-trino silver + gold marts from the Iceberg bronze table",
+    description="Build dbt-clickhouse silver + gold marts from the ClickHouse bronze tables",
     schedule=[bronze_states_table],
     catchup=False,
     max_active_runs=1,
@@ -25,28 +25,30 @@ _DBT = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target tr
 )
 def transform_marts():
 
-    @task
-    def ensure_bronze_tables() -> None:
-        # Blank-warehouse safety: stg_states_history reads bronze.archive_states, which
-        # only gets data from the one-shot v5.2 backfill — the source must exist (even
-        # empty) for every 12-min tick regardless of whether a wave ever ran.
-        from include import archive_iceberg
-
-        archive_iceberg.ensure_archive_table()
-
-    # Builds fct_flight_legs, which refs tag:adsb relations (seeds + dim_aircraft + fct_adsb_state)
-    # built by transform_adsb_silver — on a fresh deploy, run that DAG once before this one.
-    dbt_run_trino = BashOperator(
-        task_id="dbt_run_trino",
-        bash_command=_DBT.format(cmd="run --exclude tag:adsb tag:flights"),
+    # tag:adsb/flights are built by their own lanes; tag:ch_mv = the P4 aggregates served by self-maintaining
+    # MVs (include/ch_incremental_mvs.py), excluded from the scheduled rebuild + its tests.
+    dbt_run_ch = BashOperator(
+        task_id="dbt_run_ch",
+        bash_command=_DBT_CH.format(cmd="run --exclude tag:adsb tag:flights tag:ch_mv"),
+    )
+    # dbt test (same selection as the run) gates the canonical build — a data-quality failure reds the run.
+    dbt_test_ch = BashOperator(
+        task_id="dbt_test_ch",
+        bash_command=_DBT_CH.format(cmd="test --exclude tag:adsb tag:flights tag:ch_mv"),
     )
 
-    dbt_test_trino = BashOperator(
-        task_id="dbt_test_trino",
-        bash_command=_DBT.format(cmd="test --exclude tag:adsb tag:flights"),
-    )
+    @task(task_id="ensure_ch_mvs")
+    def ensure_ch_mvs() -> dict:
+        # Self-heal so a fresh deploy doesn't need the manual init DAG before Superset reads CH: idempotently
+        # (re)create the serving views + _acc MVs. Default all_success so a dbt_run_ch failure reds the run
+        # (an all_done leaf here would mask it, since ensure() is best-effort and never raises).
+        from include.ch_incremental_mvs import ensure
 
-    ensure_bronze_tables() >> dbt_run_trino >> dbt_test_trino
+        return ensure()
+
+    # Two all_success leaves (dbt_test_ch, ensure_ch_mvs): a run/test failure propagates and reds the run.
+    dbt_run_ch >> dbt_test_ch
+    dbt_run_ch >> ensure_ch_mvs()
 
 
 transform_marts()

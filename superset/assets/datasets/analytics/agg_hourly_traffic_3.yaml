@@ -1,4 +1,5 @@
-# repointed to trino-iceberg in v2.7
+# served from the clickhouse connection (gold_ch / silver_ch)
+# gold_ch.agg_hourly_traffic is a merge-aware VIEW over the AggregatingMergeTree agg_hourly_traffic_acc.
 table_name: agg_hourly_traffic
 main_dttm_col: snapshot_hour
 currency_code_column: null
@@ -6,8 +7,8 @@ description: "Hourly aircraft activity over Japan. Live: OpenSky Network. Pre-pi
 default_endpoint: null
 offset: 0
 cache_timeout: null
-catalog: iceberg
-schema: gold
+catalog: null
+schema: gold_ch
 sql: null
 params: null
 template_params: null
@@ -108,4 +109,4 @@ columns:
   datetime_format: null
   extra: null
 version: 1.0.0
-database_uuid: 01234567-0000-0000-0000-000000000002
+database_uuid: 01234567-0000-0000-0000-000000000004

@@ -41,7 +41,7 @@ def ingest_flights():
         """The actual data never travels through XCom — only the URI."""
 
         import polars as pl
-        from include.flights_iceberg import RAW_FLIGHTS_SCHEMA, flight_row
+        from include.bronze_transforms import RAW_FLIGHTS_SCHEMA, flight_row
         from include.opensky_client import OpenSkyClient
         from include.s3_helpers import write_parquet
         from include import manifest

@@ -1,0 +1,21 @@
+<clickhouse>
+    <!-- Garage S3 creds for s3() reach ClickHouse via from_env, never inline in SQL:
+         inline keys leak into CH error text (spike gotcha #2). The compose `clickhouse`
+         service passes CH_S3_ACCESS_KEY / CH_S3_SECRET_KEY through from the existing .env
+         S3_* values. The url is non-secret (in-network Garage host), so it stays literal. -->
+    <named_collections>
+        <garage>
+            <url>http://garage:3900/sancha1090/</url>
+            <access_key_id from_env="CH_S3_ACCESS_KEY"/>
+            <secret_access_key from_env="CH_S3_SECRET_KEY"/>
+        </garage>
+    </named_collections>
+    <s3>
+        <garage_endpoint>
+            <endpoint>http://garage:3900/</endpoint>
+            <use_environment_credentials>false</use_environment_credentials>
+            <!-- Garage needs path-style; CH's S3 client uses path-style automatically for
+                 non-AWS hosts, so no explicit toggle is required (spike read first-try). -->
+        </garage_endpoint>
+    </s3>
+</clickhouse>

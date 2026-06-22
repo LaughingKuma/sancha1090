@@ -8,13 +8,12 @@ from airflow.providers.standard.operators.bash import BashOperator
 from include.adsb_assets import adsb_bronze_table
 
 
-# Scoped to tag:adsb so it never races transform_marts' REPLACE of the states models (see iceberg-marts-optimize-race).
-_DBT = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target trino --no-use-colors"
+_DBT_CH = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target clickhouse --no-use-colors"
 
 
 @dag(
     dag_id="transform_adsb_silver",
-    description="Build silver ADS-B dims + fct (dbt-trino) from the Iceberg bronze.adsb_states table",
+    description="Build silver ADS-B dims + fct (dbt-clickhouse) from the ClickHouse bronze.adsb_states table",
     schedule=[adsb_bronze_table],
     catchup=False,
     max_active_runs=1,
@@ -27,20 +26,19 @@ _DBT = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target tr
 )
 def transform_adsb_silver():
 
-    dbt_seed = BashOperator(
-        task_id="dbt_seed",
-        bash_command=_DBT.format(cmd="seed --select tag:adsb"),
+    # +tag:adsb pulls in dim_aircraft_registry (the one cross-lane ancestor dim_aircraft depends on);
+    # tag:ch_mv = the P4 ADS-B aggregates served by self-maintaining MVs, excluded from the rebuild + tests.
+    dbt_run_ch = BashOperator(
+        task_id="dbt_run_ch",
+        bash_command=_DBT_CH.format(cmd="run --select +tag:adsb --exclude tag:ch_mv"),
     )
-    dbt_run = BashOperator(
-        task_id="dbt_run",
-        bash_command=_DBT.format(cmd="run --select tag:adsb"),
-    )
-    dbt_test = BashOperator(
-        task_id="dbt_test",
-        bash_command=_DBT.format(cmd="test --select tag:adsb"),
+    # dbt test (same selection) is the all_success leaf — a run or data-quality failure reds the run.
+    dbt_test_ch = BashOperator(
+        task_id="dbt_test_ch",
+        bash_command=_DBT_CH.format(cmd="test --select +tag:adsb --exclude tag:ch_mv"),
     )
 
-    dbt_seed >> dbt_run >> dbt_test
+    dbt_run_ch >> dbt_test_ch
 
 
 transform_adsb_silver()

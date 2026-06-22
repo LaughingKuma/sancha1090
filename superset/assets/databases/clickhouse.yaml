@@ -1,0 +1,14 @@
+database_name: clickhouse
+sqlalchemy_uri: clickhousedb://${CH_SUPERSET_USER}:${CH_SUPERSET_PASSWORD}@clickhouse:8123/gold_ch
+cache_timeout: null
+expose_in_sqllab: true
+allow_run_async: false
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+allow_file_upload: false
+extra: {}
+impersonate_user: false
+configuration_method: sqlalchemy_form
+uuid: 01234567-0000-0000-0000-000000000004
+version: 1.0.0

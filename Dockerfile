@@ -14,7 +14,6 @@ RUN pip install --no-cache-dir \
     dbt-adapters==1.24.2 \
     dbt-common==1.38.0 \
     dbt-protos==1.0.498 \
-    dbt-trino==1.10.2 \
-    apache-airflow-providers-trino==6.6.0 \
+    dbt-clickhouse==1.9.2 \
     pytest==9.0.3 \
-    "pyiceberg[sql-postgres,pyiceberg-core]==0.11.1"
+    clickhouse-connect==1.3.0

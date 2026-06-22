@@ -19,10 +19,18 @@ select
     -- Arrivals belong to the day they landed, departures to the day they left —
     -- in JST: these are Japanese airports, and UTC days would shift every
     -- 00:00-09:00 JST movement onto the previous calendar day.
+    {% if target.type == 'clickhouse' %}
+    -- toTimeZone re-attaches JST to the UTC DateTime64 so toDate reads the JST calendar date.
+    toDate(toTimeZone(
+        case when direction = 'arrival' then last_seen else first_seen end,
+        'Asia/Tokyo'
+    )) as traffic_day,
+    {% else %}
     cast(date_trunc('day', at_timezone(
         case when direction = 'arrival' then last_seen else first_seen end,
         'Asia/Tokyo'
     )) as date) as traffic_day,
+    {% endif %}
     count(*) as flights,
     count(distinct icao24) as unique_aircraft
 from deduped

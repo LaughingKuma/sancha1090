@@ -59,7 +59,7 @@ def scan_core(fs, root: str, *, limit_files: int, sample_rows: int, log=log) -> 
     dag_id="maintain_adsb_schema",
     description="Weekly scan of bronze _raw_json for new untyped readsb fields (schema-drift alert)",
     start_date=pendulum.datetime(2026, 5, 1, tz="UTC"),
-    schedule="35 4 * * 1",  # +5 min off maintain_iceberg_marts' 04:30 daily slot — avoid contention
+    schedule="35 4 * * 1",  # Monday 04:35 UTC, off-peak weekly slot
     catchup=False,
     max_active_runs=1,
     default_args={

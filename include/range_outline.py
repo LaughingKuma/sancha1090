@@ -4,7 +4,8 @@ import os
 
 from psycopg2.extras import execute_values
 
-from include.db import rw_connect, trino_connect
+from include.clickhouse import ch_client
+from include.db import rw_connect
 
 # Real antenna is a secret (home rooftop) — from .env; default is the public Carrot Tower landmark.
 FEEDER_LAT = float(os.environ.get("LIVEMAP_FEEDER_LAT", "35.6434"))
@@ -17,37 +18,42 @@ BBOX_MARGIN_DEG = float(os.environ.get("RANGE_OUTLINE_BBOX_MARGIN_DEG", "6"))
 
 
 def _compute(lat0: float, lon0: float) -> list[tuple]:
-    # Farthest decoded position per bearing bin = the coverage envelope. great_circle_distance is km (/1.852 → nmi).
+    # Farthest decoded position per bearing bin = the coverage envelope. Inline haversine (km) /1.852 → nmi,
+    # mirroring the haversine_km dbt macro the CH marts use (spike-proven exact vs Trino great_circle_distance);
+    # keeps the km/1.852 conversion identical so no meters-vs-km drift. argMax((lat,lon),dist) == Trino max_by.
     bin_deg = 360.0 / BINS
     m = BBOX_MARGIN_DEG
     sql = f"""
     WITH calc AS (
-      SELECT s.lat, s.lon,
-        great_circle_distance({lat0}, {lon0}, s.lat, s.lon) / 1.852 AS dist_nmi,
-        mod((degrees(atan2(
-          sin(radians(s.lon - {lon0})) * cos(radians(s.lat)),
-          cos(radians({lat0})) * sin(radians(s.lat))
-            - sin(radians({lat0})) * cos(radians(s.lat)) * cos(radians(s.lon - {lon0}))
-        )) + 360.0), 360.0) AS bearing
-      FROM adsb_states s
-      WHERE s.lat BETWEEN {lat0 - m} AND {lat0 + m} AND s.lon BETWEEN {lon0 - m} AND {lon0 + m}
+      SELECT lat, lon,
+        (2 * 6371 * asin(sqrt(
+          power(sin(radians(lat - {lat0}) / 2), 2)
+          + cos(radians({lat0})) * cos(radians(lat))
+            * power(sin(radians(lon - {lon0}) / 2), 2)
+        ))) / 1.852 AS dist_nmi,
+        modulo(degrees(atan2(
+          sin(radians(lon - {lon0})) * cos(radians(lat)),
+          cos(radians({lat0})) * sin(radians(lat))
+            - sin(radians({lat0})) * cos(radians(lat)) * cos(radians(lon - {lon0}))
+        )) + 360.0, 360.0) AS bearing
+      FROM bronze.adsb_states
+      WHERE lat BETWEEN {lat0 - m} AND {lat0 + m} AND lon BETWEEN {lon0 - m} AND {lon0 + m}
     ),
     binned AS (
-      SELECT cast(floor(bearing / {bin_deg}) AS int) AS bin,
-             max_by(ARRAY[lat, lon], dist_nmi) AS far,
+      SELECT toInt32(floor(bearing / {bin_deg})) AS bin,
+             argMax((lat, lon), dist_nmi) AS far,
              max(dist_nmi) AS max_nmi
       FROM calc WHERE dist_nmi BETWEEN 1 AND {MAX_NMI}
-      GROUP BY 1
+      GROUP BY bin
     )
-    SELECT bin, far[1] AS lat, far[2] AS lon, max_nmi FROM binned ORDER BY bin
+    SELECT bin, far.1 AS lat, far.2 AS lon, max_nmi FROM binned ORDER BY bin
     """
-    conn = trino_connect("bronze")
+    client = ch_client()
     try:
-        cur = conn.cursor()
-        cur.execute(sql)
-        return [(int(b), float(la), float(lo), float(nmi)) for b, la, lo, nmi in cur.fetchall()]
+        rows = client.query(sql).result_rows
+        return [(int(b), float(la), float(lo), float(nmi)) for b, la, lo, nmi in rows]
     finally:
-        conn.close()
+        client.close()
 
 
 def refresh_range_outline() -> int:

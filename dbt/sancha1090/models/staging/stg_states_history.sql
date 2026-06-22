@@ -13,7 +13,7 @@ with src as (
 typed as (
     select
         icao24,
-        nullif(trim(callsign), '')      as callsign,
+        {% if target.type == 'clickhouse' %}nullIf(trimBoth(callsign), ''){% else %}nullif(trim(callsign), ''){% endif %}      as callsign,
         origin_country,
         time_position,
         last_contact,

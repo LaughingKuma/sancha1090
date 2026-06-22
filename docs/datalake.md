@@ -1,9 +1,12 @@
 # Data lake schema
 
-`sancha1090` is a local-first **medallion lakehouse** on Apache Iceberg (Garage S3 +
-Polaris REST catalog + Trino). Raw observations land in **bronze**, are conformed and
-typed in **silver**, and are aggregated into consumer-facing **gold** marts — all built
-by dbt-on-Trino and orchestrated by Airflow asset chains.
+`sancha1090` is a local-first **medallion warehouse** on ClickHouse, fed from the Parquet
+landing zone in Garage S3. Raw observations land in **bronze**, are conformed and typed in
+**silver**, and are aggregated into consumer-facing **gold** marts — all built by
+dbt-clickhouse and orchestrated by Airflow asset chains. (The physical ClickHouse schemas
+are `bronze`, `silver_ch`, and `gold_ch`; this reference uses the conceptual layer names.
+Column types are shown in SQL-standard form. Previously an Iceberg+Polaris+Trino lakehouse —
+see the v5.12 tag and the README "Architecture evolution".)
 
 It carries **two independent live feeds** that stay on separate refresh tracks and fuse
 where one feed enriches the other — the OpenSky callsign backfill into `silver.fct_adsb_state`
@@ -151,8 +154,8 @@ anything. Every column is nullable in both bronze tables.
 - **Source:** OpenSky `/states/all`, fetched per geographic bounding box (`include/regions.py`) —
   one Japan+ocean box covering the airspace around the antenna and beyond its horizon.
 - **Built by:** `ingest_states` (every 12 min, dynamic-mapped over the region list — currently
-  one Japan+ocean box) → `tableize_states` (single canonical PyIceberg writer). Partitioned by
-  `day(snapshot_time)`.
+  one Japan+ocean box) → `tableize_states` (loads the ClickHouse bronze table from the landed
+  Parquet). Partitioned by `day(snapshot_time)`.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -175,7 +178,7 @@ anything. Every column is nullable in both bronze tables.
 | `snapshot_time` | `timestamp(6) with time zone` | Time OpenSky sampled the state. Partition key + primary time axis. |
 | `region` | `varchar` | Bounding-box region the row was fetched under. **Part of the grain.** |
 | `ingested_at` | `timestamp(6) with time zone` | Airflow logical date of the ingest run. |
-| `committed_at` | `timestamp(6) with time zone` | Wall-clock time the row was appended to Iceberg. |
+| `committed_at` | `timestamp(6) with time zone` | Wall-clock time the row was loaded into ClickHouse bronze. |
 
 > Three distinct timestamps — `snapshot_time` (sampled), `ingested_at` (fetched),
 > `committed_at` (written) — do not conflate them. Always filter `snapshot_time` for partition
@@ -303,7 +306,7 @@ shared across both feeds.
 
 - **Grain:** one row per `(icao24, snapshot_time)`, **positioned only** (lat/lon non-null).
 - **Notes:** strict subset of `stg_states` (filters NULL position); inherits the 30-day window.
-  Iceberg PARQUET, partitioned by `day(snapshot_time)`, sorted `snapshot_time DESC`. Base of the
+  A ClickHouse MergeTree table, partitioned by `day(snapshot_time)`, ordered `snapshot_time DESC`. Base of the
   OpenSky-context-feed gold marts.
 
 | Column | Type | Meaning |
@@ -565,7 +568,7 @@ are documented first; three **legacy** OpenSky-context marts follow.
 
 ### Legacy OpenSky-context marts
 
-These predate v3.5 and are listed in `maintain_iceberg_marts` for OPTIMIZE compaction.
+These predate v3.5 and are built by `transform_marts` alongside the newer marts.
 
 #### `gold.agg_country_traffic` — country leaderboard (latest snapshot)
 

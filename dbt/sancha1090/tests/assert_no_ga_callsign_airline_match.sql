@@ -4,4 +4,4 @@
 select hex, callsign_filled, airline_name
 from {{ ref('fct_adsb_state') }}
 where airline_name is not null
-  and not regexp_like(trim(callsign_filled), '^[A-Z]{3}[0-9]')
+  and not match(trimBoth(callsign_filled), '^[A-Z]{3}[0-9]')

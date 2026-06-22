@@ -18,7 +18,8 @@ def _fresh_engine():
             " snapshot_min INTEGER,"
             " snapshot_max INTEGER,"
             " row_count INTEGER,"
-            " iceberg_committed_at TIMESTAMP"
+            " iceberg_committed_at TIMESTAMP,"
+            " ch_loaded_at TIMESTAMP"
             ")"
         ))
     return eng
@@ -112,6 +113,48 @@ def test_pending_uris_tolerates_surrounding_slashes(monkeypatch):
     monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
     _insert(eng, "s3://o/bronze/flights_raw/dt=2026-06-10/airport=RJAA.parquet", 1, 2, 5)
     assert len(manifest.pending_uris("/bronze/flights_raw/", engine=eng)) == 1
+
+
+def test_pending_ch_uris_independent_of_iceberg_marker(monkeypatch):
+    # The CH marker advances separately: a committed-to-Iceberg URI is still CH-pending,
+    # so a ClickHouse outage can't stall the Iceberg drain and vice-versa (P2 invariant).
+    eng = _fresh_engine()
+    monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
+    _insert(eng, "s3://o/bronze/states_raw/dt=2026-06-10/a.parquet", 1, 1, 1)
+    _insert(eng, "s3://o/bronze/states_raw/dt=2026-06-10/b.parquet", 2, 2, 2)
+
+    manifest.mark_iceberg_committed(
+        ["s3://o/bronze/states_raw/dt=2026-06-10/a.parquet"], engine=eng)
+
+    # Iceberg drained 'a'; both are still CH-pending.
+    iceberg_pending = [r["object_uri"] for r in manifest.pending_uris("bronze/states_raw", engine=eng)]
+    ch_pending = [r["object_uri"] for r in manifest.pending_ch_uris("bronze/states_raw", engine=eng)]
+    assert iceberg_pending == ["s3://o/bronze/states_raw/dt=2026-06-10/b.parquet"]
+    assert sorted(ch_pending) == [
+        "s3://o/bronze/states_raw/dt=2026-06-10/a.parquet",
+        "s3://o/bronze/states_raw/dt=2026-06-10/b.parquet",
+    ]
+
+
+def test_mark_ch_loaded_is_idempotent_and_scoped(monkeypatch):
+    eng = _fresh_engine()
+    monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
+    _insert(eng, "s3://o/bronze/states_raw/dt=2026-06-10/a.parquet", 1, 1, 1)
+    _insert(eng, "s3://o/bronze/states_raw/dt=2026-06-10/b.parquet", 2, 2, 2)
+
+    n1 = manifest.mark_ch_loaded(["s3://o/bronze/states_raw/dt=2026-06-10/a.parquet"], engine=eng)
+    n2 = manifest.mark_ch_loaded(["s3://o/bronze/states_raw/dt=2026-06-10/a.parquet"], engine=eng)
+    assert n1 == 1
+    assert n2 == 0  # already loaded
+
+    ch_pending = [r["object_uri"] for r in manifest.pending_ch_uris("bronze/states_raw", engine=eng)]
+    assert ch_pending == ["s3://o/bronze/states_raw/dt=2026-06-10/b.parquet"]
+    # CH marker must not have touched the Iceberg marker.
+    assert len(manifest.pending_uris("bronze/states_raw", engine=eng)) == 2
+
+
+def test_mark_ch_loaded_empty_is_noop():
+    assert manifest.mark_ch_loaded([], engine=_fresh_engine()) == 0
 
 
 def _table_with_snapshot(snapshot):

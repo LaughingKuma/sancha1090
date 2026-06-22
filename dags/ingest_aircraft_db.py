@@ -25,7 +25,7 @@ AIRCRAFT_DB_URL = "https://s3.opensky-network.org/data-samples/metadata/aircraft
         "retries": 2,
         "retry_delay": timedelta(minutes=10),
     },
-    tags=["sancha1090", "bronze", "iceberg", "v5"],
+    tags=["sancha1090", "bronze", "v5"],
 )
 def ingest_aircraft_db():
 
@@ -35,7 +35,7 @@ def ingest_aircraft_db():
 
         import httpx
         import polars as pl
-        from include.flights_iceberg import AIRCRAFT_DB_CSV_COLUMNS
+        from include.bronze_transforms import AIRCRAFT_DB_CSV_COLUMNS
         from include.s3_helpers import write_parquet
         from include import manifest
 
@@ -70,57 +70,19 @@ def ingest_aircraft_db():
         return {"rows": df.height, "uri": uri}
 
     @task(outlets=[bronze_aircraft_db_table])
-    def tableize(**_context) -> dict:
-        from datetime import datetime, timezone
+    def load_to_clickhouse() -> dict:
+        # Non-destructive reload from the Garage Parquet glob (the blank-cell -> NULL coercion + date parsing
+        # live in backfill_aircraft_db's SQL). Raise on failure so a broken reload reds the weekly run rather
+        # than silently leaving the registry stale (download_and_land already landed a fresh snapshot, so an
+        # ok=False here means the CH load genuinely failed, not an empty glob).
+        from include.clickhouse import backfill_aircraft_db
 
-        import polars as pl
-        from include import flights_iceberg as fib
-        from include import manifest
-        from include.s3_helpers import garage_pyarrow_fs, read_pending_frames
+        result = backfill_aircraft_db()
+        if not result.get("ok"):
+            raise RuntimeError(f"CH aircraft_db load failed: {result}")
+        return result
 
-        table = fib.ensure_aircraft_db_table()
-
-        pending = manifest.pending_uris("bronze/aircraft_db_raw")
-        if not pending:
-            return {"committed": 0, "rows": 0, "files": 0}
-
-        uris = [r["object_uri"] for r in pending]
-        fingerprint = manifest.batch_fingerprint(uris)
-
-        if manifest.already_appended(table, fingerprint):
-            committed = manifest.mark_iceberg_committed(uris)
-            return {"committed": committed, "rows": 0, "files": len(pending), "recovered": True}
-
-        frames = read_pending_frames(garage_pyarrow_fs(), pending)
-
-        df = pl.concat(frames, how="diagonal_relaxed")
-
-        empty_to_null = [
-            pl.when(pl.col(c).str.strip_chars() == "").then(None)
-              .otherwise(pl.col(c).str.strip_chars()).alias(c)
-            for c in fib.AIRCRAFT_DB_CSV_COLUMNS
-        ]
-        df = df.with_columns(empty_to_null).with_columns(
-            pl.col("as_of_date").str.to_date(),
-            pl.col("ingested_at").str.to_datetime(time_zone="UTC"),
-            pl.lit(datetime.now(timezone.utc)).alias("committed_at"),
-        )
-
-        columns = [f.name for f in fib.AIRCRAFT_DB_SCHEMA.fields]
-        df = df.select(columns)
-
-        table.append(
-            df.to_arrow(),
-            snapshot_properties={
-                "manifest_fingerprint": fingerprint,
-                "uri_count": str(len(uris)),
-            },
-        )
-
-        committed = manifest.mark_iceberg_committed(uris)
-        return {"committed": committed, "rows": df.height, "files": len(pending)}
-
-    download_and_land() >> tableize()
+    download_and_land() >> load_to_clickhouse()
 
 
 ingest_aircraft_db()

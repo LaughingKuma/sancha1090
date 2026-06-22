@@ -6,20 +6,19 @@ from collections.abc import Iterable
 
 import pyarrow as pa
 
-from include.adsb_iceberg import (
-    _DOUBLE_FIELDS,
-    _INT_FIELDS,
-    _JSON_FIELDS,
-    _LIST_FIELDS,
-    _STRING_FIELDS,
+from include.adsb_schema import (
+    DOUBLE_FIELDS,
+    INT_FIELDS,
+    JSON_FIELDS,
+    LIST_FIELDS,
+    STRING_FIELDS,
 )
 
 
-# Mirrors the producer's typed set: the schema-match test guarantees these lists track capture_v2,
-# so this IS the "typed readsb fields" view. capture_ts/_raw_json/_schema_version are ours, not
-# readsb keys, and live outside these lists — so they're correctly absent.
+# The "typed readsb fields" view (the buckets track capture_v2); capture_ts/_raw_json/_schema_version
+# are ours, not readsb keys, so they're correctly absent.
 TYPED_READSB_FIELDS = set(
-    _STRING_FIELDS + _DOUBLE_FIELDS + _INT_FIELDS + _LIST_FIELDS + _JSON_FIELDS
+    STRING_FIELDS + DOUBLE_FIELDS + INT_FIELDS + LIST_FIELDS + JSON_FIELDS
 )
 
 # Untyped readsb keys already triaged in week-1 manual scans — left raw-only on purpose, so they

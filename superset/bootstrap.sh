@@ -19,8 +19,10 @@ superset init
 # Every *.yaml under /app/assets is read, run through os.path.expandvars so
 # placeholders like ${ANALYTICS_DB_URI} resolve from the container env, and
 # handed to ImportAssetsCommand — the same code path as /api/v1/assets/import/.
-# Charts/dashboards upsert by UUID, but datasets match on (database_id, catalog,
-# schema, table_name) — re-pointing a seeded instance needs a one-time metadata UPDATE.
+# Charts/dashboards upsert by UUID; datasets effectively key on the (database_id, catalog,
+# schema, table_name) natural key — import_dataset() matches by UUID but the inner
+# SqlaTable.import_from_dict re-looks-up by that key, so re-pointing a seeded instance fails on
+# uq_tables_uuid (whole import aborts) unless a one-time metadata UPDATE pre-moves the row first.
 echo "Importing assets bundle..."
 python3 - <<'PY'
 import os
@@ -41,6 +43,13 @@ with app.test_request_context():
         sys.exit(1)
     login_user(admin)
     g.user = admin
+
+    # CH creds land in clickhouse.yaml's sqlalchemy_uri and expandvars does no URL-encoding, so percent-encode
+    # them first — else a reserved char (@ : / %) in the password would corrupt the URI and break the connection.
+    import urllib.parse
+    for _k in ("CH_SUPERSET_USER", "CH_SUPERSET_PASSWORD"):
+        if os.environ.get(_k):
+            os.environ[_k] = urllib.parse.quote(os.environ[_k], safe="")
 
     src = pathlib.Path("/app/assets")
     contents = {

@@ -17,12 +17,13 @@ services:
   superset:
     ports:
       - "127.0.0.1:38088:8088"
-  trino-coordinator:
-    ports:
-      - "127.0.0.1:38090:8080"
   risingwave:
     ports:
       - "127.0.0.1:34566:4566"
   livemap:
     ports:
       - "127.0.0.1:38100:8000"
+  clickhouse:
+    ports:
+      - "127.0.0.1:38123:8123"   # HTTP
+      - "127.0.0.1:39000:9000"   # native

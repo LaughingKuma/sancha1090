@@ -1,10 +1,10 @@
 {{ config(
     materialized='table',
-    properties={
+    properties=(none if target.type == 'clickhouse' else {
         'format': "'PARQUET'",
         'partitioning': "ARRAY['day(snapshot_time)']",
         'sorted_by': "ARRAY['snapshot_time DESC']"
-    }
+    })
 ) }}
 
 with flagged as (
