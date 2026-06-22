@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Callable
 
 log = logging.getLogger(__name__)
@@ -17,8 +18,27 @@ _FLIGHTS_FRESHNESS_LAG_TOL_S = 259200
 _TIMEOUT_S = 60
 # The source-of-truth gate reads the Garage Parquet (ground truth) via this named collection in s3().
 _GARAGE_COLLECTION = "garage"
-# CH bronze is "complete" if it isn't short of the source Parquet by more than this.
-_SOURCE_EPS = 0.02
+# Closed-window seconds: data older than (now - this) is guaranteed loaded (tableize lag is minutes << 2h), so
+# the in-flight ingest trail is excluded on BOTH sides and CH must match the source EXACTLY (no eps — a relative
+# tolerance hides a missing object: a states file is ~hundreds of rows, far under any % of a 23M table).
+_CLOSED_WINDOW_S = 7200
+# opensky_states distinct-CONTENT fingerprint (the same 19 source cols as the bronze _dedup_fp, committed_at
+# excluded). Compared as uniqExact, this collapses the ReplacingMergeTree replay surplus (replays share the fp)
+# while keeping every legit same-grain recapture VISIBLE (distinct fp) — a bare (icao24,snapshot_time) grain
+# would hide a lost recapture (23.04M distinct content vs 22.67M grains). Computed inline (not via the _dedup_fp
+# column) so the gate works on the table both before and after the RMT migration.
+_STATES_CONTENT_FP = (
+    "cityHash64(toString(tuple(icao24, callsign, origin_country, time_position, last_contact, longitude, "
+    "latitude, baro_altitude, on_ground, velocity, true_track, vertical_rate, geo_altitude, squawk, spi, "
+    "position_source, snapshot_time, region, ingested_at)))"
+)
+
+
+def _closed_cutoff() -> int:
+    # One hour-aligned cutoff (UTC epoch, 2h ago) captured ONCE per gate run and substituted as a literal into
+    # BOTH the CH and source SQL of every windowed check — so the two queries can never straddle an hour boundary
+    # and disagree on the window (an exact gate would false-red on that race).
+    return int(time.time()) // 3600 * 3600 - _CLOSED_WINDOW_S
 
 
 def _ch_query(sql: str):
@@ -75,13 +95,23 @@ def fresh(max_lag_s: float) -> Callable[[float, float], bool]:
 
 
 def complete(eps: float) -> Callable[[float, float], bool]:
-    # CH bronze is "complete" vs the source Parquet (src) if it isn't short by more than eps — one in-flight
-    # ingest tick can leave CH a hair behind the landing zone, but a real load loss is far larger. Surplus
-    # (e.g. the opensky_states P2 dup) passes — this gate only catches CH *missing* source data.
+    # CH is "complete" vs the source (src) if it isn't short by more than eps. The source gate calls this with
+    # eps=0 (EXACT lower bound, ch >= src) over a CLOSED window, so even one missing object trips it; the eps
+    # param survives for callers/tests that want a tolerance. Surplus passes — a ReplacingMergeTree replay
+    # over-reports raw count (the grain metric avoids that) and the gate only catches CH *missing* source data.
     def cmp(ch: float, src: float) -> bool:
         if src == 0:
             return True
         return ch >= src * (1 - eps)
+    return cmp
+
+
+def exact() -> Callable[[float, float], bool]:
+    # Strict equality (ch == src), including when src == 0. The closed window makes CH and source identical when
+    # complete, so a surplus is NOT tolerated — under `>=` a surplus could offset a missing row and pass. Counts
+    # are integers well under 2^53, so float `==` is exact.
+    def cmp(ch: float, src: float) -> bool:
+        return ch == src
     return cmp
 
 
@@ -119,24 +149,37 @@ def run_parity(checks, label: str, *, ch_query=None, ref_query=None) -> dict:
 # CH bronze must not fall SHORT of the source Parquet (the data-loss failure mode); one in-flight ingest tick
 # of trail is fine, a real load loss is far larger. Both sides run on the CH client (CH count vs s3() Parquet
 # count), so this gate has no external-engine dependency.
-SOURCE_CHECKS: list[tuple[str, str, str, Callable[[float, float], bool]]] = [
-    ("bronze.opensky_flights.complete",
-     "SELECT count() FROM bronze.opensky_flights",
-     f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/flights_raw/**/*.parquet', format='Parquet')",
-     complete(_SOURCE_EPS)),
-    ("bronze.adsb_states.complete",
-     "SELECT count() FROM bronze.adsb_states",
-     f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/adsb_state/**/*.parquet', format='Parquet')",
-     complete(_SOURCE_EPS)),
-    ("bronze.opensky_states.complete",
-     "SELECT count() FROM bronze.opensky_states",
-     f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/{{states,states_raw}}/**/*.parquet', format='Parquet')",
-     complete(_SOURCE_EPS)),
-    ("bronze.archive_states.complete",
-     "SELECT count() FROM bronze.archive_states",
-     f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/archive_states_raw/**/*.parquet', format='Parquet')",
-     complete(_SOURCE_EPS)),
-]
+def source_checks(cutoff: int) -> list[tuple[str, str, str, Callable[[float, float], bool]]]:
+    # Build the completeness checks with a single captured `cutoff` epoch baked into BOTH sides of every window.
+    # All EXACT (no eps). The metric per lane is the one that exactly counts distinct LEGIT source rows AND is
+    # replay-immune: states = distinct content fp (collapses replays, keeps recaptures); adsb = (hex,capture_ts)
+    # which is unique-per-row == content and replay-immune; flights/archive = raw count (no surplus to remove).
+    dt = f"toDateTime({cutoff}, 'UTC')"
+    return [
+        ("bronze.opensky_states.content_fp",
+         f"SELECT uniqExact({_STATES_CONTENT_FP}) FROM bronze.opensky_states WHERE snapshot_time < {dt}",
+         f"SELECT uniqExact({_STATES_CONTENT_FP}) FROM s3({_GARAGE_COLLECTION}, "
+         f"filename='bronze/{{states,states_raw}}/**/*.parquet', format='Parquet') WHERE snapshot_time < {cutoff}",
+         exact()),
+        # (hex, capture_ts) is unique per row (== content), and uniqExact is replay-immune (adsb RMT is deferred to P8b).
+        ("bronze.adsb_states.closed_grain",
+         f"SELECT uniqExact((hex, capture_ts)) FROM bronze.adsb_states WHERE capture_ts < {cutoff}",
+         f"SELECT uniqExact((hex, capture_ts)) FROM s3({_GARAGE_COLLECTION}, "
+         f"filename='bronze/adsb_state/**/*.parquet', format='Parquet') WHERE capture_ts < {cutoff}",
+         exact()),
+        # flights: window on ingested_at, NOT first_seen — the daily 48h arrival lag decouples first_seen from load
+        # time, so only ingested_at (source-frozen, on both sides) cleanly excludes the not-yet-loaded trail.
+        ("bronze.opensky_flights.closed",
+         f"SELECT count() FROM bronze.opensky_flights WHERE ingested_at < {dt}",
+         f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/flights_raw/**/*.parquet', format='Parquet') "
+         f"WHERE parseDateTime64BestEffortOrNull(ingested_at) < {dt}",
+         exact()),
+        # archive: frozen one-time backfill, no trail -> exact raw count (no window needed).
+        ("bronze.archive_states.exact",
+         "SELECT count() FROM bronze.archive_states",
+         f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/archive_states_raw/**/*.parquet', format='Parquet')",
+         exact()),
+    ]
 
 # Freshness vs wall-clock (now()) — a stalled dbt CH lane would freeze these. Read as superset_ro so the gate
 # also catches serving-credential drift (the only reason it stays a separate, serving-identity pass).
@@ -171,7 +214,7 @@ def run_source_gate(*, ch_query=None, serving_query=None) -> dict:
     # superset_ro (the serving identity) to also catch credential drift. Raises on any miss.
     chq = ch_query or _ch_query
     sq = serving_query or _ch_query_serving
-    comp = run_parity(SOURCE_CHECKS, "source.complete", ch_query=chq, ref_query=chq)
+    comp = run_parity(source_checks(_closed_cutoff()), "source.complete", ch_query=chq, ref_query=chq)
     frsh = run_parity(SOURCE_FRESHNESS_CHECKS, "source.fresh", ch_query=sq, ref_query=sq)
     results = comp["results"] + frsh["results"]
     passed = comp["passed"] + frsh["passed"]

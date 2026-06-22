@@ -116,7 +116,9 @@ def _drain_transformed(prefixes: Iterable[str], transform, ch_table: str, *,
             continue
         ok, rows = insert_arrow_best_effort(ch_table, df.to_arrow())
         if ok:
-            # Best-effort gap (hardened in P8): INSERT+mark aren't atomic — a crash here can dup on retry.
+            # INSERT+mark aren't atomic, so a crash here re-inserts the batch on retry. Harmless now: the states
+            # lane (opensky_states) is ReplacingMergeTree keyed on a committed_at-free fingerprint, so a replay
+            # collapses on merge; the flights lane lands single-block and fact_flights grain-dedups downstream.
             manifest.mark_ch_loaded([r["object_uri"] for r in batch], engine)
             loaded_rows += rows
             loaded_files += len(batch)
@@ -183,7 +185,9 @@ def _load_adsb_pending_to_ch(engine: Optional[sa.Engine], batch_files: Optional[
             continue
         ok, rows = insert_arrow_best_effort("adsb_states", pa.concat_tables(tables, promote_options="default"))
         if ok:
-            # Best-effort gap (hardened in P8): INSERT+mark aren't atomic — a crash here can dup on retry.
+            # INSERT+mark aren't atomic, so a crash here re-inserts on retry. adsb stays plain MergeTree in v6.1
+            # (its ReplacingMergeTree replay-backstop is deferred to P8b, bundled with the adsb_states rebuild
+            # for the _raw_json relocation); idempotency is the per-batch marker and adsb has shown no replay dup.
             am.mark_ch_loaded([p["filename"] for p in good], engine)
             loaded_rows += rows
             loaded_files += len(good)
@@ -245,6 +249,33 @@ def run_backfill(reset: bool = True) -> dict:
     else:
         adsb = load_adsb_pending_to_ch()  # resume: pending-only, never re-sweeps (no dup on MergeTree)
     return {"adsb": adsb, "states": backfill_states(), "flights": backfill_flights()}
+
+
+def optimize_states_final(table: str = "opensky_states") -> dict:
+    # Force the ReplacingMergeTree dedup merge so a crash-replay surplus can't accumulate physically — CH merges
+    # are async and a part "may stay unmerged indefinitely" (CH docs), and the exact content-fp gate reads
+    # logical truth (distinct content) so it wouldn't see the bloat. Two guards keep this from being wasteful:
+    #   - optimize_skip_merged_partitions=1 so an already-single-part partition is NOT rewritten every run (an
+    #     unrestricted OPTIMIZE FINAL re-rewrites the whole table daily); only multi-part partitions (where a
+    #     replay part landed, or background merges haven't caught up) are merged.
+    #   - skip entirely until the table is actually ReplacingMergeTree — pre-migration it's plain MergeTree, where
+    #     OPTIMIZE does no dedup and would only churn parts.
+    # RAISES on a real failure so the daily maintain_bronze_dedup DAG reds if dedup stalls.
+    table = _safe_identifier(table)
+    client = ch_client()
+    try:
+        rows = client.query(
+            f"SELECT engine FROM system.tables WHERE database = '{_CH_DB}' AND name = '{table}'"
+        ).result_rows
+        engine = rows[0][0] if rows else ""
+        if not engine.startswith("ReplacingMergeTree"):
+            return {"optimized": False, "skipped": True, "engine": engine}
+        client.command(
+            f"OPTIMIZE TABLE {_CH_DB}.{table} FINAL SETTINGS optimize_skip_merged_partitions = 1"
+        )
+    finally:
+        client.close()
+    return {"optimized": True, "skipped": False}
 
 
 # --- P3 marts lane one-time setup: aircraft_db bronze load + hex-country dict reload ----------
@@ -363,7 +394,9 @@ def _load_archive_pending_to_ch(engine: Optional[sa.Engine], batch_files: Option
             continue
         ok, rows = insert_arrow_best_effort("archive_states", df.to_arrow())
         if ok:
-            # Best-effort gap (hardened in P8): INSERT+mark aren't atomic — a crash here can dup on retry.
+            # INSERT+mark aren't atomic. archive_states stays plain MergeTree (frozen, exact today, and a
+            # states-style fingerprint can't apply — see 01_bronze.sql), so its idempotency is the truncate-first
+            # reload (backfill_archive_states), NOT a bare resume after a torn multi-block insert.
             manifest.mark_ch_loaded([r["object_uri"] for r in good], engine)
             loaded_rows += rows
             loaded_files += len(good)
