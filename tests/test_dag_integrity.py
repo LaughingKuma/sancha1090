@@ -122,6 +122,14 @@ EXPECTED_DAGS = {
             "dbt_test_ch": {"push_flight_routes"},
         },
     },
+    "maintain_bronze_dedup": {
+        "schedule": "30 18 * * *",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"optimize"},
+        # Bounded-growth guarantee must run on a clean deploy without a manual unpause.
+        "is_paused_upon_creation": False,
+    },
 }
 
 

@@ -61,11 +61,24 @@ CREATE TABLE IF NOT EXISTS bronze.opensky_states
     spi Nullable(Bool), position_source Nullable(Int32),
     snapshot_time Nullable(DateTime64(6,'UTC')), region Nullable(String),
     ingested_at Nullable(DateTime64(6,'UTC')), committed_at Nullable(DateTime64(6,'UTC')),
-    snapshot_date Date MATERIALIZED toDate(snapshot_time)
+    snapshot_date Date MATERIALIZED toDate(snapshot_time),
+    -- P8a dedup key: a crash-window whole-file/partial replay differs ONLY in load-time committed_at, so a
+    -- fingerprint over every SOURCE column EXCEPT committed_at collapses replays under RMT while leaving the
+    -- ~374K legit content-distinct same-grain recaptures (distinct fp) intact. Cols = STATES_COLUMNS minus
+    -- committed_at (test_bronze_dedup guards drift); toString(tuple()) flattens the all-Nullable schema so a
+    -- NULL doesn't poison the hash. committed_at-exclusion is safe ONLY because the source Parquet has no
+    -- committed_at column (so the only rows this can collapse are loader replays).
+    _dedup_fp UInt64 MATERIALIZED cityHash64(toString(tuple(icao24, callsign, origin_country, time_position,
+        last_contact, longitude, latitude, baro_altitude, on_ground, velocity, true_track, vertical_rate,
+        geo_altitude, squawk, spi, position_source, snapshot_time, region, ingested_at)))
 )
-ENGINE = MergeTree
+-- No version column (keep-arbitrary): committed_at is Nullable so it can't be an RMT version, and it doesn't
+-- need to be — replay twins share the full ORDER BY key and are identical in every column except committed_at,
+-- so which one survives the merge is immaterial.
+ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(snapshot_date)
-ORDER BY (snapshot_time, icao24)
+ORDER BY (snapshot_time, icao24, _dedup_fp)
+PRIMARY KEY (snapshot_time, icao24)
 SETTINGS allow_nullable_key = 1;
 
 -- bronze.archive_states — opensky_states fields 1-20 + source (field 21; ODbL adsb.lol
