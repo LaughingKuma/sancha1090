@@ -2,7 +2,8 @@
 
 -- Ground-truth flight narratives from OpenSky's flight summaries. A flight surfaces up
 -- to 4x (dep+arr lists, D-0+D-2 windows, both tracked endpoints): keep the row with the
--- most airports resolved, then the freshest commit.
+-- most airports resolved, then the freshest source ingest (ingested_at is frozen in the
+-- source Parquet; committed_at is CH load-time and would re-pick on any reload/retry).
 with deduped as (
     select
         *,
@@ -11,7 +12,11 @@ with deduped as (
             order by
                 (case when est_departure_airport is not null then 1 else 0 end)
               + (case when est_arrival_airport is not null then 1 else 0 end) desc,
-                committed_at desc
+                ingested_at desc,
+                -- deterministic tail: a flight surfaces up to 4x with the same (icao24,first_seen);
+                -- order the surfacings so the kept row's direction/window_kind/captured_for_airport is stable.
+                window_kind, captured_for_airport, direction,
+                est_departure_airport, est_arrival_airport, callsign, last_seen
         ) as rn
     from {{ source('bronze', 'opensky_flights') }}
     where first_seen is not null
