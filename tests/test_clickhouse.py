@@ -105,6 +105,41 @@ def _stub_adsb_reads(monkeypatch, *, fail_for=()):
     monkeypatch.setattr(ch, "_read_adsb_table", fake_read)
 
 
+def test_bake_adsb_flags_decodes_dbflags_and_drops_raw_json():
+    # v6.3: the loader bakes the dbFlags integer into a typed db_flags column and drops the verbatim _raw_json
+    # blob (eliminated from CH). absent/null/non-object/malformed -> 0, mirroring JSONExtractInt's 2-valued contract.
+    import pyarrow as pa
+
+    t = pa.table({
+        "hex": ["a", "b", "c", "d", "e", "f"],
+        "_raw_json": ['{"dbFlags": 1}', '{"dbFlags": 3}', '{"dbFlags": 0}',
+                      '{"other": 9}', None, "not json{"],
+        "_schema_version": [1, 1, 1, 1, 1, 1],
+    })
+    out = ch._bake_adsb_flags(t)
+
+    assert "_raw_json" not in out.column_names
+    assert out.schema.field("db_flags").type == pa.int32()
+    assert out.column("db_flags").to_pylist() == [1, 3, 0, 0, 0, 0]
+    # passthrough columns intact (by-name insert, so order is immaterial)
+    assert out.column("hex").to_pylist() == ["a", "b", "c", "d", "e", "f"]
+    assert out.column("_schema_version").to_pylist() == [1, 1, 1, 1, 1, 1]
+
+
+def test_backfill_adsb_scratch_build_does_not_mark_manifest(monkeypatch):
+    # P1: a scratch/migration build (mark=False) must NOT advance the ingestion manifest — the data isn't in the
+    # live table until the swap, so marking would strand files on an abort; the per-tick loader replays post-swap.
+    from include import adsb_manifest as am
+
+    monkeypatch.setattr(ch, "command_best_effort", lambda *_a, **_k: True)
+    marked = {"called": False}
+    monkeypatch.setattr(am, "mark_ch_loaded", lambda *_a, **_k: marked.update(called=True) or 0)
+
+    out = ch.backfill_adsb(target_table="adsb_states_new", mark=False)
+    assert out == {"ok": True, "marked": 0}
+    assert marked["called"] is False
+
+
 def test_safe_identifier_accepts_valid_rejects_injection():
     assert ch._safe_identifier("bronze") == "bronze"
     for bad in ("bronze; DROP TABLE x", "a-b", "1bad", "a b", ""):

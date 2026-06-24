@@ -161,7 +161,7 @@ def source_checks(cutoff: int) -> list[tuple[str, str, str, Callable[[float, flo
          f"SELECT uniqExact({_STATES_CONTENT_FP}) FROM s3({_GARAGE_COLLECTION}, "
          f"filename='bronze/{{states,states_raw}}/**/*.parquet', format='Parquet') WHERE snapshot_time < {cutoff}",
          exact()),
-        # (hex, capture_ts) is unique per row (== content), and uniqExact is replay-immune (adsb RMT is deferred to P8b).
+        # (hex, capture_ts) is unique per row (== content), and uniqExact is replay-immune (v6.3 made adsb_states RMT).
         ("bronze.adsb_states.closed_grain",
          f"SELECT uniqExact((hex, capture_ts)) FROM bronze.adsb_states WHERE capture_ts < {cutoff}",
          f"SELECT uniqExact((hex, capture_ts)) FROM s3({_GARAGE_COLLECTION}, "

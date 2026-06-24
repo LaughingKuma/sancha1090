@@ -17,9 +17,9 @@ with base as (
         s.alt_baro,
         s.gs,
         s.track,
-        -- JSONExtractInt returns 0 on a missing/absent dbFlags (never NULL), so COALESCE(...,0) below is the
-        -- same 2-valued contract as Trino's try_cast(...)->NULL->COALESCE. Spike-proven (mil 0.955% vs 0.953%).
-        JSONExtractInt(s._raw_json, 'dbFlags') as db_flags
+        -- db_flags is the dbFlags integer baked at load (v6.3 eliminated _raw_json from CH); 0 on absent (the
+        -- same 2-valued contract JSONExtractInt gave), so the COALESCE(...,0) bit-tests below stay correct.
+        s.db_flags as db_flags
     from {{ source('bronze', 'adsb_states') }} s
     left join {{ ref('int_adsb_callsign_backfill') }} bf
            on bf.hex = s.hex and bf.capture_ts = s.capture_ts

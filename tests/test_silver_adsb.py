@@ -18,10 +18,10 @@ def test_fct_is_row_count_preserving(ch_cur):
 
 
 def test_military_decode_matches_bronze(ch_cur):
-    # Mirror the model's CH decode: bitAnd(JSONExtractInt(_raw_json,'dbFlags'), 1).
+    # Mirror the model's CH decode against the baked column: bitAnd(db_flags, 1) (v6.3 dropped _raw_json from CH).
     fct = _q(ch_cur, "SELECT count(DISTINCT hex) FROM silver_ch.fct_adsb_state WHERE is_military")[0][0]
     bronze = _q(ch_cur, "SELECT count(DISTINCT hex) FROM bronze.adsb_states "
-                        "WHERE bitAnd(JSONExtractInt(_raw_json,'dbFlags'), 1) != 0")[0][0]
+                        "WHERE bitAnd(db_flags, 1) != 0")[0][0]
     assert fct == bronze and fct > 0, f"military hex fct={fct} bronze={bronze}"
 
 
