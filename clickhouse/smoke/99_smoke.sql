@@ -14,8 +14,8 @@ SELECT name FROM system.tables WHERE database IN ('bronze','dim') ORDER BY 1;
 --   adsb_states, aircraft_db, archive_states, opensky_flights, opensky_states,
 --   dim_aircraft_types, dim_airlines, dim_airports, dim_hex_country, dict_hex_country
 
--- 3. column-count sanity on the big table: 60 logical cols (include/adsb_iceberg.py) +
---    capture_date MATERIALIZED = 61. (The plan doc's "52" miscounted the source field buckets.)
+-- 3. column-count sanity on the big table: 60 logical cols (include/adsb_schema.py CH_ADSB_COLUMNS —
+--    v6.3 swapped _raw_json for the baked db_flags) + capture_date MATERIALIZED = 61.
 SELECT count() FROM system.columns WHERE database='bronze' AND table='adsb_states';   -- 61
 
 -- 4. partition driver is the materialized Date, not the float epoch

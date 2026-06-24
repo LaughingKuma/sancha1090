@@ -10,8 +10,28 @@ _LAST_CLOSED = _CUTOFF - H
 
 
 # Drives the gate with no live CH: each query is routed by its table token (mirrors test_ch_parity_source_gate).
-def _ch_fake(oracle, agg, fss):
+# adsb dicts: country keyed by (reg_country, hour) -> (distinct, obs, military); airline keyed by (name, country,
+# hour) -> (distinct, obs, backfilled). Default empty so existing tests exercise only the opensky checks.
+# The adsb branches are matched FIRST + assert distinctive SQL fragments: the airline oracle JOINs
+# bronze.opensky_states for the callsign backfill, so it must route by its specific signature (dim_airlines +
+# adsb_states) before the generic opensky-oracle branch, and the asserts catch a gate-SQL-shape regression in CI.
+def _ch_fake(oracle, agg, fss, cc_oracle=None, cc_mart=None, aa_oracle=None, aa_mart=None):
+    cc_oracle, cc_mart = cc_oracle or {}, cc_mart or {}
+    aa_oracle, aa_mart = aa_oracle or {}, aa_mart or {}
+
     def q(sql):
+        if "gold_ch.agg_country_traffic_adsb_acc" in sql:
+            assert "uniqExactMerge(military_observations)" in sql and "snapshot_hour" in sql
+            return [[g, h, ac, obs, mil] for (g, h), (ac, obs, mil) in cc_mart.items()]
+        if "gold_ch.agg_airline_traffic_adsb_acc" in sql:
+            assert "uniqExactMerge(backfilled_observations)" in sql and "snapshot_hour" in sql
+            return [[nm, ct, h, ac, obs, bf] for (nm, ct, h), (ac, obs, bf) in aa_mart.items()]
+        if "bronze.adsb_states" in sql and "dim_airlines" in sql:   # airline full-attribution oracle
+            assert "argMinIf" in sql and "callsign_source = 'opensky_backfill'" in sql
+            return [[nm, ct, h, ac, obs, bf] for (nm, ct, h), (ac, obs, bf) in aa_oracle.items()]
+        if "bronze.adsb_states" in sql:                              # country oracle
+            assert "toStartOfHour(toDateTime(capture_ts))" in sql and "bitAnd(db_flags, 1)" in sql
+            return [[g, h, ac, obs, mil] for (g, h), (ac, obs, mil) in cc_oracle.items()]
         if "bronze.opensky_states" in sql:
             return [[h, obs, ac] for h, (obs, ac) in oracle.items()]
         if "gold_ch.agg_hourly_traffic" in sql:
@@ -37,8 +57,8 @@ class _WM:
             self.value = val
 
 
-def _run(oracle, agg, fss, wm):
-    return v.run_value_gate(ch_query=_ch_fake(oracle, agg, fss),
+def _run(oracle, agg, fss, wm, **adsb):
+    return v.run_value_gate(ch_query=_ch_fake(oracle, agg, fss, **adsb),
                             get_wm=wm.get, set_wm=wm.set, now_epoch=_NOW)
 
 
@@ -47,7 +67,8 @@ def test_value_gate_passes_and_advances_watermark():
     wm = _WM(start=None)
     out = _run(oracle, dict(oracle), {_LAST_CLOSED: 10, _LAST_CLOSED - H: 8}, wm)
     assert out["all_ok"]
-    assert out["passed"] == out["total"] == 2          # agg_hourly + fact_state_snapshots
+    # agg_hourly + fss + agg_country_traffic_adsb + agg_airline_traffic_adsb (the adsb pair is empty here -> ok).
+    assert out["passed"] == out["total"] == 4
     assert wm.value == _LAST_CLOSED                     # advanced to the newest fully-closed hour
 
 
@@ -154,7 +175,8 @@ def test_window_uses_closed_cutoff_and_lateness_geo_metric():
     captured = {}
 
     def q(sql):
-        if "bronze.opensky_states" in sql:
+        # The opensky oracle only (the airline adsb oracle also JOINs bronze.opensky_states for the backfill).
+        if "bronze.opensky_states" in sql and "bronze.adsb_states" not in sql:
             captured["oracle"] = sql
         return []
     wm = _WM(start=None)
@@ -164,6 +186,74 @@ def test_window_uses_closed_cutoff_and_lateness_geo_metric():
     assert "uniqExact((icao24, snapshot_time))" in o
     assert str(_CUTOFF) in o                            # closed boundary on the upper bound
     assert str(_LAST_CLOSED - v._LATENESS_S) in o       # lateness tail on the lower bound (wm is None -> anchor=last_closed)
+
+
+# --- ADS-B served-value checks (the two re-grained MVs, exact vs the bronze.adsb_states oracle) ------------------
+def test_adsb_country_and_airline_pass():
+    oracle = {_LAST_CLOSED: (10, 5)}
+    cc = {("Japan", _LAST_CLOSED): (4, 9, 1), ("United States", _LAST_CLOSED): (2, 3, 0)}
+    aa = {("ANA", "Japan", _LAST_CLOSED): (3, 6, 2)}   # (distinct, observations, backfilled)
+    wm = _WM(start=None)
+    out = _run(oracle, dict(oracle), {_LAST_CLOSED: 10}, wm,
+               cc_oracle=cc, cc_mart=dict(cc), aa_oracle=aa, aa_mart=dict(aa))
+    assert out["all_ok"] and out["total"] == 4
+    assert wm.value == _LAST_CLOSED
+
+
+def test_adsb_country_observations_mismatch_reds():
+    oracle = {_LAST_CLOSED: (10, 5)}
+    cc_o = {("Japan", _LAST_CLOSED): (4, 9, 1)}
+    cc_m = {("Japan", _LAST_CLOSED): (4, 8, 1)}                       # one observation short
+    wm = _WM(start=None)
+    with pytest.raises(RuntimeError, match="agg_country_traffic_adsb"):
+        _run(oracle, dict(oracle), {_LAST_CLOSED: 10}, wm, cc_oracle=cc_o, cc_mart=cc_m)
+    assert wm.sets == []                                             # watermark frozen on a defect
+
+
+def test_adsb_country_military_mismatch_reds():
+    # the baked-db_flags military path: oracle decodes 2 military, the mart serves 1.
+    oracle = {_LAST_CLOSED: (10, 5)}
+    cc_o = {("Japan", _LAST_CLOSED): (4, 9, 2)}
+    cc_m = {("Japan", _LAST_CLOSED): (4, 9, 1)}
+    with pytest.raises(RuntimeError, match="agg_country_traffic_adsb"):
+        _run(oracle, dict(oracle), {_LAST_CLOSED: 10}, _WM(start=None), cc_oracle=cc_o, cc_mart=cc_m)
+
+
+def test_adsb_phantom_country_reds():
+    # a country present in the mart but absent in the oracle (mart>0, oracle 0) is a defect, not just a drop.
+    oracle = {_LAST_CLOSED: (10, 5)}
+    cc_m = {("Phantomland", _LAST_CLOSED): (1, 1, 0)}
+    with pytest.raises(RuntimeError, match="agg_country_traffic_adsb"):
+        _run(oracle, dict(oracle), {_LAST_CLOSED: 10}, _WM(start=None), cc_mart=cc_m)
+
+
+def test_adsb_airline_observations_mismatch_reds():
+    oracle = {_LAST_CLOSED: (10, 5)}
+    aa_o = {("ANA", "Japan", _LAST_CLOSED): (3, 6, 2)}
+    aa_m = {("ANA", "Japan", _LAST_CLOSED): (3, 5, 2)}               # observations short of bronze
+    with pytest.raises(RuntimeError, match="agg_airline_traffic_adsb"):
+        _run(oracle, dict(oracle), {_LAST_CLOSED: 10}, _WM(start=None), aa_oracle=aa_o, aa_mart=aa_m)
+
+
+def test_adsb_airline_backfilled_and_distinct_mismatch_reds():
+    # P2: the OpenSky-backfilled count AND distinct_aircraft are now gated (not just native observations).
+    oracle = {_LAST_CLOSED: (10, 5)}
+    aa_o = {("ANA", "Japan", _LAST_CLOSED): (3, 6, 2)}
+    for bad in ({("ANA", "Japan", _LAST_CLOSED): (3, 6, 1)},        # backfilled diverges
+                {("ANA", "Japan", _LAST_CLOSED): (2, 6, 2)}):       # distinct_aircraft diverges
+        with pytest.raises(RuntimeError, match="agg_airline_traffic_adsb"):
+            _run(oracle, dict(oracle), {_LAST_CLOSED: 10}, _WM(start=None), aa_oracle=aa_o, aa_mart=bad)
+
+
+def test_adsb_checks_skipped_below_ttl_floor():
+    # A deep catch-up below the 89-day adsb TTL floor: the _acc has aged the hours out by design, so the adsb
+    # checks must be SKIPPED (not red on an empty mart while the unbounded bronze oracle still holds the hour).
+    wm_start = _LAST_CLOSED - 95 * 24 * H
+    oracle = {_LAST_CLOSED: (10, 5), wm_start + H: (7, 4)}
+    cc_o = {("Japan", wm_start + H): (3, 5, 0)}                      # bronze still has it; the mart aged it out
+    out = _run(oracle, dict(oracle), {_LAST_CLOSED: 10}, _WM(start=wm_start), cc_oracle=cc_o)
+    assert out["all_ok"]
+    assert not any("adsb" in r["check"] for r in out["results"])     # adsb checks skipped, not failed
 
 
 # --- watermark store: advance-only, portable (sqlite mirror of the postgres table) ------------------------------

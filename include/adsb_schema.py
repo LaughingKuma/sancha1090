@@ -15,9 +15,18 @@ LIST_FIELDS = ["nav_modes", "mlat", "tisb"]
 JSON_FIELDS = ["acas_ra"]
 
 # Column order mirrors capture_v2._build_schema(): capture_ts, the typed readsb buckets, then our
-# own _raw_json/_schema_version. The CH bronze.adsb_states DDL must match this name/order exactly.
+# own _raw_json/_schema_version. This is the PRODUCER PARQUET contract (test_adsb_schema guards it).
 ADSB_COLUMNS = (
     ["capture_ts"]
     + STRING_FIELDS + DOUBLE_FIELDS + INT_FIELDS + LIST_FIELDS + JSON_FIELDS
     + ["_raw_json", "_schema_version"]
+)
+
+# CH_ADSB_COLUMNS: the bronze.adsb_states target order (v6.3+) — DIVERGES from the producer Parquet.
+# _raw_json is eliminated from CH (39% of the hot table; the only CH readers decoded dbFlags) and replaced
+# by a typed db_flags column baked at load; the producer Parquet keeps _raw_json (the drift scan reads it).
+CH_ADSB_COLUMNS = (
+    ["capture_ts"]
+    + STRING_FIELDS + DOUBLE_FIELDS + INT_FIELDS + LIST_FIELDS + JSON_FIELDS
+    + ["db_flags", "_schema_version"]
 )

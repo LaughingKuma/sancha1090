@@ -34,6 +34,9 @@ _LATENESS_S = 6 * 3600
 # holds nothing older — don't compare it beyond this (1-day margin under 30d for build lag), or a deep catch-up
 # after a long outage false-reds it. agg_hourly_traffic (accumulate-forever) has no such floor.
 _FSS_VALID_S = 29 * 24 * 3600
+# The two re-grained ADS-B _acc tables carry a 90d TTL; stay a day inside it (TTL drops lazily on merge) so the
+# gate never compares a (group,hour) the _acc may already have aged out — the adsb analog of _FSS_VALID_S.
+_ADSB_TTL_VALID_S = 89 * 24 * 3600
 # Validate at most this much window per run. The catch-up is unbounded over time, but the CH client has a hard
 # 60s timeout (_TIMEOUT_S) — one oversized post-outage scan would time out, red the task, and never advance the
 # watermark, so the next run retries the same doomed scan forever. Draining a bounded chunk per run (advancing the
@@ -123,6 +126,58 @@ def _rows_to_map(rows, n: int):
     return out
 
 
+def _adsb_value_checks(chq, win_start: int, chunk_end: int, last_closed: int) -> list:
+    # Per-(group, hour) served-value checks for the two re-grained ADS-B MVs, exact vs a bronze.adsb_states oracle.
+    # capture_ts is Float64 epoch sec -> BARE int window bounds (NOT toDateTime, unlike the opensky oracle); the
+    # adsb MVs have NO geo filter (they aggregate all bronze). The oracle reuses the MV's OWN dict/military/airline
+    # exprs (include.ch_incremental_mvs) so it reads the exact population each MV aggregates. The _acc reads window
+    # snapshot_hour (a DateTime) -> toDateTime bounds. Gated behind the completeness gate (gate >> value_gate), so
+    # mart==bronze ∧ bronze==source ⇒ mart==source.
+    from include import ch_incremental_mvs as _mv
+
+    floor = last_closed - _ADSB_TTL_VALID_S
+    lo = max(win_start, floor)
+    if lo >= chunk_end:
+        return []  # whole window below the TTL floor: the _acc has aged it out by design (like the fss floor)
+    dt_lo, dt_hi = _dt(lo), _dt(chunk_end)
+
+    # 1) Country — distinct_aircraft + observations + military, per (reg_country, hour). Clean exact (no backfill).
+    c_oracle = {(r[0], int(r[1])): (int(r[2]), int(r[3]), int(r[4])) for r in chq(
+        f"SELECT reg_country, toUnixTimestamp(toStartOfHour(toDateTime(capture_ts))) h, "
+        f"uniqExact(hex), uniqExact((hex, capture_ts)), uniqExactIf((hex, capture_ts), {_mv._IS_MILITARY}) "
+        f"FROM (SELECT {_mv._HEX_COUNTRY} AS reg_country, hex, capture_ts, db_flags FROM bronze.adsb_states "
+        f"      WHERE capture_ts >= {lo} AND capture_ts < {chunk_end}) "
+        f"WHERE reg_country IS NOT NULL GROUP BY reg_country, h") if r[0] is not None and r[1] is not None}
+    c_mart = {(r[0], int(r[1])): (int(r[2]), int(r[3]), int(r[4])) for r in chq(
+        f"SELECT reg_country, toUnixTimestamp(snapshot_hour) h, uniqExactMerge(distinct_aircraft_state), "
+        f"uniqExactMerge(observations), uniqExactMerge(military_observations) "
+        f"FROM gold_ch.agg_country_traffic_adsb_acc WHERE snapshot_hour >= {dt_lo} AND snapshot_hour < {dt_hi} "
+        f"GROUP BY reg_country, h") if r[0] is not None and r[1] is not None}
+    c_keys = sorted(set(c_oracle) | set(c_mart))
+    c_mm = [{"group": k[0], "hour": k[1], "oracle": list(c_oracle.get(k, (0, 0, 0))), "mart": list(c_mart.get(k, (0, 0, 0)))}
+            for k in c_keys if c_oracle.get(k, (0, 0, 0)) != c_mart.get(k, (0, 0, 0))]
+
+    # 2) Airline — distinct_aircraft + observations + backfilled, per (airline, hour). Exact: the oracle reproduces
+    # the MV's FULL (hex,capture_ts)->airline attribution (two-sided OpenSky callsign backfill; argMinIf == the seed
+    # ASOF, verified diff-0), so the OpenSky-backfilled portion AND distinct_aircraft are validated too — not just
+    # the native subset (which the bronze completeness gate alone can't protect against a transform/MV defect).
+    a_oracle = {(r[0], r[1], int(r[2])): (int(r[3]), int(r[4]), int(r[5])) for r in chq(
+        _mv.adsb_airline_oracle_sql(lo, chunk_end)) if r[0] is not None and r[2] is not None}
+    a_mart = {(r[0], r[1], int(r[2])): (int(r[3]), int(r[4]), int(r[5])) for r in chq(
+        f"SELECT airline_name, airline_country, toUnixTimestamp(snapshot_hour) h, uniqExactMerge(distinct_aircraft_state), "
+        f"uniqExactMerge(observations), uniqExactMerge(backfilled_observations) "
+        f"FROM gold_ch.agg_airline_traffic_adsb_acc WHERE snapshot_hour >= {dt_lo} AND snapshot_hour < {dt_hi} "
+        f"GROUP BY airline_name, airline_country, h") if r[0] is not None and r[2] is not None}
+    a_keys = sorted(set(a_oracle) | set(a_mart))
+    a_mm = [{"group": [k[0], k[1]], "hour": k[2], "oracle": list(a_oracle.get(k, (0, 0, 0))), "mart": list(a_mart.get(k, (0, 0, 0)))}
+            for k in a_keys if a_oracle.get(k, (0, 0, 0)) != a_mart.get(k, (0, 0, 0))]
+
+    return [
+        {"check": "agg_country_traffic_adsb.value", "hours": len(c_keys), "ok": not c_mm, "mismatches": c_mm[:8]},
+        {"check": "agg_airline_traffic_adsb.value", "hours": len(a_keys), "ok": not a_mm, "mismatches": a_mm[:8]},
+    ]
+
+
 def run_value_gate(*, ch_query=None, get_wm=None, set_wm=None, now_epoch=None) -> dict:
     # For every newly-closed hour (and a lateness tail below the watermark), assert the served marts equal the
     # bronze oracle for that hour. Advance the watermark only on a full pass; raise on any mismatch.
@@ -185,6 +240,9 @@ def run_value_gate(*, ch_query=None, get_wm=None, set_wm=None, now_epoch=None) -
                     "ok": not agg_mm, "mismatches": agg_mm[:8]})
     results.append({"check": "fact_state_snapshots.value", "hours": fss_hours,
                     "ok": not fss_mm, "mismatches": fss_mm[:8]})
+    # The two now-exact ADS-B MVs (re-grained off HLL in v6.3) — same window + watermark (capture_ts shares
+    # wall-clock with snapshot_time), so a defect there freezes the same watermark until it's fixed.
+    results.extend(_adsb_value_checks(chq, win_start, chunk_end, last_closed))
     for r in results:
         log.log(logging.INFO if r["ok"] else logging.WARNING,
                 "value[%s] %s hours=%d mismatches=%d", r["check"],
@@ -196,8 +254,8 @@ def run_value_gate(*, ch_query=None, get_wm=None, set_wm=None, now_epoch=None) -
                "all_ok": all_ok, "window": [win_start, chunk_end], "results": results}
     if not all_ok:
         fails = [r["check"] for r in results if not r["ok"]]
-        raise RuntimeError(f"CH served-value gate FAILED ({len(fails)}/{len(results)}): {fails}; "
-                           f"agg_mm={agg_mm[:4]} fss_mm={fss_mm[:4]}")
+        samples = {r["check"]: r["mismatches"][:3] for r in results if not r["ok"]}
+        raise RuntimeError(f"CH served-value gate FAILED ({len(fails)}/{len(results)}): {fails}; samples={samples}")
     # Advance to this chunk's last fully-closed hour; a remaining backlog drains on the next run.
     setwm(chunk_end - 3600)
     return summary

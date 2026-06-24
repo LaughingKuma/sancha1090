@@ -45,11 +45,15 @@ def test_dedup_fp_covers_source_columns_except_committed_at():
     assert "committed_at" not in fp_cols
 
 
-def test_adsb_states_stays_mergetree_rmt_deferred_to_p8b():
-    # adsb has no dup today; its RMT backstop rides P8b's _raw_json-relocation rebuild instead of a wasted one here.
+def test_adsb_states_is_replacing_mergetree():
+    # v6.3 RMT backstop: adsb replay twins are byte-identical (no load-time-only col like opensky's committed_at)
+    # and (hex,capture_ts) is unique, so ORDER BY (capture_ts, hex) collapses them directly — no _dedup_fp needed.
     sql = _table_ddl("adsb_states")
-    assert "ReplacingMergeTree" not in sql, "adsb RMT backstop is deferred to P8b"
-    assert re.search(r"ENGINE\s*=\s*MergeTree\b", sql), "adsb must be plain MergeTree in v6.1"
+    assert "ENGINE = ReplacingMergeTree()" in sql, "adsb must be a no-version ReplacingMergeTree in v6.3"
+    assert re.search(r"ORDER BY\s*\(\s*capture_ts\s*,\s*hex\s*\)", sql), \
+        "adsb ORDER BY must be (capture_ts, hex)"
+    assert re.search(r"PRIMARY KEY\s+capture_ts\b", sql), "adsb PRIMARY KEY must stay capture_ts"
+    assert "_dedup_fp" not in sql, "adsb needs no content fingerprint (replay twins are byte-identical)"
 
 
 def test_flights_and_archive_stay_plain_mergetree():

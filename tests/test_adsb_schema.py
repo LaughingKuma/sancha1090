@@ -8,6 +8,7 @@ import pyarrow.parquet as pq
 
 from include.adsb_schema import (
     ADSB_COLUMNS,
+    CH_ADSB_COLUMNS,
     DOUBLE_FIELDS,
     INT_FIELDS,
     JSON_FIELDS,
@@ -28,8 +29,11 @@ def _bronze_adsb_ddl_columns() -> list[str]:
     ddl = BRONZE_SQL.read_text(encoding="utf-8")
     m = re.search(r"CREATE TABLE IF NOT EXISTS bronze\.adsb_states\s*\((.*?)\)\s*ENGINE", ddl, re.S)
     assert m, "could not locate bronze.adsb_states DDL in clickhouse/sql/01_bronze.sql"
+    # Strip CODEC(...) before the comma split: a codec carries an internal comma (CODEC(T64, ZSTD(3)))
+    # that would otherwise split a column line mid-codec and inject bogus tokens.
+    body = re.sub(r"\s*CODEC\s*\((?:[^()]|\([^()]*\))*\)", "", m.group(1), flags=re.I)
     cols = []
-    for chunk in m.group(1).split(","):
+    for chunk in body.split(","):
         line = re.sub(r"--[^\n]*", "", chunk).strip()  # drop end-of-line comments
         if not line or "MATERIALIZED" in line.upper():
             continue
@@ -77,8 +81,8 @@ def test_producer_parquet_column_types_match_buckets():
 
 
 def test_bronze_sql_ddl_matches_adsb_columns():
-    """Third leg of the contract: the per-tick load inserts the producer Parquet POSITIONALLY into
-    bronze.adsb_states, so the CH DDL column order must equal ADSB_COLUMNS (== the producer parquet)."""
-    assert _bronze_adsb_ddl_columns() == ADSB_COLUMNS, (
-        "bronze.adsb_states DDL column order drift vs ADSB_COLUMNS (clickhouse/sql/01_bronze.sql)"
+    """Third leg of the contract: the CH DDL column set is the producer Parquet with _raw_json swapped
+    for the baked db_flags (v6.3 eliminated the blob from CH), so it must equal CH_ADSB_COLUMNS."""
+    assert _bronze_adsb_ddl_columns() == CH_ADSB_COLUMNS, (
+        "bronze.adsb_states DDL column order drift vs CH_ADSB_COLUMNS (clickhouse/sql/01_bronze.sql)"
     )

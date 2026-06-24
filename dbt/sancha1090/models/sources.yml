@@ -16,7 +16,7 @@ sources:
             tests:
               - not_null
       - name: adsb_states
-        description: "Byte-faithful readsb ADS-B state vectors; _raw_json holds the verbatim record"
+        description: "Byte-faithful readsb ADS-B state vectors; db_flags is the dbFlags integer baked at load (v6.3 dropped the verbatim _raw_json blob from CH — it lives in the source Garage/NAS Parquet)"
         columns:
           - name: hex
             tests:

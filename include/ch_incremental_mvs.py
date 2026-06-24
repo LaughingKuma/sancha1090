@@ -30,8 +30,8 @@ _HEX_COUNTRY = (
     "dictGetOrNull('dim.dict_hex_country', 'country', toUInt8(0), "
     "reinterpretAsUInt32(reverse(unhex(leftPad(lower(coalesce(hex, '')), 8, '0'))))), NULL)"
 )
-# dbFlags bit 0 = military; JSONExtractInt returns 0 when absent (2-valued contract, spike-proven).
-_IS_MILITARY = "bitAnd(JSONExtractInt(_raw_json, 'dbFlags'), 1) != 0"
+# dbFlags bit 0 = military; the baked db_flags column (v6.3) replaces JSONExtractInt(_raw_json,...) (absent=0).
+_IS_MILITARY = "bitAnd(db_flags, 1) != 0"
 
 # ADS-B airline callsign-backfill: SEED and MV need DIFFERENT engines for the SAME two-sided nearest-pick
 # because two ASOF joins in one CH MaterializedView are broken (26.5.1: the 2nd ASOF's value columns don't
@@ -47,11 +47,12 @@ _BF_FOLL_OK = f"(f.callsign IS NOT NULL AND (f.snap_epoch - s.capture_ts) <= {_B
 # SEED form: nearest of the two ASOF hits; tie -> following (== dbt snap_epoch DESC), so preceding wins on STRICT <.
 _ADSB_AIRLINE_SEED_BODY = f"""
 SELECT
+    toStartOfHour(toDateTime(d.capture_ts))       AS snapshot_hour,
     al.name                                       AS airline_name,
     al.country                                    AS airline_country,
     uniqExactState(d.hex)                         AS distinct_aircraft_state,
-    uniqState((d.hex, d.capture_ts))              AS observations,
-    uniqStateIf((d.hex, d.capture_ts), d.callsign_source = 'opensky_backfill') AS backfilled_observations
+    uniqExactState((d.hex, d.capture_ts))         AS observations,
+    uniqExactStateIf((d.hex, d.capture_ts), d.callsign_source = 'opensky_backfill') AS backfilled_observations
 FROM (
     SELECT
         s.hex AS hex,
@@ -69,18 +70,19 @@ FROM (
     ASOF LEFT JOIN ({_OPENSKY_CALLSIGN}) f ON f.icao24 = s.hex AND f.snap_epoch >= s.capture_ts
 ) d
 {_AL_JOIN.format(dim=_DIM_AIRLINES, cs="d.callsign_filled")}
-GROUP BY airline_name, airline_country
+GROUP BY snapshot_hour, airline_name, airline_country
 """.strip()
 # MV form: regular equi-join (block is tiny) + argMinIf nearest by tuple (abs_dist, -snap_epoch, callsign)
-# == dbt's ORDER BY abs(d) ASC, snap_epoch DESC, callsign ASC. observations is uniq((hex,capture_ts)) (not
+# == dbt's ORDER BY abs(d) ASC, snap_epoch DESC, callsign ASC. observations is uniqExact((hex,capture_ts)) (not
 # count()) so a cross-block crash-replay dup can't inflate it (see the count()-not-dup-immune note below).
 _ADSB_AIRLINE_MV_BODY = f"""
 SELECT
+    toStartOfHour(toDateTime(t.capture_ts))       AS snapshot_hour,
     al.name                                       AS airline_name,
     al.country                                    AS airline_country,
     uniqExactState(t.hex)                         AS distinct_aircraft_state,
-    uniqState((t.hex, t.capture_ts))              AS observations,
-    uniqStateIf((t.hex, t.capture_ts), t.callsign_source = 'opensky_backfill') AS backfilled_observations
+    uniqExactState((t.hex, t.capture_ts))         AS observations,
+    uniqExactStateIf((t.hex, t.capture_ts), t.callsign_source = 'opensky_backfill') AS backfilled_observations
 FROM (
     SELECT
         s.hex AS hex,
@@ -96,7 +98,7 @@ FROM (
     GROUP BY s.hex, s.capture_ts
 ) t
 {_AL_JOIN.format(dim=_DIM_AIRLINES, cs="t.callsign_filled")}
-GROUP BY airline_name, airline_country
+GROUP BY snapshot_hour, airline_name, airline_country
 """.strip()
 
 # OpenSky-context per-hour measures, all dedup-immune across MV blocks (an MV can't dedup (icao24,
@@ -117,13 +119,50 @@ _HOURLY_STATE_SELECT = f"""
 """.strip()
 
 
+def adsb_airline_oracle_sql(lo: int, hi: int) -> str:
+    # Windowed PLAIN-count airline attribution for the served-value gate — the SAME (hex,capture_ts)->airline
+    # mapping the MV maintains (two-sided argMinIf nearest; == the seed ASOF, verified diff-0), as exact counts per
+    # (airline, hour) so the gate validates distinct_aircraft + observations + backfilled_observations exactly (not
+    # just the native subset). opensky is bounded to [lo-window, hi+window] (the backfill only looks within
+    # _BF_WINDOW_S of each capture_ts, so the window is result-preserving) to keep the join cost bounded.
+    opensky_win = (f"{_OPENSKY_CALLSIGN} AND toUnixTimestamp64Micro(snapshot_time) / 1e6 "
+                   f"BETWEEN {lo - _BF_WINDOW_S} AND {hi + _BF_WINDOW_S}")
+    return f"""
+SELECT
+    coalesce(al.name, '')                                    AS airline_name,
+    coalesce(al.country, '')                                 AS airline_country,
+    toUnixTimestamp(toStartOfHour(toDateTime(t.capture_ts))) AS h,
+    uniqExact(t.hex)                                         AS distinct_aircraft,
+    uniqExact((t.hex, t.capture_ts))                        AS observations,
+    uniqExactIf((t.hex, t.capture_ts), t.callsign_source = 'opensky_backfill') AS backfilled
+FROM (
+    SELECT
+        s.hex AS hex,
+        s.capture_ts AS capture_ts,
+        coalesce(nullIf(trimBoth(any(s.flight)), ''),
+                 argMinIf(o.callsign, (abs(o.snap_epoch - s.capture_ts), -o.snap_epoch, o.callsign),
+                          o.callsign IS NOT NULL AND abs(o.snap_epoch - s.capture_ts) <= {_BF_WINDOW_S})) AS callsign_filled,
+        multiIf(nullIf(trimBoth(any(s.flight)), '') IS NOT NULL, 'adsb',
+                countIf(o.callsign IS NOT NULL AND abs(o.snap_epoch - s.capture_ts) <= {_BF_WINDOW_S}) > 0,
+                'opensky_backfill', NULL)                    AS callsign_source
+    FROM {_ADSB} s
+    LEFT JOIN ({opensky_win}) o ON o.icao24 = s.hex
+    WHERE s.capture_ts >= {lo} AND s.capture_ts < {hi}
+    GROUP BY s.hex, s.capture_ts
+) t
+{_AL_JOIN.format(dim=_DIM_AIRLINES, cs="t.callsign_filled")}
+GROUP BY airline_name, airline_country, h
+""".strip()
+
+
 def _spec():
     # Each spec: target DDL + MV DDL + one-time seed INSERTs + the merge-aware read (parity / P5 view).
     obs_tuple = "AggregateFunction(uniqExact, Tuple(Nullable(String), Nullable(DateTime64(6, 'UTC'))))"
     uniq_str = "AggregateFunction(uniqExact, Nullable(String))"
-    # ADS-B obs grain is reg_country/airline (unbounded, accumulate-forever) so uniqExact would explode
-    # (~327 MB) — use uniq (HLL, bounded ~4.66 MB, ~0.15% within the 2% gate); capture_ts is Float64 epoch.
-    adsb_obs = "AggregateFunction(uniq, Tuple(Nullable(String), Nullable(Float64)))"
+    # ADS-B obs grain is now (group, hour) (v6.3 re-grain) so uniqExact is affordable AND exact: each
+    # (hex, capture_ts) lands in one disjoint hour, so uniqExactMerge over a group's hours == the group total;
+    # replay-immune (merge unions states) and bounded by a 90d TTL. capture_ts is Float64 epoch.
+    adsb_obs = "AggregateFunction(uniqExact, Tuple(Nullable(String), Nullable(Float64)))"
 
     specs = {}
 
@@ -254,6 +293,7 @@ ORDER BY snapshot_hour, distinct_aircraft DESC
         "target": f"""
 CREATE TABLE IF NOT EXISTS gold_ch.agg_airline_traffic_adsb_acc
 (
+    snapshot_hour            DateTime,
     airline_name             String,
     airline_country          String,
     distinct_aircraft_state  {uniq_str},
@@ -261,7 +301,8 @@ CREATE TABLE IF NOT EXISTS gold_ch.agg_airline_traffic_adsb_acc
     backfilled_observations  {adsb_obs}
 )
 ENGINE = AggregatingMergeTree
-ORDER BY (airline_name, airline_country)
+ORDER BY (snapshot_hour, airline_name, airline_country)
+TTL snapshot_hour + INTERVAL 90 DAY
 """.strip(),
         "mv": f"""
 CREATE MATERIALIZED VIEW IF NOT EXISTS gold_ch.agg_airline_traffic_adsb_acc_mv
@@ -269,42 +310,49 @@ TO gold_ch.agg_airline_traffic_adsb_acc AS
 {_ADSB_AIRLINE_MV_BODY}
 """.strip(),
         "seed": [f"INSERT INTO gold_ch.agg_airline_traffic_adsb_acc\n{_ADSB_AIRLINE_SEED_BODY}"],
+        # Read collapses hours (GROUP BY group only) so the served per-airline number/shape is unchanged; the
+        # explicit 90d window makes the served number deterministic (the TTL drops lazily on merge), a rolling
+        # window like the OpenSky sibling — the all-time HLL was unbounded.
         "read": """
 SELECT
     airline_name, airline_country,
     uniqExactMerge(distinct_aircraft_state) AS distinct_aircraft,
-    uniqMerge(observations)                 AS observations,
-    uniqMerge(backfilled_observations)      AS backfilled_observations
+    uniqExactMerge(observations)            AS observations,
+    uniqExactMerge(backfilled_observations) AS backfilled_observations
 FROM gold_ch.agg_airline_traffic_adsb_acc
+WHERE snapshot_hour >= now('UTC') - INTERVAL 90 DAY
 GROUP BY airline_name, airline_country
 ORDER BY distinct_aircraft DESC
 """.strip(),
     }
 
-    # 4) Country traffic (rooftop ADS-B) — reg_country via the range_hashed dict, military via dbFlags.
-    # observations/military use uniq((hex,capture_ts)) NOT count(): a non-atomic CH load can re-insert a dup on
-    # crash-retry and an AggregatingMergeTree can't retract a counted row, so uniq dedups (P8 idempotency = real fix).
+    # 4) Country traffic (rooftop ADS-B) — reg_country via the range_hashed dict, military via the baked db_flags.
+    # observations/military use uniqExact((hex,capture_ts)) NOT count(): an MV can't dedup across blocks, so a
+    # crash-replay would double-count under count(); uniqExact is replay-immune. v6.3 re-grain to (reg_country, hour).
     country_select = f"""
+    toStartOfHour(toDateTime(capture_ts))   AS snapshot_hour,
     assumeNotNull(reg_country)              AS reg_country,
     uniqExactState(hex)                     AS distinct_aircraft_state,
-    uniqState((hex, capture_ts))           AS observations,
-    uniqStateIf((hex, capture_ts), {_IS_MILITARY}) AS military_observations
-FROM (SELECT {_HEX_COUNTRY} AS reg_country, hex, capture_ts, _raw_json FROM {_ADSB})
+    uniqExactState((hex, capture_ts))       AS observations,
+    uniqExactStateIf((hex, capture_ts), {_IS_MILITARY}) AS military_observations
+FROM (SELECT {_HEX_COUNTRY} AS reg_country, hex, capture_ts, db_flags FROM {_ADSB})
 WHERE reg_country IS NOT NULL
-GROUP BY reg_country
+GROUP BY snapshot_hour, reg_country
 """.strip()
     specs["agg_country_traffic_adsb_acc"] = {
         "drop_old": ["agg_country_traffic_adsb"],
         "target": f"""
 CREATE TABLE IF NOT EXISTS gold_ch.agg_country_traffic_adsb_acc
 (
+    snapshot_hour            DateTime,
     reg_country              String,
     distinct_aircraft_state  {uniq_str},
     observations             {adsb_obs},
     military_observations    {adsb_obs}
 )
 ENGINE = AggregatingMergeTree
-ORDER BY reg_country
+ORDER BY (snapshot_hour, reg_country)
+TTL snapshot_hour + INTERVAL 90 DAY
 """.strip(),
         "mv": f"""
 CREATE MATERIALIZED VIEW IF NOT EXISTS gold_ch.agg_country_traffic_adsb_acc_mv
@@ -317,13 +365,16 @@ INSERT INTO gold_ch.agg_country_traffic_adsb_acc
 SELECT
     {country_select}
 """.strip()],
+        # Read collapses hours (GROUP BY reg_country only) so the served per-country number/shape is unchanged; the
+        # explicit 90d window makes the served number deterministic (the TTL drops lazily on merge).
         "read": """
 SELECT
     reg_country,
     uniqExactMerge(distinct_aircraft_state) AS distinct_aircraft,
-    uniqMerge(observations)                 AS observations,
-    uniqMerge(military_observations)        AS military_observations
+    uniqExactMerge(observations)            AS observations,
+    uniqExactMerge(military_observations)   AS military_observations
 FROM gold_ch.agg_country_traffic_adsb_acc
+WHERE snapshot_hour >= now('UTC') - INTERVAL 90 DAY
 GROUP BY reg_country
 ORDER BY distinct_aircraft DESC
 """.strip(),
@@ -368,17 +419,20 @@ def _seed_once(client, name: str, spec: dict, *, force: bool) -> tuple[int, bool
     return int(seeded), True
 
 
-def apply(*, reseed: bool = False) -> dict:
+def apply(*, reseed: bool = False, names=None) -> dict:
     # Idempotent applier: drop superseded dbt CH tables, create the AggregatingMergeTree targets, (re)create
     # the MVs, then one-time-seed each target from existing bronze (MVs see only future INSERTs). The MV is
-    # always DROP+CREATEd so a changed body deploys; the target uses IF NOT EXISTS so its data survives.
+    # always DROP+CREATEd so a changed body deploys; the target uses IF NOT EXISTS so its data survives. names
+    # scopes the run to specific specs (the v6.3 ADS-B re-grain migration drops + reseeds only the two adsb _acc,
+    # leaving the OpenSky MVs untouched so there's no MV-recreate miss-window for the live states lane).
     from include.clickhouse import ch_client
 
+    specs = SPECS if names is None else {n: SPECS[n] for n in names}
     out: dict = {}
     client = ch_client()
     try:
         client.command(f"CREATE TABLE IF NOT EXISTS {_MARKER} (name String) ENGINE = MergeTree ORDER BY name")
-        for name, spec in SPECS.items():
+        for name, spec in specs.items():
             for old in spec.get("drop_old", ()):
                 # drop_old removes the superseded dbt TABLE once; after P5 the base name is a serving VIEW
                 # (recreated below), so skip it when it's already a view — CREATE OR REPLACE VIEW then swaps
@@ -398,10 +452,12 @@ def apply(*, reseed: bool = False) -> dict:
             log.info("ch_incremental_mvs %s: seeded_rows=%s skipped_seed=%s", name, seeded, not did_seed)
         # P5 serving views: each _acc's drop_old has already removed the old dbt table above, so CREATE OR
         # REPLACE VIEW gets a clean name. The view body is the merge-aware READS contract (no opaque state).
-        for base, read_sql in SERVING_VIEWS.items():
+        # Recreate only the processed specs' serving views so a scoped (names=) run can't touch other views.
+        views = {spec["drop_old"][0]: spec["read"] for spec in specs.values() if spec.get("drop_old")}
+        for base, read_sql in views.items():
             client.command(f"CREATE OR REPLACE VIEW gold_ch.{base} AS {read_sql}")
             log.info("ch_incremental_mvs serving view gold_ch.%s (re)created", base)
-        out["serving_views"] = sorted(SERVING_VIEWS)
+        out["serving_views"] = sorted(views)
     finally:
         client.close()
     return out

@@ -150,14 +150,40 @@ def load_adsb_pending_to_ch(engine: Optional[sa.Engine] = None, *,
     return _safe("adsb load", lambda: _load_adsb_pending_to_ch(engine, batch_files))
 
 
+def _bake_adsb_flags(table):
+    # v6.3: decode the dbFlags integer from the verbatim _raw_json and drop the blob (eliminated from CH — it was
+    # ~39% of the table and the only CH readers decoded dbFlags). absent/null/non-object/malformed -> 0, the same
+    # 2-valued contract JSONExtractInt gives. insert_arrow maps by NAME and rejects an extra arrow column, so the
+    # _raw_json column is projected out (not merely absent from the target).
+    import json
+
+    import pyarrow as pa
+
+    def _flag(raw):
+        if not raw:
+            return 0
+        try:
+            v = json.loads(raw).get("dbFlags", 0)
+        except (ValueError, TypeError, AttributeError):
+            return 0
+        try:
+            return int(v) if v is not None else 0
+        except (ValueError, TypeError):
+            return 0
+
+    flags = pa.array([_flag(r) for r in table.column("_raw_json").to_pylist()], type=pa.int32())
+    kept = [c for c in table.column_names if c != "_raw_json"]
+    return table.select(kept).append_column("db_flags", flags)
+
+
 def _read_adsb_table(fs, s3_uri: str):
     import pyarrow.parquet as pq
 
     # Read via an open handle (not the path) so pyarrow doesn't add the hive `dt=` partition column,
     # which the byte-mirror table doesn't have. CH's own s3() can't read explicit Garage keys (only
-    # wildcard globs that list), so the per-tick lane reads with pyarrow, not s3().
+    # wildcard globs that list), so the per-tick lane reads with pyarrow, not s3(). Bake db_flags + drop _raw_json.
     with fs.open_input_file(s3_uri[len("s3://"):]) as fh:
-        return pq.read_table(fh)
+        return _bake_adsb_flags(pq.read_table(fh))
 
 
 def _load_adsb_pending_to_ch(engine: Optional[sa.Engine], batch_files: Optional[int]) -> dict:
@@ -185,9 +211,9 @@ def _load_adsb_pending_to_ch(engine: Optional[sa.Engine], batch_files: Optional[
             continue
         ok, rows = insert_arrow_best_effort("adsb_states", pa.concat_tables(tables, promote_options="default"))
         if ok:
-            # INSERT+mark aren't atomic, so a crash here re-inserts on retry. adsb stays plain MergeTree in v6.1
-            # (its ReplacingMergeTree replay-backstop is deferred to P8b, bundled with the adsb_states rebuild
-            # for the _raw_json relocation); idempotency is the per-batch marker and adsb has shown no replay dup.
+            # INSERT+mark aren't atomic, so a crash here re-inserts on retry. v6.3 made adsb_states a
+            # ReplacingMergeTree keyed on (capture_ts, hex) == unique content, so a replayed batch collapses on
+            # merge (the re-inserted rows are byte-identical to the originals); the per-batch marker bounds the rest.
             am.mark_ch_loaded([p["filename"] for p in good], engine)
             loaded_rows += rows
             loaded_files += len(good)
@@ -219,17 +245,39 @@ def reset_ch_bronze() -> None:
         conn.execute(sa.text("UPDATE public.adsb_ingestion_manifest SET ch_loaded_at = NULL"))
 
 
-def backfill_adsb() -> dict:
-    # One recursive sweep of the partitioned tree (spike ~12s/19.2M), then mark all so the per-tick no-ops.
+def backfill_adsb(target_table: str = "adsb_states", mark: bool = True) -> dict:
+    # One recursive sweep of the partitioned tree (spike ~12s/19.2M), then mark all so the per-tick no-ops. v6.3:
+    # the source Parquet carries _raw_json (60 cols) but the CH table now carries the baked db_flags instead, so
+    # the SELECT can't stay SELECT * — project the passthrough cols + decode db_flags from the source _raw_json.
+    # target_table lets the migration build adsb_states_new from source. mark=False for a SCRATCH build (the data
+    # is not in the LIVE table until the swap, so advancing the manifest would strand files if the build aborts or
+    # is --build-only, and could mark a file that landed mid-sweep without being included): leave the files
+    # pending and let the per-tick loader replay them after the swap — RMT collapses the byte-identical re-insert.
+    # (Explicit structure= 636-hardening for an empty glob is a P8c item; this sweep always runs on a non-empty glob.)
     from include import adsb_manifest as am
+    from include.adsb_schema import CH_ADSB_COLUMNS
 
-    sql = (
-        f"INSERT INTO {_CH_DB}.adsb_states "
-        f"SELECT * FROM s3({_GARAGE_COLLECTION}, filename='bronze/adsb_state/**/*.parquet', format='Parquet')"
+    def q(c):
+        return f"`{c}`" if c == "desc" else c  # `desc` is reserved; every other adsb col is a plain identifier
+
+    target = _safe_identifier(target_table)
+    cols = ", ".join(q(c) for c in CH_ADSB_COLUMNS)
+    select = ", ".join(
+        "toInt32(JSONExtractInt(coalesce(_raw_json, ''), 'dbFlags'))" if c == "db_flags" else q(c)
+        for c in CH_ADSB_COLUMNS
     )
+    sql = (
+        f"INSERT INTO {_CH_DB}.{target} ({cols}) "
+        f"SELECT {select} FROM s3({_GARAGE_COLLECTION}, "
+        f"filename='bronze/adsb_state/**/*.parquet', format='Parquet')"
+    )
+    # Snapshot the pending set BEFORE the sweep: a file landing mid-sweep is recorded pending but may miss the
+    # glob, so marking the POST-sweep pending set could mark-without-loading it. Marking only the pre-sweep set
+    # leaves any mid-sweep arrival pending for the per-tick loader to replay (RMT-safe). mark=False marks nothing.
+    pending = am.pending_ch_adsb_uris() if mark else []
     if not command_best_effort(sql):
         return {"ok": False, "marked": 0}
-    marked = am.mark_ch_loaded([p["filename"] for p in am.pending_ch_adsb_uris()])
+    marked = am.mark_ch_loaded([p["filename"] for p in pending]) if mark else 0
     return {"ok": True, "marked": marked}
 
 
