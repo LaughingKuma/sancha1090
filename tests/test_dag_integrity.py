@@ -89,7 +89,12 @@ EXPECTED_DAGS = {
         "schedule": "*/15 * * * *",
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"gate"},
+        "task_ids": {"gate", "value_gate"},
+        # gate -> value_gate so the watermark advances only after bronze completeness passes (its oracle is
+        # bronze) — else a meaningless pass ages discrepancies out of the recheck window.
+        "downstream_task_ids": {
+            "gate": {"value_gate"},
+        },
         # Protection gate must run on a clean deploy without a manual unpause (compose defaults paused=true).
         "is_paused_upon_creation": False,
     },

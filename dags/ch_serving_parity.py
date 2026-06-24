@@ -35,7 +35,17 @@ def ch_serving_parity():
 
         return run_source_gate()
 
-    gate()
+    @task
+    def value_gate() -> dict:
+        # Own task so a transform/MV value defect reds distinctly from completeness/freshness and the postgres
+        # watermark dependency stays isolated.
+        from include.ch_served_value import run_value_gate
+
+        return run_value_gate()
+
+    # gate >> value_gate: its oracle is bronze, so it must only advance the watermark after completeness passes —
+    # else a meaningless pass on incomplete bronze ages the discrepancy out of the recheck window.
+    gate() >> value_gate()
 
 
 ch_serving_parity()
