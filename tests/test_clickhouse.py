@@ -163,6 +163,32 @@ def test_load_adsb_skips_unreadable_file_and_loads_rest(adsb_manifest_eng, monke
     assert [p["filename"] for p in am.pending_ch_adsb_uris(engine=adsb_manifest_eng)] == ["bad.parquet"]
 
 
+def test_drain_transformed_skips_missing_file_and_marks_only_loaded(monkeypatch):
+    # States/flights lane: a file missing from Garage is skipped (read_pending_frames returns only the present
+    # ones), so the batch isn't wedged — the present file loads + is marked, the missing one stays pending,
+    # and ok=False signals the lane didn't fully drain.
+    import polars as pl
+
+    from include import manifest, s3_helpers
+
+    batch = [{"object_uri": "s3://b/ok.parquet"}, {"object_uri": "s3://b/missing.parquet"}]
+    monkeypatch.setattr(manifest, "pending_ch_uris", lambda *_a, **_k: batch)
+    monkeypatch.setattr(s3_helpers, "garage_pyarrow_fs", lambda: object())
+    # only the present file comes back from the reader
+    monkeypatch.setattr(s3_helpers, "read_pending_frames",
+                        lambda _fs, _b: ([pl.DataFrame({"x": [1]})], [batch[0]]))
+    marked: list[str] = []
+    monkeypatch.setattr(manifest, "mark_ch_loaded",
+                        lambda uris, *_a, **_k: (marked.extend(uris), len(uris))[1])
+    monkeypatch.setattr(ch, "insert_arrow_best_effort", lambda _t, a, **_k: (True, a.num_rows))
+
+    out = ch._drain_transformed(["bronze/states"], lambda df: df, "opensky_states",
+                                batch_files=None, engine=object())
+
+    assert out == {"ch_loaded": 1, "files": 1, "ok": False}
+    assert marked == ["s3://b/ok.parquet"]   # the missing file is NOT marked → stays pending for retry/cleanup
+
+
 def test_load_adsb_non_blocking_when_insert_fails(adsb_manifest_eng, monkeypatch):
     from include import adsb_manifest as am
 

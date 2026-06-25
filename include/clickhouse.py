@@ -107,11 +107,17 @@ def _drain_transformed(prefixes: Iterable[str], transform, ch_table: str, *,
     loaded_rows = loaded_files = 0
     all_ok = True
     for batch in _chunks(pending, batch_files):
+        # read_pending_frames skips a file missing from Garage (returns only the readable ones) so one phantom
+        # can't wedge the batch; a skip means not every file was read, so the lane isn't fully ok this pass.
+        frames, good = read_pending_frames(fs, batch)
+        if len(good) != len(batch):
+            all_ok = False
+        if not frames:
+            continue
         try:
-            frames = read_pending_frames(fs, batch)
             df = transform(pl.concat(frames, how="diagonal_relaxed"))
         except Exception:
-            log.exception("CH %s: read/transform failed for a %d-file batch (skipped)", ch_table, len(batch))
+            log.exception("CH %s: transform failed for a %d-file batch (skipped)", ch_table, len(good))
             all_ok = False
             continue
         ok, rows = insert_arrow_best_effort(ch_table, df.to_arrow())
@@ -119,9 +125,9 @@ def _drain_transformed(prefixes: Iterable[str], transform, ch_table: str, *,
             # INSERT+mark aren't atomic, so a crash here re-inserts the batch on retry. Harmless now: the states
             # lane (opensky_states) is ReplacingMergeTree keyed on a committed_at-free fingerprint, so a replay
             # collapses on merge; the flights lane lands single-block and fact_flights grain-dedups downstream.
-            manifest.mark_ch_loaded([r["object_uri"] for r in batch], engine)
+            manifest.mark_ch_loaded([r["object_uri"] for r in good], engine)
             loaded_rows += rows
-            loaded_files += len(batch)
+            loaded_files += len(good)
         else:
             all_ok = False
     return {"ch_loaded": loaded_rows, "files": loaded_files, "ok": all_ok}
