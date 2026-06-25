@@ -36,6 +36,7 @@ CREATE TABLE adsb_ingestion_manifest (
     iceberg_committed_at    TIMESTAMP,
     iceberg_snapshot_id     INTEGER,
     ch_loaded_at            TIMESTAMP,
+    archived_at             TIMESTAMP,
     provenance              TEXT DEFAULT 'live'
 )
 """

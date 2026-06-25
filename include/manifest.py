@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import sqlalchemy as sa
@@ -19,12 +20,17 @@ CREATE TABLE IF NOT EXISTS public.ingestion_manifest (
     snapshot_max          BIGINT,
     row_count             INTEGER,
     iceberg_committed_at  TIMESTAMPTZ,
-    ch_loaded_at          TIMESTAMPTZ
+    ch_loaded_at          TIMESTAMPTZ,
+    archived_at           TIMESTAMPTZ
 )
 """
 
-# Self-migrate existing prod tables: the CREATE above is a no-op once the table exists.
-_MIGRATE_DDL = "ALTER TABLE public.ingestion_manifest ADD COLUMN IF NOT EXISTS ch_loaded_at TIMESTAMPTZ"
+# Self-migrate existing prod tables: the CREATE above is a no-op once the table exists. Additive only —
+# the manifest is load-bearing (postgres-analytics tenancy), never drop/recreate.
+_MIGRATE_DDL = (
+    "ALTER TABLE public.ingestion_manifest ADD COLUMN IF NOT EXISTS ch_loaded_at TIMESTAMPTZ",
+    "ALTER TABLE public.ingestion_manifest ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ",
+)
 
 _table_ready = False
 _default_engine: Optional[sa.Engine] = None
@@ -43,9 +49,10 @@ def ensure_table(engine: Optional[sa.Engine] = None) -> None:
     eng = engine or _engine()
     with eng.begin() as conn:
         conn.execute(sa.text(_DDL))
-        # ADD COLUMN IF NOT EXISTS is Postgres-only; sqlite test tables already carry it via _DDL.
+        # ADD COLUMN IF NOT EXISTS is Postgres-only; sqlite test tables already carry the columns via _DDL.
         if eng.dialect.name == "postgresql":
-            conn.execute(sa.text(_MIGRATE_DDL))
+            for ddl in _MIGRATE_DDL:
+                conn.execute(sa.text(ddl))
     if engine is None:
         _table_ready = True
 
@@ -124,6 +131,47 @@ def mark_iceberg_committed(uris: list[str], engine: Optional[sa.Engine] = None) 
 
 def mark_ch_loaded(uris: list[str], engine: Optional[sa.Engine] = None) -> int:
     return _mark_loaded(uris, "ch_loaded_at", engine)
+
+
+def mark_archived(uris: list[str], engine: Optional[sa.Engine] = None) -> int:
+    return _mark_loaded(uris, "archived_at", engine)
+
+
+def pending_archive_uris(
+    uri_prefix: str, older_than_days: int, engine: Optional[sa.Engine] = None,
+    limit: Optional[int] = None,
+) -> list[dict]:
+    # limit is the caller's per-run cap pushed into SQL so a large backlog never materializes whole. Reject a
+    # negative LIMIT (sqlite reads it as unlimited, postgres errors); 0 stays valid (no rows).
+    if limit is not None and limit < 0:
+        raise ValueError(f"pending_archive_uris: limit must not be negative, got {limit}")
+    eng = engine or _engine()
+    if engine is None and not _table_ready:
+        ensure_table()  # no-arg latches _table_ready so the DDL+ALTER runs once, not per call
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    # Typed bind so the cutoff compares as a real timestamptz in postgres (not a coerced string literal) and as
+    # SQLAlchemy's own datetime string in the sqlite test mirror — correct + warning-free in both.
+    params = {"cutoff": cutoff, "prefix": None}
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = " LIMIT :limit"
+        params["limit"] = limit
+    stmt = sa.text(
+        f"""
+        SELECT object_uri, row_count
+          FROM {_TABLE}
+         WHERE ch_loaded_at IS NOT NULL
+           AND ch_loaded_at < :cutoff
+           AND archived_at IS NULL
+           AND object_uri LIKE :prefix ESCAPE '\\'
+         ORDER BY loaded_at{limit_sql}
+        """
+    ).bindparams(sa.bindparam("cutoff", type_=sa.DateTime(timezone=True)))
+    # Escape LIKE wildcards so e.g. the _ in "flights_raw" matches literally, not any char.
+    escaped = uri_prefix.strip("/").replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+    params["prefix"] = f"%/{escaped}/%"
+    with eng.begin() as conn:
+        return [dict(r._mapping) for r in conn.execute(stmt, params).fetchall()]
 
 
 def record_load(
