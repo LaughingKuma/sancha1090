@@ -63,7 +63,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 _snapshot: dict = {"server_ts": 0.0, "aircraft": []}
-# Receiver coverage polygon — batch-computed from Trino history, loaded into RW; changes slowly.
+# Receiver coverage polygon — batch-computed from ClickHouse history, loaded into RW; changes slowly.
 _outline: list = []
 # callsign → latest known route (v5.1 backstory ring) — batch-computed daily, loaded into RW.
 _routes: dict = {}

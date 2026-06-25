@@ -18,9 +18,8 @@ BBOX_MARGIN_DEG = float(os.environ.get("RANGE_OUTLINE_BBOX_MARGIN_DEG", "6"))
 
 
 def _compute(lat0: float, lon0: float) -> list[tuple]:
-    # Farthest decoded position per bearing bin = the coverage envelope. Inline haversine (km) /1.852 → nmi,
-    # mirroring the haversine_km dbt macro the CH marts use (spike-proven exact vs Trino great_circle_distance);
-    # keeps the km/1.852 conversion identical so no meters-vs-km drift. argMax((lat,lon),dist) == Trino max_by.
+    # Farthest decoded position per bearing bin = the coverage envelope; the inline haversine /1.852 → nmi mirrors
+    # the haversine_km dbt macro the CH marts use, keeping km/1.852 identical so no meters-vs-km drift.
     bin_deg = 360.0 / BINS
     m = BBOX_MARGIN_DEG
     sql = f"""

@@ -33,6 +33,21 @@ _STATES_CONTENT_FP = (
     "position_source, snapshot_time, region, ingested_at)))"
 )
 
+# Pin only the columns each check reads (CH reads Parquet columns by name) so an empty/fresh-deploy glob returns
+# 0 rows instead of erroring 636 (CANNOT_EXTRACT_TABLE_STRUCTURE) — the gate runs */15 from first boot.
+_STATES_SRC_STRUCT = (
+    "icao24 Nullable(String), callsign Nullable(String), origin_country Nullable(String), "
+    "time_position Nullable(Int64), last_contact Nullable(Int64), longitude Nullable(Float64), "
+    "latitude Nullable(Float64), baro_altitude Nullable(Float64), on_ground Nullable(Bool), "
+    "velocity Nullable(Float64), true_track Nullable(Float64), vertical_rate Nullable(Float64), "
+    "geo_altitude Nullable(Float64), squawk Nullable(String), spi Nullable(Bool), "
+    "position_source Nullable(Int64), snapshot_time Nullable(Int32), region Nullable(String), "
+    "ingested_at Nullable(String)"
+)
+_ADSB_SRC_STRUCT = "capture_ts Nullable(Float64), hex Nullable(String)"
+_FLIGHTS_SRC_STRUCT = "ingested_at Nullable(String)"
+_ARCHIVE_SRC_STRUCT = "icao24 Nullable(String)"  # count()-only; one real column is enough to pin the schema
+
 
 def _closed_cutoff() -> int:
     # One hour-aligned cutoff (UTC epoch, 2h ago) captured ONCE per gate run and substituted as a literal into
@@ -159,25 +174,28 @@ def source_checks(cutoff: int) -> list[tuple[str, str, str, Callable[[float, flo
         ("bronze.opensky_states.content_fp",
          f"SELECT uniqExact({_STATES_CONTENT_FP}) FROM bronze.opensky_states WHERE snapshot_time < {dt}",
          f"SELECT uniqExact({_STATES_CONTENT_FP}) FROM s3({_GARAGE_COLLECTION}, "
-         f"filename='bronze/{{states,states_raw}}/**/*.parquet', format='Parquet') WHERE snapshot_time < {cutoff}",
+         f"filename='bronze/{{states,states_raw}}/**/*.parquet', format='Parquet', structure='{_STATES_SRC_STRUCT}') "
+         f"WHERE snapshot_time < {cutoff}",
          exact()),
         # (hex, capture_ts) is unique per row (== content), and uniqExact is replay-immune (v6.3 made adsb_states RMT).
         ("bronze.adsb_states.closed_grain",
          f"SELECT uniqExact((hex, capture_ts)) FROM bronze.adsb_states WHERE capture_ts < {cutoff}",
          f"SELECT uniqExact((hex, capture_ts)) FROM s3({_GARAGE_COLLECTION}, "
-         f"filename='bronze/adsb_state/**/*.parquet', format='Parquet') WHERE capture_ts < {cutoff}",
+         f"filename='bronze/adsb_state/**/*.parquet', format='Parquet', structure='{_ADSB_SRC_STRUCT}') "
+         f"WHERE capture_ts < {cutoff}",
          exact()),
         # flights: window on ingested_at, NOT first_seen — the daily 48h arrival lag decouples first_seen from load
         # time, so only ingested_at (source-frozen, on both sides) cleanly excludes the not-yet-loaded trail.
         ("bronze.opensky_flights.closed",
          f"SELECT count() FROM bronze.opensky_flights WHERE ingested_at < {dt}",
-         f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/flights_raw/**/*.parquet', format='Parquet') "
-         f"WHERE parseDateTime64BestEffortOrNull(ingested_at) < {dt}",
+         f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/flights_raw/**/*.parquet', format='Parquet', "
+         f"structure='{_FLIGHTS_SRC_STRUCT}') WHERE parseDateTime64BestEffortOrNull(ingested_at) < {dt}",
          exact()),
         # archive: frozen one-time backfill, no trail -> exact raw count (no window needed).
         ("bronze.archive_states.exact",
          "SELECT count() FROM bronze.archive_states",
-         f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/archive_states_raw/**/*.parquet', format='Parquet')",
+         f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/archive_states_raw/**/*.parquet', "
+         f"format='Parquet', structure='{_ARCHIVE_SRC_STRUCT}')",
          exact()),
     ]
 

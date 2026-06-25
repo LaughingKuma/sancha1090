@@ -253,7 +253,7 @@ def backfill_adsb(target_table: str = "adsb_states", mark: bool = True) -> dict:
     # is not in the LIVE table until the swap, so advancing the manifest would strand files if the build aborts or
     # is --build-only, and could mark a file that landed mid-sweep without being included): leave the files
     # pending and let the per-tick loader replay them after the swap — RMT collapses the byte-identical re-insert.
-    # (Explicit structure= 636-hardening for an empty glob is a P8c item; this sweep always runs on a non-empty glob.)
+    # (No explicit structure= 636-hardening here — this reload sweep only ever runs on a non-empty glob.)
     from include import adsb_manifest as am
     from include.adsb_schema import CH_ADSB_COLUMNS
 
@@ -481,41 +481,6 @@ def backfill_archive_states(batch_files: int = 1) -> dict:
     return load_archive_pending_to_ch(batch_files=batch_files)
 
 
-def backfill_live_archive_history() -> dict:
-    # One-time idempotent gap-fill of the accumulator's pre-window hours from CH bronze (the cold-start hole).
-    sql = (
-        "INSERT INTO gold_ch.agg_hourly_traffic_live_archive "
-        "WITH deduped AS ("
-        "  SELECT icao24, on_ground, velocity AS velocity_mps, toStartOfHour(snapshot_time) AS snapshot_hour "
-        "  FROM (SELECT icao24, on_ground, velocity, snapshot_time, "
-        "               row_number() OVER (PARTITION BY icao24, snapshot_time ORDER BY ingested_at DESC) AS rn "
-        f"        FROM {_CH_DB}.opensky_states "
-        "        WHERE latitude BETWEEN 20 AND 50 AND longitude BETWEEN 122 AND 165) WHERE rn = 1) "
-        "SELECT snapshot_hour, uniqExact(icao24), count(*), "
-        "       sum(case when not on_ground then 1 else 0 end), "
-        "       sum(case when on_ground then 1 else 0 end), "
-        "       cast(avg(case when not on_ground then velocity_mps * 3.6 end) as decimal(10, 2)) "
-        "FROM deduped GROUP BY snapshot_hour "
-        "HAVING snapshot_hour < (SELECT min(snapshot_hour) FROM gold_ch.agg_hourly_traffic_live_archive) "
-        "   AND snapshot_hour < toStartOfHour(now('UTC')) - INTERVAL 2 HOUR"
-    )
-    try:
-        client = ch_client()
-        try:
-            if not client.query("EXISTS TABLE gold_ch.agg_hourly_traffic_live_archive").result_rows[0][0]:
-                log.info("CH live_archive not built yet — skip the history seed (run after the first transform_marts)")
-                return {"ok": True, "seeded_hours": 0, "skipped": True}
-            before = client.query("SELECT count() FROM gold_ch.agg_hourly_traffic_live_archive").result_rows[0][0]
-            client.command(sql)
-            after = client.query("SELECT count() FROM gold_ch.agg_hourly_traffic_live_archive").result_rows[0][0]
-        finally:
-            client.close()
-        return {"ok": True, "seeded_hours": int(after) - int(before)}
-    except Exception:
-        log.exception("CH live_archive history seed failed (non-fatal)")
-        return {"ok": False, "seeded_hours": 0}
-
-
 def setup_marts() -> dict:
     # One-time at P3 deploy: the non-dbt pieces (dims come via `dbt seed --target clickhouse`).
     return {
@@ -542,8 +507,6 @@ if __name__ == "__main__":
 
     if "--marts" in sys.argv:
         out = setup_marts()
-    elif "--seed-live-archive" in sys.argv:
-        out = backfill_live_archive_history()
     else:
         out = run_backfill(reset="--no-reset" not in sys.argv)
     print(json.dumps(out, default=str))

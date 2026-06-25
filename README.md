@@ -118,8 +118,7 @@ Airflow UI at <http://localhost:38080> (admin / admin).
 bronze/dim schemas + the hex-country dictionary, then the one-shot **`clickhouse-marts-init`** seeds the
 dims, reloads the dict, and loads the aircraft registry — so the first transform run has its seed/registry/dict
 dependencies. (The optional multi-year **archive-history** backfill is a separate manual step:
-`scripts/ch_setup_marts.sh` runs the full setup including the archive, and `scripts/ch_seed_live_archive.sh`
-backfills the accumulator's pre-window history.)
+`scripts/ch_setup_marts.sh` runs the full setup including the archive.)
 
 Trigger `ingest_states` in Airflow to start populating; `tableize_states`
 and `transform_marts` cascade automatically via asset events.

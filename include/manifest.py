@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -19,7 +18,6 @@ CREATE TABLE IF NOT EXISTS public.ingestion_manifest (
     snapshot_min          BIGINT,
     snapshot_max          BIGINT,
     row_count             INTEGER,
-    iceberg_committed_at  TIMESTAMPTZ,
     ch_loaded_at          TIMESTAMPTZ,
     archived_at           TIMESTAMPTZ
 )
@@ -80,31 +78,10 @@ def _pending_uris(uri_prefix: str, marker_col: str, engine: Optional[sa.Engine])
         ]
 
 
-def pending_uris(uri_prefix: str, engine: Optional[sa.Engine] = None) -> list[dict]:
+def pending_ch_uris(uri_prefix: str, engine: Optional[sa.Engine] = None) -> list[dict]:
     # Prefix-scoped: the manifest is shared by the states and flights lanes, and each
     # tableize DAG must only drain its own URIs (v5.1).
-    return _pending_uris(uri_prefix, "iceberg_committed_at", engine)
-
-
-def pending_ch_uris(uri_prefix: str, engine: Optional[sa.Engine] = None) -> list[dict]:
-    # Independent of the Iceberg marker so a ClickHouse outage can't stall the Iceberg drain (P2).
     return _pending_uris(uri_prefix, "ch_loaded_at", engine)
-
-
-def batch_fingerprint(uris: list[str]) -> str:
-    return hashlib.sha256("\n".join(sorted(uris)).encode()).hexdigest()
-
-
-def already_appended(table, fingerprint: str) -> bool:
-    # Crash-recovery: if the last commit's snapshot already carries this batch's
-    # fingerprint, the Iceberg append succeeded on a prior attempt that died before
-    # marking the manifest. Skip the append; just reconcile the manifest.
-    current = table.current_snapshot()
-    return bool(
-        current
-        and current.summary
-        and current.summary.additional_properties.get("manifest_fingerprint") == fingerprint
-    )
 
 
 def _mark_loaded(uris: list[str], marker_col: str, engine: Optional[sa.Engine]) -> int:
@@ -123,10 +100,6 @@ def _mark_loaded(uris: list[str], marker_col: str, engine: Optional[sa.Engine]) 
     with eng.begin() as conn:
         result = conn.execute(stmt, {"uris": list(uris)})
         return result.rowcount or 0
-
-
-def mark_iceberg_committed(uris: list[str], engine: Optional[sa.Engine] = None) -> int:
-    return _mark_loaded(uris, "iceberg_committed_at", engine)
 
 
 def mark_ch_loaded(uris: list[str], engine: Optional[sa.Engine] = None) -> int:
