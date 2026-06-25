@@ -68,23 +68,24 @@ chq -q "OPTIMIZE TABLE bronze.adsb_states_new FINAL"
 # 5. VERIFY GATE — EXACT, no tolerance. capture_ts is Float64 epoch sec (compare bare, NOT toDateTime). Three checks:
 #   (a) fully merged: rows == distinct (hex,capture_ts);
 #   (b) complete vs source: closed-window distinct grain == the Garage Parquet's;
-#   (c) db_flags decode parity: a per-grain XOR fingerprint of (hex, capture_ts, the COMPLETE db_flags int) on
-#       _new == the same over the OLD live table's JSONExtractInt(_raw_json,'dbFlags') — covers ALL consumed bits
-#       (military + interesting/pia/ladd), not just bit 0, so a higher-bit decode drift can't pass.
+#   (c) db_flags decode parity on the COMMON grains: _new's full-int db_flags fingerprint, restricted to grains the
+#       live table has, == live's JSONExtractInt(_raw_json) — common-grain because live lags source by the pending
+#       files the new loader can't write to the old table (so _new is a superset; raw equality would false-fail).
 CUTOFF=$(chq -q "SELECT toUInt32(now('UTC')) - 7200")   # 2h closed window, captured once, both sides
 NEW=$(chq    -q "SELECT count() FROM bronze.adsb_states_new")
 NEWDIST=$(chq -q "SELECT uniqExact((hex, capture_ts)) FROM bronze.adsb_states_new")
 NEWCW=$(chq  -q "SELECT uniqExact((hex, capture_ts)) FROM bronze.adsb_states_new WHERE capture_ts < ${CUTOFF}")
 SRCCW=$(chq  -q "SELECT uniqExact((hex, capture_ts)) FROM s3(garage, filename='bronze/adsb_state/**/*.parquet', format='Parquet') WHERE capture_ts < ${CUTOFF}")
-# Per-grain XOR fingerprint of the COMPLETE decoded integer (every (hex,capture_ts) is unique, so each grain XORs
-# in once); a drift in ANY bit on ANY grain flips the fingerprint. toString(tuple()) is NULL-safe on the nullables.
-DBNEW=$(chq -q "SELECT groupBitXor(cityHash64(toString(tuple(hex, capture_ts, toInt32(db_flags))))) FROM bronze.adsb_states_new WHERE capture_ts < ${CUTOFF}")
-DBOLD=$(chq -q "SELECT groupBitXor(cityHash64(toString(tuple(hex, capture_ts, toInt32(JSONExtractInt(_raw_json, 'dbFlags')))))) FROM bronze.adsb_states WHERE capture_ts < ${CUTOFF}")
+# GROUP BY (hex,capture_ts) both sides — the pre-RMT old table can carry duplicate-grain rows a raw XOR would cancel
+# (masking drift); project to grain first. max() not any() so the per-grain pick is deterministic; transform_null_in=1
+# so a NULL-hex grain matches the IN (default NULL-in semantics would drop it from _new but not the old side).
+DBNEW=$(chq -q "SELECT groupBitXor(cityHash64(toString(tuple(hex, capture_ts, dbf)))) FROM (SELECT hex, capture_ts, max(toInt32(db_flags)) AS dbf FROM bronze.adsb_states_new WHERE capture_ts < ${CUTOFF} AND (hex, capture_ts) IN (SELECT hex, capture_ts FROM bronze.adsb_states WHERE capture_ts < ${CUTOFF}) GROUP BY hex, capture_ts) SETTINGS transform_null_in = 1")
+DBOLD=$(chq -q "SELECT groupBitXor(cityHash64(toString(tuple(hex, capture_ts, dbf)))) FROM (SELECT hex, capture_ts, max(toInt32(JSONExtractInt(_raw_json, 'dbFlags'))) AS dbf FROM bronze.adsb_states WHERE capture_ts < ${CUTOFF} GROUP BY hex, capture_ts)")
 echo ">> new=$NEW new_distinct=$NEWDIST | closed_grain new=$NEWCW src=$SRCCW | db_flags_fp new=$DBNEW old=$DBOLD"
 fail() { echo "ABORT: $1" >&2; chq -q "DROP TABLE IF EXISTS bronze.adsb_states_new"; exit 1; }
 [[ "$NEW"    == "$NEWDIST" ]] || fail "new not fully merged (rows $NEW != distinct $NEWDIST)"
 [[ "$NEWCW"  == "$SRCCW"   ]] || fail "new incomplete vs source (closed grain $NEWCW != $SRCCW)"
-[[ "$DBNEW"  == "$DBOLD"   ]] || fail "db_flags decode drift (complete per-grain fingerprint $DBNEW != old _raw_json $DBOLD)"
+[[ "$DBNEW"  == "$DBOLD"   ]] || fail "db_flags decode drift on common grains (fingerprint $DBNEW != live _raw_json $DBOLD)"
 echo ">> verify gate PASSED (exact)"
 
 if [[ "$BUILD_ONLY" == 1 ]]; then

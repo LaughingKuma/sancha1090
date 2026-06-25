@@ -24,6 +24,14 @@ _INGEST_DDL = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_archive_env(monkeypatch):
+    # Hermetic: in-container test runs must not inherit the prod scheduler's ARCHIVE_* env (esp.
+    # ARCHIVE_REQUIRE_MOUNT=1, which would red every tmp-dir test) — each test passes what it needs explicitly.
+    for var in ("ARCHIVE_REQUIRE_MOUNT", "ARCHIVE_COLD_PATH", "ARCHIVE_OLDER_THAN_DAYS", "ARCHIVE_MAX_FILES"):
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture
 def ingest_eng(monkeypatch):
     monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
