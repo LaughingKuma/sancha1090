@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import sqlalchemy as sa
 
 from include import adsb_manifest as am
@@ -16,6 +17,17 @@ def _adsb(eng, filename, **over):
     )
     kw.update(over)
     am.record_bundle(engine=eng, **kw)
+
+
+def _adsb_loaded(eng, filename, *, ch_loaded_at=None, archived_at=None):
+    # Far-past / far-future ch_loaded_at strings keep the age comparison wall-clock- and
+    # bind-format-independent (the year dominates lexicographically) in the sqlite mirror.
+    _adsb(eng, filename)
+    with eng.begin() as c:
+        c.execute(
+            sa.text("UPDATE adsb_ingestion_manifest SET ch_loaded_at=:ch, archived_at=:arc WHERE filename=:f"),
+            {"ch": ch_loaded_at, "arc": archived_at, "f": filename},
+        )
 
 
 def test_record_bundle_idempotent_on_filename(adsb_manifest_eng):
@@ -128,6 +140,42 @@ def test_mark_ch_loaded_idempotent_and_excludes_committed(adsb_manifest_eng):
 
 def test_mark_ch_loaded_empty_is_noop(adsb_manifest_eng):
     assert am.mark_ch_loaded([], engine=adsb_manifest_eng) == 0
+
+
+def test_pending_archive_adsb_uris_selects_aged_loaded_unarchived(adsb_manifest_eng):
+    _adsb_loaded(adsb_manifest_eng, "aged.parquet", ch_loaded_at="2020-01-01 00:00:00")
+    _adsb_loaded(adsb_manifest_eng, "recent.parquet", ch_loaded_at="2099-01-01 00:00:00")
+    _adsb_loaded(adsb_manifest_eng, "never.parquet", ch_loaded_at=None)
+    _adsb_loaded(adsb_manifest_eng, "done.parquet",
+                 ch_loaded_at="2020-01-01 00:00:00", archived_at="2021-01-01 00:00:00")
+
+    rows = am.pending_archive_adsb_uris(older_than_days=14, engine=adsb_manifest_eng)
+    assert [p["filename"] for p in rows] == ["aged.parquet"]
+    assert rows[0]["s3_uri"].endswith("aged.parquet")
+
+
+def test_mark_archived_adsb_is_idempotent_and_clears_pending(adsb_manifest_eng):
+    _adsb_loaded(adsb_manifest_eng, "a.parquet", ch_loaded_at="2020-01-01 00:00:00")
+    n1 = am.mark_archived(["a.parquet"], engine=adsb_manifest_eng)
+    n2 = am.mark_archived(["a.parquet"], engine=adsb_manifest_eng)
+    assert n1 == 1
+    assert n2 == 0
+    assert am.pending_archive_adsb_uris(older_than_days=14, engine=adsb_manifest_eng) == []
+
+
+def test_mark_archived_adsb_empty_is_noop(adsb_manifest_eng):
+    assert am.mark_archived([], engine=adsb_manifest_eng) == 0
+
+
+def test_pending_archive_adsb_uris_respects_limit(adsb_manifest_eng):
+    for i in range(3):
+        _adsb_loaded(adsb_manifest_eng, f"f{i}.parquet", ch_loaded_at="2020-01-01 00:00:00")
+    assert len(am.pending_archive_adsb_uris(older_than_days=14, engine=adsb_manifest_eng, limit=2)) == 2
+
+
+def test_pending_archive_adsb_uris_rejects_negative_limit(adsb_manifest_eng):
+    with pytest.raises(ValueError, match="limit must not be negative"):
+        am.pending_archive_adsb_uris(older_than_days=14, engine=adsb_manifest_eng, limit=-1)
 
 
 def test_mark_iceberg_committed_sets_snapshot_per_file_and_is_idempotent(adsb_manifest_eng):

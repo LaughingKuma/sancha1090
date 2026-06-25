@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import sqlalchemy as sa
@@ -31,12 +31,17 @@ CREATE TABLE IF NOT EXISTS public.adsb_ingestion_manifest (
     iceberg_committed_at    TIMESTAMPTZ,
     iceberg_snapshot_id     BIGINT,
     ch_loaded_at            TIMESTAMPTZ,
+    archived_at             TIMESTAMPTZ,
     provenance              TEXT        NOT NULL DEFAULT 'live'
 )
 """
 
-# Self-migrate existing prod tables: the CREATE above is a no-op once the table exists.
-_MIGRATE_DDL = "ALTER TABLE public.adsb_ingestion_manifest ADD COLUMN IF NOT EXISTS ch_loaded_at TIMESTAMPTZ"
+# Self-migrate existing prod tables: the CREATE above is a no-op once the table exists. Additive only —
+# the manifest is load-bearing (postgres-analytics tenancy), never drop/recreate.
+_MIGRATE_DDL = (
+    "ALTER TABLE public.adsb_ingestion_manifest ADD COLUMN IF NOT EXISTS ch_loaded_at TIMESTAMPTZ",
+    "ALTER TABLE public.adsb_ingestion_manifest ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ",
+)
 
 _INDEX_DDL = """
 CREATE INDEX IF NOT EXISTS adsb_ingestion_manifest_pending_idx
@@ -62,9 +67,10 @@ def ensure_table(engine: Optional[sa.Engine] = None) -> None:
     with eng.begin() as conn:
         conn.execute(sa.text(_DDL))
         conn.execute(sa.text(_INDEX_DDL))
-        # ADD COLUMN IF NOT EXISTS is Postgres-only; sqlite test tables already carry it via _DDL.
+        # ADD COLUMN IF NOT EXISTS is Postgres-only; sqlite test tables already carry the columns via _DDL.
         if eng.dialect.name == "postgresql":
-            conn.execute(sa.text(_MIGRATE_DDL))
+            for ddl in _MIGRATE_DDL:
+                conn.execute(sa.text(ddl))
     if engine is None:
         _table_ready = True
 
@@ -205,6 +211,55 @@ def mark_ch_loaded(filenames: list[str], engine: Optional[sa.Engine] = None) -> 
            SET ch_loaded_at = CURRENT_TIMESTAMP
          WHERE filename IN :names
            AND ch_loaded_at IS NULL
+        """
+    ).bindparams(sa.bindparam("names", expanding=True))
+    with eng.begin() as conn:
+        return conn.execute(stmt, {"names": list(filenames)}).rowcount or 0
+
+
+def pending_archive_adsb_uris(
+    older_than_days: int, engine: Optional[sa.Engine] = None, limit: Optional[int] = None
+) -> list[dict]:
+    # Selects s3_uri (the full key the archiver copies); limit is the per-run cap pushed into SQL to bound the load.
+    # Reject a negative LIMIT (sqlite reads it as unlimited, postgres errors); 0 stays valid (no rows).
+    if limit is not None and limit < 0:
+        raise ValueError(f"pending_archive_adsb_uris: limit must not be negative, got {limit}")
+    eng = engine or _engine()
+    _ensure_once(engine)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    # Typed bind so the cutoff compares as a real timestamptz in postgres (not a coerced string literal) and as
+    # SQLAlchemy's own datetime string in the sqlite test mirror — correct + warning-free in both.
+    params = {"cutoff": cutoff}
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = " LIMIT :limit"
+        params["limit"] = limit
+    stmt = sa.text(
+        f"""
+        SELECT filename, s3_uri, row_count
+          FROM {_TABLE}
+         WHERE stream = 'adsb_state'
+           AND ch_loaded_at IS NOT NULL
+           AND ch_loaded_at < :cutoff
+           AND archived_at IS NULL
+         ORDER BY landed_at{limit_sql}
+        """
+    ).bindparams(sa.bindparam("cutoff", type_=sa.DateTime(timezone=True)))
+    with eng.begin() as conn:
+        return [dict(r._mapping) for r in conn.execute(stmt, params).fetchall()]
+
+
+def mark_archived(filenames: list[str], engine: Optional[sa.Engine] = None) -> int:
+    if not filenames:
+        return 0
+    eng = engine or _engine()
+    _ensure_once(engine)
+    stmt = sa.text(
+        f"""
+        UPDATE {_TABLE}
+           SET archived_at = CURRENT_TIMESTAMP
+         WHERE filename IN :names
+           AND archived_at IS NULL
         """
     ).bindparams(sa.bindparam("names", expanding=True))
     with eng.begin() as conn:

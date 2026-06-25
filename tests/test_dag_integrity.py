@@ -135,6 +135,14 @@ EXPECTED_DAGS = {
         # Bounded-growth guarantee must run on a clean deploy without a manual unpause.
         "is_paused_upon_creation": False,
     },
+    "archive_raw_to_nas": {
+        "schedule": "0 19 * * *",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"archive_pending_to_nas"},
+        # Off-peak cold-archive maintenance; self-skips on hosts without the NFS mount, so it runs unpaused.
+        "is_paused_upon_creation": False,
+    },
 }
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from types import SimpleNamespace
 
+import pytest
 import sqlalchemy as sa
 
 from include import manifest
@@ -19,7 +20,8 @@ def _fresh_engine():
             " snapshot_max INTEGER,"
             " row_count INTEGER,"
             " iceberg_committed_at TIMESTAMP,"
-            " ch_loaded_at TIMESTAMP"
+            " ch_loaded_at TIMESTAMP,"
+            " archived_at TIMESTAMP"
             ")"
         ))
     return eng
@@ -35,6 +37,20 @@ def _insert(eng, uri, smin, smax, rows):
                 " VALUES (:uri, :smin, :smax, :rows)"
             ),
             {"uri": uri, "smin": smin, "smax": smax, "rows": rows},
+        )
+
+
+def _insert_loaded(eng, uri, *, ch_loaded_at=None, archived_at=None, rows=1):
+    # Far-past / far-future ch_loaded_at strings keep the age comparison wall-clock- and
+    # bind-format-independent (the year dominates lexicographically) in the sqlite mirror.
+    with eng.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO ingestion_manifest"
+                " (object_uri, row_count, ch_loaded_at, archived_at)"
+                " VALUES (:uri, :rows, :ch, :arc)"
+            ),
+            {"uri": uri, "rows": rows, "ch": ch_loaded_at, "arc": archived_at},
         )
 
 
@@ -155,6 +171,55 @@ def test_mark_ch_loaded_is_idempotent_and_scoped(monkeypatch):
 
 def test_mark_ch_loaded_empty_is_noop():
     assert manifest.mark_ch_loaded([], engine=_fresh_engine()) == 0
+
+
+def test_pending_archive_uris_selects_aged_loaded_unarchived(monkeypatch):
+    eng = _fresh_engine()
+    monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
+    _insert_loaded(eng, "s3://o/bronze/states_raw/dt=2026-06-01/aged.parquet", ch_loaded_at="2020-01-01 00:00:00")
+    _insert_loaded(eng, "s3://o/bronze/states_raw/dt=2026-06-01/recent.parquet", ch_loaded_at="2099-01-01 00:00:00")
+    _insert_loaded(eng, "s3://o/bronze/states_raw/dt=2026-06-01/never.parquet", ch_loaded_at=None)
+    _insert_loaded(eng, "s3://o/bronze/states_raw/dt=2026-06-01/done.parquet",
+                   ch_loaded_at="2020-01-01 00:00:00", archived_at="2021-01-01 00:00:00")
+    _insert_loaded(eng, "s3://o/bronze/flights_raw/dt=2026-06-01/other.parquet", ch_loaded_at="2020-01-01 00:00:00")
+
+    rows = manifest.pending_archive_uris("bronze/states_raw", older_than_days=14, engine=eng)
+    assert [r["object_uri"] for r in rows] == ["s3://o/bronze/states_raw/dt=2026-06-01/aged.parquet"]
+    assert rows[0]["row_count"] == 1
+
+
+def test_mark_archived_is_idempotent_and_clears_pending(monkeypatch):
+    eng = _fresh_engine()
+    monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
+    _insert_loaded(eng, "s3://o/bronze/states_raw/dt=2026-06-01/a.parquet", ch_loaded_at="2020-01-01 00:00:00")
+
+    n1 = manifest.mark_archived(["s3://o/bronze/states_raw/dt=2026-06-01/a.parquet"], engine=eng)
+    n2 = manifest.mark_archived(["s3://o/bronze/states_raw/dt=2026-06-01/a.parquet"], engine=eng)
+    assert n1 == 1
+    assert n2 == 0  # already archived
+    assert manifest.pending_archive_uris("bronze/states_raw", older_than_days=14, engine=eng) == []
+
+
+def test_mark_archived_empty_is_noop():
+    assert manifest.mark_archived([], engine=_fresh_engine()) == 0
+
+
+def test_pending_archive_uris_respects_limit(monkeypatch):
+    # The per-run cap must bound the SQL load, not just slice in Python (a huge backlog mustn't materialize whole).
+    eng = _fresh_engine()
+    monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
+    for i in range(3):
+        _insert_loaded(eng, f"s3://o/bronze/states_raw/dt=2026-06-01/a{i}.parquet", ch_loaded_at="2020-01-01 00:00:00")
+    assert len(manifest.pending_archive_uris("bronze/states_raw", older_than_days=14, engine=eng, limit=2)) == 2
+
+
+def test_pending_archive_uris_rejects_negative_limit(monkeypatch):
+    # A negative LIMIT is the dialect footgun (sqlite = unlimited, postgres errors) — reject at the helper too,
+    # not only in archive_pending. LIMIT 0 stays valid (no rows).
+    eng = _fresh_engine()
+    monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
+    with pytest.raises(ValueError, match="limit must not be negative"):
+        manifest.pending_archive_uris("bronze/states_raw", older_than_days=14, engine=eng, limit=-1)
 
 
 def _table_with_snapshot(snapshot):
