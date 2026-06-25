@@ -100,3 +100,12 @@ def test_source_checks_use_one_cutoff_on_both_sides_and_content_metric():
     states_ch, states_ref = by_name["bronze.opensky_states.content_fp"]
     fp = "cityHash64(toString(tuple("
     assert fp in states_ch and fp in states_ref, "states must compare distinct CONTENT, not (icao24,snapshot_time) grain"
+
+
+def test_source_checks_pin_explicit_s3_structure():
+    # 636-hardening: every source-side s3() read MUST pass explicit structure= so an empty/fresh-deploy glob
+    # returns 0 rows instead of CANNOT_EXTRACT_TABLE_STRUCTURE (the gate runs */15 from first boot). Guards a
+    # regression that silently drops structure= back to schema inference.
+    for name, _ch_sql, ref_sql, _cmp in p.source_checks(1_782_100_000):
+        if "s3(" in ref_sql:
+            assert "structure=" in ref_sql, f"{name}: source s3() read missing explicit structure= (636 risk)"

@@ -28,8 +28,6 @@ CREATE TABLE IF NOT EXISTS public.adsb_ingestion_manifest (
     s3_uri                  TEXT        NOT NULL,
     manifest_s3_uri         TEXT        NOT NULL,
     landed_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
-    iceberg_committed_at    TIMESTAMPTZ,
-    iceberg_snapshot_id     BIGINT,
     ch_loaded_at            TIMESTAMPTZ,
     archived_at             TIMESTAMPTZ,
     provenance              TEXT        NOT NULL DEFAULT 'live'
@@ -46,7 +44,7 @@ _MIGRATE_DDL = (
 _INDEX_DDL = """
 CREATE INDEX IF NOT EXISTS adsb_ingestion_manifest_pending_idx
     ON public.adsb_ingestion_manifest (landed_at)
-    WHERE iceberg_committed_at IS NULL AND stream = 'adsb_state'
+    WHERE ch_loaded_at IS NULL AND stream = 'adsb_state'
 """
 
 _table_ready = False
@@ -66,11 +64,15 @@ def ensure_table(engine: Optional[sa.Engine] = None) -> None:
     eng = engine or _engine()
     with eng.begin() as conn:
         conn.execute(sa.text(_DDL))
-        conn.execute(sa.text(_INDEX_DDL))
         # ADD COLUMN IF NOT EXISTS is Postgres-only; sqlite test tables already carry the columns via _DDL.
         if eng.dialect.name == "postgresql":
             for ddl in _MIGRATE_DDL:
                 conn.execute(sa.text(ddl))
+        # Index built AFTER the migrations so its ch_loaded_at predicate column is guaranteed present on an older
+        # table; DROP first so the repoint off the old iceberg_committed_at predicate self-heals (CREATE INDEX IF
+        # NOT EXISTS keeps the existing index by name, so it would never adopt the new predicate otherwise).
+        conn.execute(sa.text("DROP INDEX IF EXISTS adsb_ingestion_manifest_pending_idx"))
+        conn.execute(sa.text(_INDEX_DDL))
     if engine is None:
         _table_ready = True
 
@@ -167,37 +169,8 @@ def _pending_adsb_uris(marker_col: str, engine: Optional[sa.Engine]) -> list[dic
         return [dict(r._mapping) for r in conn.execute(stmt).fetchall()]
 
 
-def pending_adsb_uris(engine: Optional[sa.Engine] = None) -> list[dict]:
-    return _pending_adsb_uris("iceberg_committed_at", engine)
-
-
 def pending_ch_adsb_uris(engine: Optional[sa.Engine] = None) -> list[dict]:
-    # Independent of the Iceberg marker so a ClickHouse outage can't stall the Iceberg drain (P2).
     return _pending_adsb_uris("ch_loaded_at", engine)
-
-
-def mark_iceberg_committed(
-    snapshot_by_filename: dict[str, int], engine: Optional[sa.Engine] = None
-) -> int:
-    if not snapshot_by_filename:
-        return 0
-    eng = engine or _engine()
-    _ensure_once(engine)
-    stmt = sa.text(
-        f"""
-        UPDATE {_TABLE}
-           SET iceberg_committed_at = CURRENT_TIMESTAMP,
-               iceberg_snapshot_id = :sid
-         WHERE filename = :filename
-           AND iceberg_committed_at IS NULL
-        """
-    )
-    updated = 0
-    with eng.begin() as conn:
-        for filename, sid in snapshot_by_filename.items():
-            result = conn.execute(stmt, {"sid": sid, "filename": filename})
-            updated += result.rowcount or 0
-    return updated
 
 
 def mark_ch_loaded(filenames: list[str], engine: Optional[sa.Engine] = None) -> int:

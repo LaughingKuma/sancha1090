@@ -193,7 +193,7 @@ WHERE {_GEO} AND latitude IS NOT NULL AND longitude IS NOT NULL
 GROUP BY snapshot_hour
 """.strip(),
         # Live = all bronze history; history = archive hours strictly below the live floor (disjoint, no
-        # double-count) — mirrors the Trino mart's 3-segment union + backfill_live_archive_history.
+        # double-count).
         "seed": [
             f"""
 INSERT INTO gold_ch.agg_hourly_traffic_acc

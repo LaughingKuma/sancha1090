@@ -73,7 +73,7 @@ def test_already_ingested_empty_input(adsb_manifest_eng):
     assert am.already_ingested([], engine=adsb_manifest_eng) == set()
 
 
-def test_pending_adsb_uris_excludes_beast_and_committed(adsb_manifest_eng):
+def test_pending_ch_adsb_uris_excludes_beast_and_loaded(adsb_manifest_eng):
     _adsb(adsb_manifest_eng, "pending.parquet", row_count=1)
     _adsb(adsb_manifest_eng, "done.parquet", row_count=2)
     am.record_bundle(
@@ -84,11 +84,11 @@ def test_pending_adsb_uris_excludes_beast_and_committed(adsb_manifest_eng):
         frame_count=1, byte_count=1, beast_uncompressed_size=1,
         s3_uri="s3://b/x", manifest_s3_uri="s3://b/x.json",
     )
-    am.mark_iceberg_committed({"done.parquet": 123}, engine=adsb_manifest_eng)
+    am.mark_ch_loaded(["done.parquet"], engine=adsb_manifest_eng)
 
-    pending = am.pending_adsb_uris(engine=adsb_manifest_eng)
+    pending = am.pending_ch_adsb_uris(engine=adsb_manifest_eng)
     names = [p["filename"] for p in pending]
-    assert names == ["pending.parquet"]              # beast + committed excluded
+    assert names == ["pending.parquet"]              # beast (wrong stream) + CH-loaded excluded
     assert pending[0]["s3_uri"].endswith("pending.parquet")
 
 
@@ -113,20 +113,15 @@ def test_newest_adsb_rotation_end_none_when_empty(adsb_manifest_eng):
     assert am.newest_adsb_rotation_end(engine=adsb_manifest_eng) is None
 
 
-def test_pending_ch_adsb_uris_independent_of_iceberg_marker(adsb_manifest_eng):
-    # CH marker advances separately from the Iceberg marker (P2 non-blocking invariant).
+def test_pending_ch_adsb_uris_carries_s3_uri(adsb_manifest_eng):
     _adsb(adsb_manifest_eng, "a.parquet")
     _adsb(adsb_manifest_eng, "b.parquet")
-    am.mark_iceberg_committed({"a.parquet": 111}, engine=adsb_manifest_eng)
-
-    iceberg_pending = [p["filename"] for p in am.pending_adsb_uris(engine=adsb_manifest_eng)]
-    ch_pending = [p["filename"] for p in am.pending_ch_adsb_uris(engine=adsb_manifest_eng)]
-    assert iceberg_pending == ["b.parquet"]            # 'a' committed to Iceberg
-    assert sorted(ch_pending) == ["a.parquet", "b.parquet"]  # both still CH-pending
-    assert ch_pending and all("s3_uri" in p for p in am.pending_ch_adsb_uris(engine=adsb_manifest_eng))
+    ch_pending = am.pending_ch_adsb_uris(engine=adsb_manifest_eng)
+    assert sorted(p["filename"] for p in ch_pending) == ["a.parquet", "b.parquet"]
+    assert all("s3_uri" in p for p in ch_pending)
 
 
-def test_mark_ch_loaded_idempotent_and_excludes_committed(adsb_manifest_eng):
+def test_mark_ch_loaded_idempotent_and_excludes_loaded(adsb_manifest_eng):
     _adsb(adsb_manifest_eng, "a.parquet")
     _adsb(adsb_manifest_eng, "b.parquet")
     n1 = am.mark_ch_loaded(["a.parquet"], engine=adsb_manifest_eng)
@@ -134,8 +129,6 @@ def test_mark_ch_loaded_idempotent_and_excludes_committed(adsb_manifest_eng):
     assert n1 == 1
     assert n2 == 0
     assert [p["filename"] for p in am.pending_ch_adsb_uris(engine=adsb_manifest_eng)] == ["b.parquet"]
-    # CH marker must not have advanced the Iceberg marker.
-    assert len(am.pending_adsb_uris(engine=adsb_manifest_eng)) == 2
 
 
 def test_mark_ch_loaded_empty_is_noop(adsb_manifest_eng):
@@ -176,17 +169,3 @@ def test_pending_archive_adsb_uris_respects_limit(adsb_manifest_eng):
 def test_pending_archive_adsb_uris_rejects_negative_limit(adsb_manifest_eng):
     with pytest.raises(ValueError, match="limit must not be negative"):
         am.pending_archive_adsb_uris(older_than_days=14, engine=adsb_manifest_eng, limit=-1)
-
-
-def test_mark_iceberg_committed_sets_snapshot_per_file_and_is_idempotent(adsb_manifest_eng):
-    _adsb(adsb_manifest_eng, "x.parquet")
-    _adsb(adsb_manifest_eng, "y.parquet")
-    n1 = am.mark_iceberg_committed({"x.parquet": 111, "y.parquet": 222}, engine=adsb_manifest_eng)
-    n2 = am.mark_iceberg_committed(  # already set
-        {"x.parquet": 111, "y.parquet": 222}, engine=adsb_manifest_eng)
-    with adsb_manifest_eng.begin() as c:
-        sid = c.execute(sa.text(
-            "SELECT iceberg_snapshot_id FROM adsb_ingestion_manifest WHERE filename='y.parquet'")).scalar()
-    assert n1 == 2
-    assert n2 == 0          # nothing left to commit
-    assert sid == 222

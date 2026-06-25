@@ -26,10 +26,10 @@ with deduped as (
 seen as (
     select distinct icao24
     from {{ ref('fact_state_snapshots') }}
-    where snapshot_time > {% if target.type == 'clickhouse' %}now('UTC') - INTERVAL 30 DAY{% else %}current_timestamp - interval '30' day{% endif %}
+    where snapshot_time > now('UTC') - INTERVAL 30 DAY
 )
 -- Explicit AS icao24: icao24 is ambiguous across deduped(f) and seen(s), and CH keeps the
--- table qualifier in the output column name when unaliased (Trino strips it) — same fix as fct_flight_legs.
+-- table qualifier in the output column name when unaliased — same fix as fct_flight_legs.
 select
     f.icao24 as icao24,
     f.callsign,

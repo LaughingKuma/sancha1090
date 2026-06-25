@@ -3,9 +3,8 @@
 -- v5.1: the registry seam is live — dim_aircraft_registry (tag:flights) must exist before
 -- this builds; on a FRESH deploy run ingest_aircraft_db + transform_flights once first.
 with seen as (
-    {% if target.type == 'clickhouse' %}
-    -- argMaxIf(arg, capture_ts, arg IS NOT NULL) == max_by(arg, capture_ts) filter (where arg is not null).
-    -- CH bronze is case-faithful to the edge schema: `desc` is reserved (backtick), ownOp is camelCase.
+    -- argMaxIf(arg, capture_ts, arg IS NOT NULL) keeps the latest non-null value per field.
+    -- bronze is case-faithful to the edge schema: `desc` is reserved (backtick), ownOp is camelCase.
     select
         lower(hex) as icao24,
         argMaxIf(r, capture_ts, r IS NOT NULL)                as registration,
@@ -16,20 +15,6 @@ with seen as (
     from {{ source('bronze', 'adsb_states') }}
     where hex is not null
     group by lower(hex)
-    {% else %}
-    select
-        lower(hex) as icao24,
-        -- filter(non-null): a null snapshot must not blank an already-known static field.
-        max_by(r, capture_ts) filter (where r is not null)              as registration,
-        max_by(t, capture_ts) filter (where t is not null)              as typecode,
-        max_by("desc", capture_ts) filter (where "desc" is not null)    as aircraft_desc,
-        max_by(category, capture_ts) filter (where category is not null) as category,
-        -- sparse (~18%) and NOT the airline source — operating airline flows via callsign -> dim_airlines.
-        max_by(ownop, capture_ts) filter (where ownop is not null)      as operator_raw
-    from {{ source('bronze', 'adsb_states') }}
-    where hex is not null
-    group by lower(hex)
-    {% endif %}
 )
 -- Registry wins where present (authoritative identity); decoded ADS-B fields fill the rest.
 select

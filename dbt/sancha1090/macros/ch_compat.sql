@@ -1,4 +1,4 @@
-{# ClickHouse-dialect helpers. Kept tiny and used inside {% if target.type == 'clickhouse' %} branches. #}
+{# ClickHouse-dialect helpers. #}
 
 {# hex (ICAO 24-bit) -> registration country via the range_hashed dict that replaces the dim_hex_country
    range LEFT JOIN: parse the hex big-endian to a UInt32, then dictGetOrNull with the synthetic group_id=0
@@ -22,5 +22,5 @@ if(
    NULL so seed-sourced columns (e.g. dim_airports.iata/city, blank for ~1528/51 airports) read NULL instead
    of an empty string. #}
 {% macro ch_blank_null(col) -%}
-{%- if target.type == 'clickhouse' -%}nullIf({{ col }}, ''){%- else -%}{{ col }}{%- endif -%}
+nullIf({{ col }}, '')
 {%- endmacro %}

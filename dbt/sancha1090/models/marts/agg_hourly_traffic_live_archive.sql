@@ -13,9 +13,9 @@ with hourly as (
 )
 select * from hourly
 -- Settled = 2h past the hour; live rows land within minutes of their snapshot.
-where snapshot_hour < {% if target.type == 'clickhouse' %}toStartOfHour(now('UTC')) - INTERVAL 2 HOUR{% else %}date_trunc('hour', current_timestamp) - interval '2' hour{% endif %}
+where snapshot_hour < toStartOfHour(now('UTC')) - INTERVAL 2 HOUR
 {% if is_incremental() %}
   and snapshot_hour > (
-      select coalesce(max(snapshot_hour), {% if target.type == 'clickhouse' %}toDateTime('1970-01-01 00:00:00', 'UTC'){% else %}timestamp '1970-01-01 00:00:00 UTC'{% endif %}) from {{ this }}
+      select coalesce(max(snapshot_hour), toDateTime('1970-01-01 00:00:00', 'UTC')) from {{ this }}
   )
 {% endif %}

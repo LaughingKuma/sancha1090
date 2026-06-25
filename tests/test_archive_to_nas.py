@@ -19,7 +19,7 @@ _FS = LocalFileSystem()
 _INGEST_DDL = (
     "CREATE TABLE ingestion_manifest ("
     " object_uri TEXT PRIMARY KEY, loaded_at TIMESTAMP, snapshot_min INTEGER,"
-    " snapshot_max INTEGER, row_count INTEGER, iceberg_committed_at TIMESTAMP,"
+    " snapshot_max INTEGER, row_count INTEGER,"
     " ch_loaded_at TIMESTAMP, archived_at TIMESTAMP)"
 )
 

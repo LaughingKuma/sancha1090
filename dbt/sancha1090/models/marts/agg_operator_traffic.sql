@@ -5,22 +5,14 @@
 with named as (
     select
         f.*,
-        {% if target.type == 'clickhouse' %}
         trimBoth(coalesce(
             nullif(f.operator, ''),
-            case when match(f.callsign, '^[A-Z]{3}[0-9]')
+            case when match(trimBoth(f.callsign), '^[A-Z]{3}[0-9]')
                  then al.name end
         )) as operator_name
-        {% else %}
-        trim(coalesce(
-            nullif(f.operator, ''),
-            case when regexp_like(f.callsign, '^[A-Z]{3}[0-9]')
-                 then al.name end
-        )) as operator_name
-        {% endif %}
     from {{ ref('fact_flights') }} f
     left join {{ ref('dim_airlines') }} al
-        on al.icao = {% if target.type == 'clickhouse' %}substring(f.callsign, 1, 3){% else %}substr(f.callsign, 1, 3){% endif %}
+        on al.icao = substring(trimBoth(f.callsign), 1, 3)
 )
 select
     operator_name,

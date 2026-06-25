@@ -33,8 +33,6 @@ CREATE TABLE adsb_ingestion_manifest (
     s3_uri                  TEXT,
     manifest_s3_uri         TEXT,
     landed_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    iceberg_committed_at    TIMESTAMP,
-    iceberg_snapshot_id     INTEGER,
     ch_loaded_at            TIMESTAMP,
     archived_at             TIMESTAMP,
     provenance              TEXT DEFAULT 'live'

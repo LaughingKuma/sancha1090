@@ -6,8 +6,8 @@ from typing import Any
 import polars as pl
 
 
-# Column order = the bronze landing contract (was the Iceberg field-id order); the CH loader
-# selects by this list so the byte-mirror table and the per-tick load can't drift.
+# Column order = the bronze landing contract; the CH loader selects by this list so the
+# byte-mirror table and the per-tick load can't drift.
 STATES_COLUMNS = [
     "icao24", "callsign", "origin_country", "time_position", "last_contact",
     "longitude", "latitude", "baro_altitude", "on_ground", "velocity",
