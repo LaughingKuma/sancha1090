@@ -40,13 +40,24 @@ def garage_pyarrow_fs() -> S3FileSystem:
     )
 
 
-def read_pending_frames(fs: S3FileSystem, pending: list[dict]) -> list[pl.DataFrame]:
+def read_pending_frames(
+    fs: S3FileSystem, pending: list[dict]
+) -> tuple[list[pl.DataFrame], list[dict]]:
+    # Read per-file (not one batch call) and skip a manifest entry whose Garage object is missing, so a single
+    # phantom file can't wedge the whole batch — the present files still load. Returns (frames, good_rows) so the
+    # caller marks only what was read; the missing file stays pending (a transient miss retries, a permanent one
+    # is cleared by an operator). Mirrors the per-file tolerance in the ADS-B lane.
     frames: list[pl.DataFrame] = []
+    good: list[dict] = []
     for row in pending:
         uri = row["object_uri"]
         if not uri.startswith("s3://"):
             raise ValueError(f"unexpected non-s3 manifest URI: {uri}")
-        parquet_table = pq.read_table(uri[len("s3://"):], filesystem=fs)
+        try:
+            parquet_table = pq.read_table(uri[len("s3://"):], filesystem=fs)
+        except FileNotFoundError:
+            logger.warning("read_pending_frames: object missing in Garage, skipping (stays pending): %s", uri)
+            continue
         # polars from_arrow rejects non-string dict-encoded columns.
         decoded_columns = {}
         for name in parquet_table.column_names:
@@ -55,7 +66,8 @@ def read_pending_frames(fs: S3FileSystem, pending: list[dict]) -> list[pl.DataFr
                 col = col.cast(col.type.value_type)
             decoded_columns[name] = col
         frames.append(pl.from_arrow(pa.table(decoded_columns)))
-    return frames
+        good.append(row)
+    return frames, good
 
 
 def get_bucket() -> str:
