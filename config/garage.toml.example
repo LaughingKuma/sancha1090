@@ -12,6 +12,11 @@ db_engine = "lmdb"
 # Single-node cluster, no replication.
 replication_factor = 1
 
+# Single-node durability (no replica to recover from): fsync data blocks + metadata before acking a write, so an
+# unclean shutdown can't lose a page-cached, not-yet-flushed object. Both default to false in Garage.
+data_fsync = true
+metadata_fsync = true
+
 rpc_bind_addr = "[::]:3901"
 rpc_public_addr = "127.0.0.1:3901"
 rpc_secret = "REPLACE_WITH_64_HEX_CHARS"
