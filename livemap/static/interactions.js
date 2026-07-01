@@ -56,6 +56,10 @@ export function renderSpotlight() {
   if (c.nav) spEl("sp-nav").textContent = c.nav;
   spEl("sp-rng").textContent = c.rng;
   spEl("sp-brg").textContent = c.brg;
+  const ownerEl = spEl("sp-owner");
+  ownerEl.hidden = !c.owner;
+  ownerEl.previousElementSibling.hidden = !c.owner; // hide the <dt>Owner</dt> too when absent
+  if (c.owner) ownerEl.textContent = c.owner;
   spEl("sp-reg").textContent = c.reg;
   spEl("sp-code").textContent = c.code;
   spEl("sp-hex").textContent = c.hex;

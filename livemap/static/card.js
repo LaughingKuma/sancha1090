@@ -12,6 +12,46 @@ const esc = (v) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
+// Registry legal-form + filler words dropped before comparing owner to operator, so
+// "United Airlines Inc" reads as an echo of "United Airlines", not a distinct owner.
+const OWNER_STOP = new Set(["inc","incorporated","corp","corporation","co","company","llc","ltd",
+  "limited","plc","gmbh","ag","sa","kk","pty","bv","nv","na","llp","lp","the","of"]);
+const ownerTokens = (s) =>
+  new Set((s || "").toLowerCase().replace(/\(.*?\)/g, " ").replace(/[^a-z0-9 ]/g, " ")
+    .split(/\s+/).filter((t) => t && !OWNER_STOP.has(t)));
+// echo = one name's meaningful tokens are a subset of the other's (same entity + extra legal words)
+const isOwnerEcho = (own, op) => {
+  const a = ownerTokens(own), b = ownerTokens(op);
+  if (!a.size || !b.size) return true;
+  const [small, big] = a.size <= b.size ? [a, b] : [b, a];
+  for (const t of small) if (!big.has(t)) return false;
+  return true;
+};
+// English filler words are never acronyms — keep them lowercase even though they're short + ALLCAPS
+const OWNER_LOWER = new Set(["of", "the", "as", "for", "and"]);
+// Aviation lessor/bank acronyms the registry stores as words ("Smbc", "Gecas") — force uppercase;
+// length alone can't tell these from real 4+ char words like BANK/UTAH, so an explicit allowlist.
+const OWNER_ACRONYM = new Set(["smbc", "gecas", "awas", "bbam", "orix", "icbc", "sasof"]);
+// live own_op is ALLCAPS + admin noise; strip parentheticals + "DEPT NNN …", title-case,
+// keep short acronyms (UMB, US, NA, DHL) uppercase
+const cleanOwner = (s) =>
+  s.replace(/\(.*?\)/g, " ").replace(/,?\s*dept\s+\d+.*$/i, "").replace(/\s+/g, " ").trim()
+    .split(" ")
+    .map((w) => {
+      const lw = w.toLowerCase();
+      return OWNER_LOWER.has(lw) ? lw                                 // filler → always lowercase
+        : OWNER_ACRONYM.has(lw) ? w.toUpperCase()                     // known lessor acronym → uppercase
+        : w.length <= 3 && w === w.toUpperCase() ? w                  // short ALLCAPS → acronym, keep
+        : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();       // else title-case
+    })
+    .join(" ");
+const ownerDistinct = (a) => {
+  const own = (a.own_op || "").trim();
+  const op = (a.airline_name || "").trim();
+  if (!own || !op || isOwnerEcho(own, op)) return null; // absent airline OR echo → org already carries it
+  return cleanOwner(own);
+};
+
 // one builder feeds both the hover card and the spotlight so the two can never drift apart
 export function cardData(a) {
   const rate = verticalRate(a);
@@ -34,6 +74,7 @@ export function cardData(a) {
     nav: navState(a),
     model: a.year ? `${model} · ${a.year}` : model,
     org: a.airline_name || a.own_op || "Unregistered callsign",
+    owner: ownerDistinct(a),
     // Backstory ring (v5.1): latest known route for this callsign from the flights catalog.
     route: a.route ? `${routeEnd(a.route.origin_city, a.route.origin)} → ${routeEnd(a.route.dest_city, a.route.dest)}${routeSuffix(a.route)}` : null,
     alt: a.alt_baro == null ? "—" : a.alt_baro === "ground" ? "GROUND" : `${a.alt_baro} ft`,
