@@ -329,14 +329,17 @@ ORDER BY distinct_aircraft DESC
     # 4) Country traffic (rooftop ADS-B) — reg_country via the range_hashed dict, military via the baked db_flags.
     # observations/military use uniqExact((hex,capture_ts)) NOT count(): an MV can't dedup across blocks, so a
     # crash-replay would double-count under count(); uniqExact is replay-immune. v6.3 re-grain to (reg_country, hour).
+    # The inner nullable country is aliased reg_country_n (NOT reg_country): if the outer alias shadowed it, CH
+    # binds `WHERE reg_country IS NOT NULL` to the never-null assumeNotNull() alias — a no-op that leaks NULL-country
+    # (untracked) hexes as '' and diverges from the value-gate oracle. Filter the nullable column, then assumeNotNull.
     country_select = f"""
     toStartOfHour(toDateTime(capture_ts))   AS snapshot_hour,
-    assumeNotNull(reg_country)              AS reg_country,
+    assumeNotNull(reg_country_n)            AS reg_country,
     uniqExactState(hex)                     AS distinct_aircraft_state,
     uniqExactState((hex, capture_ts))       AS observations,
     uniqExactStateIf((hex, capture_ts), {_IS_MILITARY}) AS military_observations
-FROM (SELECT {_HEX_COUNTRY} AS reg_country, hex, capture_ts, db_flags FROM {_ADSB})
-WHERE reg_country IS NOT NULL
+FROM (SELECT {_HEX_COUNTRY} AS reg_country_n, hex, capture_ts, db_flags FROM {_ADSB})
+WHERE reg_country_n IS NOT NULL
 GROUP BY snapshot_hour, reg_country
 """.strip()
     specs["agg_country_traffic_adsb_acc"] = {

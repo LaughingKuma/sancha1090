@@ -41,3 +41,17 @@ def test_adsb_country_mv_reads_baked_db_flags_not_raw_json():
     assert "_raw_json" not in spec["mv"], "country MV still reads _raw_json (eliminated in v6.3)"
     assert all("_raw_json" not in s for s in spec["seed"]), "country seed still reads _raw_json"
     assert "db_flags" in spec["mv"], "country MV must decode the baked db_flags column"
+
+
+# The value-gate oracle drops NULL-country rows, so the country MV must too; guards the alias-shadowing
+# regression where assumeNotNull() no-op'd the NOT NULL filter and leaked untracked hexes as ''.
+_UNTRACKED_SRC = "(SELECT 'zzzzzz' AS hex, toFloat64(1782698401) AS capture_ts, toUInt8(0) AS db_flags)"
+
+
+def test_country_adsb_mv_drops_untracked_hex(ch_cur):
+    seed = mv.SPECS["agg_country_traffic_adsb_acc"]["seed"][0]
+    select_body = seed.split("\n", 1)[1]  # drop the leading 'INSERT INTO ...' line -> the SELECT
+    body = select_body.replace("bronze.adsb_states", _UNTRACKED_SRC)
+    ch_cur.execute(f"SELECT reg_country FROM ({body})")
+    countries = [r[0] for r in ch_cur.fetchall()]
+    assert countries == [], f"untracked hex leaked into a blank-country bucket: {countries!r}"
