@@ -12,6 +12,7 @@ export const S = {
   trailSegments: [],
   selectedSegments: [],
   trackFetchSeq: 0,
+  flightsFetchSeq: 0,
   trails: new Map(), // hex → { pts, mil }
   renderState: new Map(), // hex → { offset, snapTs, prev, t }
   lastSeen: new Map(), // hex → last capture_ts

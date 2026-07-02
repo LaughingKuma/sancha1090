@@ -6,6 +6,48 @@ import { map, overlay } from "./mapsetup.js";
 // Spotlight panel (v5.6) — pure reader of S.selected + S.snap.
 const spEl = (id) => document.getElementById(id);
 const spotlightEl = spEl("spotlight");
+
+// "Where else has it been" — recent flights from CH; rows are DOM nodes with textContent
+// (codes/callsigns/airport names are attacker-transmittable, so never innerHTML).
+const flightsWrapEl = spEl("sp-flights");
+const flightsListEl = spEl("sp-flights-list");
+const ffCode = (end) => (end && end.code) || "?";
+const ffDate = (ts) => {
+  if (ts == null) return "";
+  const d = new Date(ts * 1000);
+  return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const FLIGHTS_COLLAPSED = 5;
+function renderFlights(list, expanded = false) {
+  flightsListEl.replaceChildren();
+  flightsListEl.classList.toggle("expanded", expanded);
+  if (!list || !list.length) { flightsWrapEl.hidden = true; return; }
+  for (const f of expanded ? list : list.slice(0, FLIGHTS_COLLAPSED)) {
+    const li = document.createElement("li");
+    li.className = f.src === "rooftop" ? "ff-row ff-rooftop" : "ff-row";
+    const date = document.createElement("span");
+    date.className = "ff-date";
+    date.textContent = ffDate(f.ts);
+    const route = document.createElement("span");
+    route.className = "ff-route";
+    route.textContent = `${ffCode(f.origin)} → ${ffCode(f.dest)}`;
+    const oName = f.origin && f.origin.name, dName = f.dest && f.dest.name;
+    if (oName || dName) route.title = `${oName || ffCode(f.origin)} → ${dName || ffCode(f.dest)}`;
+    li.append(date, route);
+    flightsListEl.appendChild(li);
+  }
+  if (!expanded && list.length > FLIGHTS_COLLAPSED) {
+    const more = document.createElement("li");
+    const btn = document.createElement("button"); // native button = keyboard operability for free
+    btn.type = "button";
+    btn.className = "ff-more";
+    btn.textContent = `+ ${list.length - FLIGHTS_COLLAPSED} more`;
+    btn.addEventListener("click", () => renderFlights(list, true));
+    more.appendChild(btn);
+    flightsListEl.appendChild(more);
+  }
+  flightsWrapEl.hidden = false;
+}
 export function renderSpotlight() {
   if (!S.selected) {
     spotlightEl.hidden = true;
@@ -85,6 +127,8 @@ function clearSelection() {
   if (!S.selected) return;
   S.selected = null;
   S.trackFetchSeq++; // a deselect must orphan any in-flight /track fetch
+  S.flightsFetchSeq++; // orphan any in-flight /flights fetch
+  renderFlights(null);
   rebuildSelectedSegments();
   renderSpotlight();
 }
@@ -95,6 +139,12 @@ async function selectAircraft(hex) {
   rebuildSelectedSegments();
   renderSpotlight();
   const seq = ++S.trackFetchSeq;
+  const fseq = ++S.flightsFetchSeq;
+  renderFlights(null); // clear any prior selection's list immediately
+  fetch(`/flights/${encodeURIComponent(hex)}`, { cache: "no-store" })
+    .then((r) => r.json())
+    .then((j) => { if (fseq === S.flightsFetchSeq) renderFlights(j.flights || []); })
+    .catch(() => { /* history is best-effort — selection + track are unaffected */ });
   try {
     const j = await (await fetch(`/track/${encodeURIComponent(hex)}`, { cache: "no-store" })).json();
     if (seq !== S.trackFetchSeq) return; // a later click or deselect superseded this fetch
