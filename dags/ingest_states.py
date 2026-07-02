@@ -8,6 +8,7 @@ import pendulum
 from airflow.sdk import dag, task
 
 from include.assets import raw_states_landed
+from include.ingest_summary import raise_if_all_landings_failed
 from include.regions import REGIONS
 
 
@@ -116,6 +117,9 @@ def ingest_states():
             "per_region": results,
         }
         print(f"Ingestion summary: {summary}")
+        # all_done let us build the summary even on partial failure; red the run when EVERY region failed so a
+        # total ingest outage (e.g. the manifest DB unreachable) can't hide behind this task's success.
+        raise_if_all_landings_failed(summary, entity="regions", label="ingest_states")
         return summary
 
     results = fetch_region.expand(region=REGIONS)

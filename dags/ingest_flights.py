@@ -9,6 +9,7 @@ from airflow.sdk import dag, task
 
 from include.airports_jp import AIRPORTS_JP
 from include.assets import raw_flights_landed
+from include.ingest_summary import raise_if_all_landings_failed
 
 
 @dag(
@@ -113,6 +114,9 @@ def ingest_flights():
             "per_airport": results,
         }
         print(f"Flights ingestion summary: {summary}")
+        # all_done let us build the summary even on partial failure; red the run when EVERY airport failed so a
+        # total ingest outage (e.g. the manifest DB unreachable) can't hide behind this task's success.
+        raise_if_all_landings_failed(summary, entity="airports", label="ingest_flights")
         return summary
 
     results = fetch_airport.expand(airport=AIRPORTS_JP)
