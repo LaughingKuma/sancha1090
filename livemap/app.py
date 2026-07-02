@@ -1,6 +1,7 @@
 import asyncio
 import collections
 import contextlib
+import datetime
 import json
 import os
 import time
@@ -25,6 +26,14 @@ RW_DSN = os.environ.get(
 DB_CONNECT_TIMEOUT = int(os.environ.get("LIVEMAP_DB_CONNECT_TIMEOUT", "3"))
 DB_STATEMENT_TIMEOUT_MS = int(os.environ.get("LIVEMAP_DB_STATEMENT_TIMEOUT_MS", "3000"))
 
+# CH read-only history source (superset_ro). Reachable on the compose network as clickhouse:8123.
+CH_HOST = os.environ.get("LIVEMAP_CH_HOST", "clickhouse")
+CH_PORT = int(os.environ.get("LIVEMAP_CH_PORT", "8123"))
+CH_USER = os.environ.get("LIVEMAP_CH_USER", "superset_ro")
+CH_PASSWORD = os.environ.get("LIVEMAP_CH_PASSWORD", "")
+CH_DB = os.environ.get("LIVEMAP_CH_DB", "gold_ch")
+CH_QUERY_TIMEOUT_S = int(os.environ.get("LIVEMAP_CH_QUERY_TIMEOUT_S", "4"))
+
 # Real antenna is a secret (home rooftop) — from .env; default is the public Carrot Tower landmark.
 FEEDER_LAT = float(os.environ.get("LIVEMAP_FEEDER_LAT", "35.6434"))
 FEEDER_LON = float(os.environ.get("LIVEMAP_FEEDER_LON", "139.6692"))
@@ -46,6 +55,27 @@ TRACK_QUERY = """
     FROM mv_track_positions
     WHERE hex = %s
     ORDER BY capture_ts
+"""
+
+# "Where else has it been": clean fact_flights history + rooftop legs fresher than the OpenSky
+# watermark fill the ~48h arrival lag. UNION wrapped in a subquery so ORDER BY/LIMIT bind the whole set.
+FLIGHTS_QUERY = f"""
+    WITH (SELECT coalesce(max(last_seen), toDateTime64('1970-01-01 00:00:00', 6))
+          FROM {CH_DB}.fact_flights WHERE icao24 = {{hex:String}}) AS wm
+    SELECT * FROM (
+        SELECT 'opensky' AS src, last_seen AS ts,
+               coalesce(origin_iata, origin_icao) AS o_code, coalesce(origin_city, origin_name) AS o_name,
+               coalesce(dest_iata,   dest_icao)   AS d_code, coalesce(dest_city,   dest_name)   AS d_name, callsign
+        FROM {CH_DB}.fact_flights
+        WHERE icao24 = {{hex:String}} AND (origin_icao IS NOT NULL OR dest_icao IS NOT NULL)
+        UNION ALL
+        SELECT 'rooftop' AS src, end_time AS ts,
+               origin_icao AS o_code, origin_name AS o_name,
+               dest_icao   AS d_code, dest_name   AS d_name, callsign
+        FROM {CH_DB}.fct_flight_legs
+        WHERE icao24 = {{hex:String}} AND end_time > wm
+          AND (origin_icao IS NOT NULL OR dest_icao IS NOT NULL)
+    ) ORDER BY ts DESC LIMIT 10
 """
 
 @asynccontextmanager
@@ -70,6 +100,14 @@ _routes: dict = {}
 # (server_ts, [[hex, lon, lat, capture_ts, alt_baro], ...]) per successful poll; in-process
 # is fine now — a restart refills the full wake window in ~2 min
 _track_buf: collections.deque = collections.deque(maxlen=max(1, int(HISTORY_BUFFER_S / POLL_SECONDS)))
+# /flights is on-click + rarely changing (fact_flights is batch, rooftop legs ~hourly) — cache per hex.
+_flights_cache: dict = {}
+FLIGHTS_CACHE_TTL_S = float(os.environ.get("LIVEMAP_FLIGHTS_CACHE_TTL_S", "120"))
+try:
+    # bad env falls back instead of crashing import; floor 0 so the eviction loop always terminates
+    FLIGHTS_CACHE_MAX = max(0, int(os.environ.get("LIVEMAP_FLIGHTS_CACHE_MAX", "512")))
+except ValueError:
+    FLIGHTS_CACHE_MAX = 512
 
 
 def _rw_rows(sql, params=None, cursor_factory=None):
@@ -143,6 +181,35 @@ def _fetch_track(icao: str) -> list:
     return [[lon, lat, ct.timestamp(), alt] for lon, lat, ct, alt in rows]
 
 
+def _ch_client():
+    # lazy import: a missing clickhouse-connect degrades /flights to [], never crashes the sidecar
+    import clickhouse_connect
+    return clickhouse_connect.get_client(
+        host=CH_HOST, port=CH_PORT, username=CH_USER, password=CH_PASSWORD, database=CH_DB,
+        connect_timeout=3, send_receive_timeout=CH_QUERY_TIMEOUT_S,
+        settings={"max_execution_time": CH_QUERY_TIMEOUT_S},
+    )
+
+
+def _fetch_flights(hex_: str) -> list:
+    client = _ch_client()
+    try:
+        res = client.query(FLIGHTS_QUERY, parameters={"hex": hex_.lower()})
+    finally:
+        client.close()
+    out = []
+    for src, ts, o_code, o_name, d_code, d_name, callsign in res.result_rows:
+        out.append({
+            "src": src,
+            # CH driver returns naive UTC datetimes — pin tzinfo so process TZ can't skew epochs
+            "ts": ts.replace(tzinfo=datetime.timezone.utc).timestamp() if ts is not None else None,
+            "origin": {"code": o_code, "name": o_name},
+            "dest": {"code": d_code, "name": d_name},
+            "callsign": (callsign or "").strip() or None,
+        })
+    return out
+
+
 async def _poller() -> None:
     global _snapshot, _outline, _routes
     n = 0
@@ -192,6 +259,30 @@ async def track(icao: str) -> JSONResponse:
         points = []
     # unknown hex → empty points, 200: absence is a normal state, never a 404
     return JSONResponse({"hex": icao, "points": points})
+
+
+@app.get("/flights/{hex}")
+async def flights(hex: str) -> JSONResponse:
+    # recent origin→dest history from CH; on-click like /track, never polled. CH down → empty, never 500.
+    key = hex.lower()
+    now = time.time()
+    hit = _flights_cache.get(key)
+    if hit and hit[0] > now:
+        return JSONResponse({"hex": hex, "flights": hit[1]})
+    try:
+        rows = await asyncio.to_thread(_fetch_flights, key)
+        _flights_cache[key] = (now + FLIGHTS_CACHE_TTL_S, rows)  # cache only successes
+        if len(_flights_cache) > FLIGHTS_CACHE_MAX:
+            # entries only age out on same-key hits, so a many-hex sweep would grow the dict unboundedly
+            for k in [k for k, v in _flights_cache.items() if v[0] <= now]:
+                del _flights_cache[k]
+            while len(_flights_cache) > FLIGHTS_CACHE_MAX:
+                del _flights_cache[min(_flights_cache, key=lambda k: _flights_cache[k][0])]
+    except Exception as exc:
+        # type name distinguishes a real CH outage from a bug the broad never-500 catch would mask
+        print(f"livemap flights fetch failed: {type(exc).__name__}: {exc}", flush=True)
+        rows = []
+    return JSONResponse({"hex": hex, "flights": rows})
 
 
 @app.get("/history")
