@@ -10,9 +10,9 @@ SELECT version();                                   -- expect 26.5.1.*
 SELECT count() FROM bronze.adsb_states;             -- 0
 SELECT count() FROM bronze.opensky_states;          -- 0
 SELECT name FROM system.tables WHERE database IN ('bronze','dim') ORDER BY 1;
--- expect 5 bronze + 4 dim tables + the dictionary (dictionaries also list in system.tables):
+-- expect 5 bronze + 1 dim table + the dictionary (dictionaries also list in system.tables):
 --   adsb_states, aircraft_db, archive_states, opensky_flights, opensky_states,
---   dim_aircraft_types, dim_airlines, dim_airports, dim_hex_country, dict_hex_country
+--   dim_hex_country, dict_hex_country
 
 -- 3. column-count sanity on the big table: 60 logical cols (include/adsb_schema.py CH_ADSB_COLUMNS —
 --    v6.3 swapped _raw_json for the baked db_flags) + capture_date MATERIALIZED = 61.
