@@ -18,7 +18,7 @@ with seen as (
 )
 -- Registry wins where present (authoritative identity); decoded ADS-B fields fill the rest.
 select
-    s.icao24,
+    s.icao24 as icao24,
     coalesce(reg.registration, s.registration) as registration,
     coalesce(reg.typecode, s.typecode)         as typecode,
     s.aircraft_desc,
@@ -26,9 +26,15 @@ select
     s.operator_raw,
     reg.operator                               as operator,
     reg.owner                                  as owner,
-    reg.model                                  as model,
+    -- Registry model is sparse (~15% blank); fall back to the ICAO type designator's
+    -- generic model name so a decoded typecode still yields a human-readable model.
+    coalesce(reg.model, act.model_name)        as model,
     reg.manufacturer                           as manufacturer,
-    reg.country_of_registration                as country_of_registration
+    -- Country is fixed by the ICAO24 address block, so derive it from the hex directly
+    -- (identical to the registry's own computation) — covers airframes absent from the registry.
+    {{ ch_hex_country('s.icao24') }}           as country_of_registration
 from seen s
 left join {{ ref('dim_aircraft_registry') }} reg
     on reg.icao24 = s.icao24
+left join {{ ref('dim_aircraft_types') }} act
+    on act.typecode = coalesce(reg.typecode, s.typecode)

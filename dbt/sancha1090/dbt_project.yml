@@ -46,6 +46,8 @@ seeds:
       +column_types:
         block_lo: UInt32
         block_hi: UInt32
+    dim_aircraft_types:
+      +tags: ['adsb']
     dim_airlines:
       +tags: ['adsb']
     dim_airports:
