@@ -10,8 +10,10 @@ no cloud accounts.
 The receiver is the anchor: everything it hears is ground truth. Around it, the
 [OpenSky Network](https://opensky-network.org) adds the rings the antenna can't
 reach alone — **context** (all of Japan and the surrounding ocean, beyond its
-horizon) and, increasingly, **backstory** (where those flights came from and are
-headed). The two feeds stay on separate refresh tracks and fuse in
+horizon) and **backstory** (where those flights came from and are headed) — and
+[adsb.lol](https://adsb.lol)'s ODbL `globe_history` supplies the **deep past**,
+filling the hours before the pipeline existed. Each source keeps its own bronze
+table and refresh track; they fuse only at well-defined seams, the sharpest being
 `gold.fct_flight_legs`.
 
 > **Data model:** the full column-level schema, lineage, and entity map for every
@@ -19,20 +21,25 @@ headed). The two feeds stay on separate refresh tracks and fuse in
 
 ## Architecture
 
-The antenna feed and the OpenSky context feed both land in ClickHouse bronze and stay
-on separate refresh tracks (partitioned by dbt tag so they never race), fusing only
-in `gold.fct_flight_legs`:
+All three feeds land as Parquet in the Garage S3 zone, load into ClickHouse bronze
+via manifest-driven per-file bookkeeping, and stay on separate refresh tracks
+(partitioned by dbt tag so they never race), fusing only in `gold.fct_flight_legs`.
+Cheap aggregates skip the rebuild cycle entirely — `AggregatingMergeTree` views
+update on insert and serve through merge-aware views — and every served value is
+re-checked hourly against bronze by the `ch_serving_parity` gate:
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/architecture-dark.svg">
-    <img src="docs/architecture.svg" alt="sancha1090 medallion warehouse: a rooftop ADS-B antenna plus OpenSky context feed flow through bronze → silver → gold to ClickHouse + Superset" width="520">
+    <img src="docs/architecture.svg" alt="sancha1090 architecture: rooftop ADS-B antenna, OpenSky context feed and adsb.lol history land in a Garage S3 zone, load into ClickHouse bronze → silver → gold, serve Superset, with a NAS cold archive and an hourly parity gate" width="520">
   </picture>
 </p>
 
-Provenance for both feeds lives in Postgres (`public.ingestion_manifest` for the
-OpenSky context feed, `public.adsb_ingestion_manifest` for the rooftop antenna) —
-one row per landed file. See
+Provenance lives in Postgres (`public.ingestion_manifest` for the OpenSky and
+adsb.lol lanes, `public.adsb_ingestion_manifest` for the rooftop antenna) — one row
+per landed file, and the ingest path fails loud on anything it doesn't recognize: a
+producer manifest outside its lane's prefix or an unregistered object under the
+ADS-B prefix aborts the run rather than blending sources. See
 [`docs/datalake.md`](docs/datalake.md) for the full lineage, entity map, and per-table schema.
 
 ## Architecture evolution
@@ -60,6 +67,18 @@ self-maintaining aggregates, and an entire class of operational gotchas deleted.
 migration landed as eight reviewed, parity-gated phases; the lakehouse history lives at the
 `v5.12` tag.
 
+### What it became — a guarded warehouse (v6.1+)
+
+The post-migration releases turned the parity gates from migration scaffolding into
+permanent guarantees. Bronze became dedup-immune (`ReplacingMergeTree` with
+content fingerprints, so a crash-replay can't double-count); an hourly
+**served-value gate** re-derives what Superset shows straight from bronze and refuses
+to let discrepancies age out unseen; storage was re-grained (the verbatim raw-JSON
+column eliminated in favor of flags baked at load, per-column ZSTD/T64 codecs, a 90-day
+TTL on the exact per-hour aggregate states); a **NAS cold archive** keeps a verified
+copy-only mirror of the raw landing zone; and every lane got source-keyed names plus
+fail-loud ingest boundary guards, so no source can silently blend into another.
+
 ## Benchmarks — why ClickHouse
 
 ClickHouse **re-measured on the production box** at v6.0 (warm, server-side; the live ~21.6 M-row
@@ -84,8 +103,11 @@ The window query prunes via the `capture_ts` sort key — reading only the 2-min
 - **Ingest is no longer zero-copy.** Iceberg `add_files` registered edge Parquet for free;
   ClickHouse physically materializes it — but a full 19.2 M-row load is **12 s**, ~2 min
   projected at 200 M.
-- **Naive storage is bigger, not smaller** (3.96 GiB vs 1.5 GB Parquet) — the verbatim
-  `_raw_json` column is 39%; tuned with codecs + cold-tiering it shrinks.
+- **Naive storage was bigger, not smaller** (3.96 GiB vs 1.5 GB Parquet at v6.0, 39% of it
+  a verbatim raw-JSON column). This one got engineered away rather than accepted: v6.3
+  eliminated the raw-JSON column (its one useful field baked into a real column at load) and
+  added per-column ZSTD/T64 codecs, and v6.4 put a verified cold copy of the raw landing
+  zone on the NAS.
 - **Eventual-merge reads.** Self-maintaining aggregates need `…Merge()`/`FINAL` — a real
   footgun the mart layer must respect.
 - **Mart maintenance got cheaper:** cheap aggregates became incremental views that update on
@@ -173,13 +195,18 @@ docker compose exec postgres-airflow psql -h risingwave -p 4566 -U root -d dev -
 psql -h 127.0.0.1 -p 34566 -U root -d dev -c 'SELECT version();'
 ```
 
-The **`livemap`** service (v4.3) is a small FastAPI sidecar that polls
+The **`livemap`** service is a small FastAPI sidecar that polls
 `mv_current_aircraft` twice a second into an in-memory snapshot and serves a dark
 maplibre + deck.gl map of live aircraft over Tokyo at **<http://localhost:38100>**.
 The server-side cache is the point: every browser tab shares that one query stream,
 so N viewers never become N queries against RisingWave. Aircraft dead-reckon between
 polls (track/groundspeed, capped at 15 s of projection) and fade with position age
-over the 120 s window.
+over the 120 s window. It has grown into the platform's showcase surface: per-type
+aircraft silhouettes (ICAO Doc 8643), motion trails, a spotlight card with airline /
+registration / owner identity, click-to-select 30-minute track history, a
+recent-flights drill-down per airframe, and the antenna's measured coverage outline —
+the accumulated-history features computed in the ClickHouse batch lane and shipped to
+the map, so the hot path stays a thin 120-second window.
 
 ## Tech stack
 
@@ -219,11 +246,13 @@ sancha1090/
 ├── dags/                            # Thin Airflow DAGs
 ├── include/                         # Logic imported by DAGs
 ├── dbt/sancha1090/                  # dbt project (silver + gold marts)
+├── clickhouse/sql/                  # Warehouse init DDL (bronze/dim schemas, dictionaries)
 ├── risingwave/sql/                  # Live MV DDL (source/dims/enriched views)
 ├── livemap/                         # FastAPI + maplibre/deck.gl live aircraft map
+├── superset/                        # Superset image + seeded dashboard assets
 ├── docs/                            # Data-model reference (datalake.md)
 ├── scripts/                         # Operational helpers
-└── tests/                           # pytest: DAG integrity + credit budget
+└── tests/                           # pytest suite (300+ tests)
 ```
 
 ## Tests
@@ -232,10 +261,12 @@ sancha1090/
 docker compose exec airflow-scheduler bash -c "cd /opt/airflow && pytest tests/ -v"
 ```
 
-`tests/test_dag_integrity.py` parses every DAG and asserts the expected
-schedule and task set. `tests/test_credit_budget.py` computes the daily
-OpenSky credit cost from the live region config + ingest schedule and
-asserts it stays under the 8,000/day active-feeder quota.
+The suite (300+ tests) covers DAG integrity (every DAG parses with its expected
+schedule and task set), ingest discovery and the fail-loud boundary guards, manifest
+bookkeeping, bronze dedup contracts, parity-gate logic, ADS-B schema drift, and the
+OpenSky credit budget — `tests/test_credit_budget.py` computes the daily credit cost
+from the live region config + ingest schedule and asserts it stays under the
+8,000/day active-feeder quota.
 
 ## Acknowledgements
 

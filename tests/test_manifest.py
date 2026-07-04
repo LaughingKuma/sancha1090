@@ -24,7 +24,7 @@ def _fresh_engine():
 
 
 def _insert(eng, uri, smin, smax, rows):
-    # mirror record_load against the sqlite shim table (no schema prefix)
+    # plain fixture seed (first-write-wins is fine for seeding; record_load itself upserts)
     with eng.begin() as conn:
         conn.execute(
             sa.text(
@@ -50,17 +50,27 @@ def _insert_loaded(eng, uri, *, ch_loaded_at=None, archived_at=None, rows=1):
         )
 
 
-def test_record_load_is_idempotent_on_uri():
+def test_record_load_upserts_content_columns_on_rewrite(monkeypatch):
+    # A retry/re-fetch rewrites the same Garage key with fresh data; the record must follow the
+    # object (frozen first-write counts drifted 197 files and red the NAS archiver's rowcount gate).
     eng = _fresh_engine()
-    _insert(eng, "s3://o/bronze/states_raw/x.parquet", 100, 100, 42)
-    _insert(eng, "s3://o/bronze/states_raw/x.parquet", 200, 200, 99)
+    monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
+    manifest.record_load("s3://o/bronze/states_raw/x.parquet", 100, 100, 42, engine=eng)
     with eng.begin() as conn:
+        conn.execute(sa.text(
+            "UPDATE ingestion_manifest SET ch_loaded_at = '2020-01-01 00:00:00' WHERE object_uri = :u"
+        ), {"u": "s3://o/bronze/states_raw/x.parquet"})
+    manifest.record_load("s3://o/bronze/states_raw/x.parquet", 200, 250, 99, engine=eng)
+    with eng.begin() as conn:
+        row = conn.execute(sa.text(
+            "SELECT snapshot_min, snapshot_max, row_count, ch_loaded_at FROM ingestion_manifest"
+            " WHERE object_uri = :u"
+        ), {"u": "s3://o/bronze/states_raw/x.parquet"}).fetchone()
         count = conn.execute(sa.text("SELECT count(*) FROM ingestion_manifest")).scalar()
-        row_count = conn.execute(sa.text(
-            "SELECT row_count FROM ingestion_manifest WHERE object_uri = :u"
-        ), {"u": "s3://o/bronze/states_raw/x.parquet"}).scalar()
     assert count == 1
-    assert row_count == 42
+    assert (row[0], row[1], row[2]) == (200, 250, 99)
+    # Load/archive markers are lifecycle state, not content — a rewrite must not clear them.
+    assert row[3] == "2020-01-01 00:00:00"
 
 
 def test_engine_memoizes_default_engine(monkeypatch):

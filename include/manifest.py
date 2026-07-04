@@ -157,12 +157,18 @@ def record_load(
     eng = engine or _engine()
     if engine is None and not _table_ready:
         ensure_table()  # no-arg latches _table_ready so the DDL+ALTER runs once, not per call
+    # A retry/re-fetch rewrites the same key with fresh data — the record follows the object, else
+    # the frozen first-write count trips the NAS archiver's rowcount gate. Lifecycle markers
+    # (loaded_at, ch_loaded_at, archived_at) are untouched: rewrites change content, not state.
     stmt = sa.text(
         f"""
         INSERT INTO {_TABLE}
             (object_uri, snapshot_min, snapshot_max, row_count)
         VALUES (:uri, :smin, :smax, :rows)
-        ON CONFLICT (object_uri) DO NOTHING
+        ON CONFLICT (object_uri) DO UPDATE SET
+            snapshot_min = EXCLUDED.snapshot_min,
+            snapshot_max = EXCLUDED.snapshot_max,
+            row_count    = EXCLUDED.row_count
         """
     )
     with eng.begin() as conn:
