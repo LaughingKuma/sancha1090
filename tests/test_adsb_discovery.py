@@ -141,3 +141,26 @@ def test_validate_bundle_trusts_beast_manifest():
 def test_read_parquet_num_rows_reads_footer():
     # Real footer read against the real fixture, via LocalFileSystem (no S3 needed).
     assert ad.read_parquet_num_rows(LocalFileSystem(), str(FIXTURE)) == 5
+
+
+def test_raises_on_adsb_manifest_outside_edge_prefixes():
+    # A sidecar claiming stream=adsb_state anywhere outside bronze/adsb_state/ is a poisoning vector.
+    stem = "sangenjaya-edge_adsb_state_2026-05-29T00_5f3b"
+    key = f"{BUCKET}/bronze/adsblol_states_raw/dt=2026-05-29/{stem}.manifest.json"
+    fs = FakeFS({key: _manifest_bytes(f"{stem}.parquet", "adsb_state", row_count=1)})
+    with pytest.raises(ad.StrayManifestError):
+        list(ad.list_remote_bundles(fs, BUCKET))
+
+
+def test_raises_on_stream_prefix_disagreement():
+    stem = "sangenjaya-edge_adsb_state_2026-05-29T00_5f3b"
+    fs = FakeFS({_key("beast_raw", f"{stem}.manifest.json"): _manifest_bytes(
+        f"{stem}.parquet", "adsb_state", row_count=1)})
+    with pytest.raises(ad.StrayManifestError):
+        list(ad.list_remote_bundles(fs, BUCKET))
+
+
+def test_skips_alien_stream_sidecar_outside_edge_prefixes():
+    fs = FakeFS({f"{BUCKET}/bronze/other_lane/foo.manifest.json":
+                 _manifest_bytes("foo.parquet", "other_lane")})
+    assert list(ad.list_remote_bundles(fs, BUCKET)) == []

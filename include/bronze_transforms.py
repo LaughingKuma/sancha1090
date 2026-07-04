@@ -16,7 +16,7 @@ STATES_COLUMNS = [
 ]
 
 
-# Shared by the per-tick CH load and the archive sidecar so the two paths can't drift on the transform.
+# Shared by the per-tick CH load and the adsb.lol backfill loader so the two paths can't drift on the transform.
 def transform_states_frame(df: pl.DataFrame) -> pl.DataFrame:
     callsign_trim = pl.col("callsign").str.strip_chars()
     df = df.with_columns(

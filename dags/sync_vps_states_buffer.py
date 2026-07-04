@@ -10,7 +10,7 @@ from include.assets import raw_states_landed
 
 
 @dag(
-    dag_id="backfill_from_buffer",
+    dag_id="sync_vps_states_buffer",
     description="Sync VPS-collected parquets from R2 buffer into Garage; register in ingestion_manifest",
     start_date=pendulum.datetime(2026, 5, 1, tz="UTC"),
     schedule=None,
@@ -21,9 +21,9 @@ from include.assets import raw_states_landed
         "retries": 1,
         "retry_delay": timedelta(minutes=2),
     },
-    tags=["sancha1090", "backfill", "vps", "manual"],
+    tags=["sancha1090", "vps", "manual"],
 )
-def backfill_from_buffer():
+def sync_vps_states_buffer():
 
     @task(outlets=[raw_states_landed])
     def sync_r2_to_garage() -> dict:
@@ -99,4 +99,4 @@ def backfill_from_buffer():
     sync_r2_to_garage()
 
 
-backfill_from_buffer()
+sync_vps_states_buffer()

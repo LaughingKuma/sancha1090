@@ -8,6 +8,11 @@ from typing import Iterable, Optional
 _STREAMS = ("adsb_state", "beast_raw")
 _DATA_SUFFIX = {"adsb_state": ".parquet", "beast_raw": ".beast.gz"}
 _MANIFEST_SUFFIX = ".manifest.json"
+_STREAM_PREFIX = {"adsb_state": "bronze/adsb_state/", "beast_raw": "bronze/beast_raw/"}
+
+
+class StrayManifestError(ValueError):
+    """A producer manifest sits outside its stream's canonical prefix — cross-lane poisoning risk."""
 
 
 class RowCountMismatch(ValueError):
@@ -42,6 +47,15 @@ def list_remote_bundles(fs, bucket: str, prefix: str = "bronze") -> Iterable[Rem
 
         stream = manifest.get("stream")
         data_name = manifest.get("filename")
+
+        # Boundary guard: an edge-stream manifest outside its prefix (or an alien manifest inside
+        # one) must fail loud — the glob loader would otherwise ingest whatever it points at.
+        rel_key = manifest_key[len(f"{bucket}/"):]
+        owner = next((s for s, p in _STREAM_PREFIX.items() if rel_key.startswith(p)), None)
+        if (stream in _STREAMS or owner is not None) and owner != stream:
+            raise StrayManifestError(
+                f"{manifest_key}: stream={stream!r} does not belong under this prefix")
+
         if stream not in _STREAMS or not data_name:
             continue
         if manifest.get("complete") is not True:

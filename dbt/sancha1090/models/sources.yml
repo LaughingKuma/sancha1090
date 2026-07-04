@@ -42,9 +42,9 @@ sources:
           - name: icao24
             tests:
               - not_null
-      - name: archive_states
-        description: "Backfilled pre-pipeline state snapshots (adsb.lol globe_history, ODbL); Japan-only, 12-min cadence, provenance in `source`"
-        tags: ['history']
+      - name: adsblol_states
+        description: "Backfilled pre-pipeline state snapshots (adsb.lol globe_history, ODbL); Japan-wide box, 12-min snapshot tier, provenance in `source`"
+        tags: ['adsblol']
         columns:
           - name: icao24
             tests:

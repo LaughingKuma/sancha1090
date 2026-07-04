@@ -11,7 +11,7 @@ FT_TO_M = 0.3048
 FPM_TO_MPS = 0.00508
 
 # Mirrors include/regions.py REGIONS[0]; tests/test_regions_sync.py-style drift is
-# guarded in tests/test_archive_backfill.py.
+# guarded in tests/test_adsblol_backfill.py.
 JAPAN_BBOX = (20.0, 122.0, 50.0, 165.0)
 
 # Full resolution over the WHOLE Japan box (storage budgeted for it): every trace

@@ -10,7 +10,7 @@ models:
           - not_null
           - unique
 
-  - name: int_adsb_callsign_backfill
+  - name: int_adsb_callsign_from_opensky
     description: "Nearest OpenSky callsign per (hex, capture_ts) for ADS-B frames that decoded a position but no callsign; single-valued by row_number()=1 so the join into fct_adsb_state preserves rowcount"
     columns:
       - name: hex

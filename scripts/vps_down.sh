@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tear down the sancha1090-collector VPS and trigger the backfill DAG to drain
+# Tear down the sancha1090-collector VPS and trigger the buffer-sync DAG to drain
 # anything it captured into Garage. Auto-sources ../.env if needed.
 set -euo pipefail
 
@@ -14,7 +14,7 @@ if [ -z "${R2_ENDPOINT:-}" ] && [ -f "$ENV_FILE" ]; then
 fi
 
 SERVER_NAME="${SERVER_NAME:-${COMPOSE_PROJECT_NAME:-sancha1090}-collector}"
-BACKFILL_DAG="${BACKFILL_DAG:-backfill_from_buffer}"
+BUFFER_DAG="${BUFFER_DAG:-sync_vps_states_buffer}"
 SCHEDULER_CONTAINER="${SCHEDULER_CONTAINER:-${COMPOSE_PROJECT_NAME:-sancha1090}-airflow-scheduler-1}"
 
 if hcloud server describe "$SERVER_NAME" >/dev/null 2>&1; then
@@ -25,10 +25,10 @@ else
 fi
 
 if docker ps --format '{{.Names}}' | grep -qx "$SCHEDULER_CONTAINER"; then
-    echo "triggering $BACKFILL_DAG to drain R2 into Garage..."
-    docker exec "$SCHEDULER_CONTAINER" airflow dags unpause "$BACKFILL_DAG" >/dev/null 2>&1 || true
-    docker exec "$SCHEDULER_CONTAINER" airflow dags trigger "$BACKFILL_DAG" >/dev/null
-    echo "backfill triggered. watch progress in Airflow UI or via dag_run table."
+    echo "triggering $BUFFER_DAG to drain R2 into Garage..."
+    docker exec "$SCHEDULER_CONTAINER" airflow dags unpause "$BUFFER_DAG" >/dev/null 2>&1 || true
+    docker exec "$SCHEDULER_CONTAINER" airflow dags trigger "$BUFFER_DAG" >/dev/null
+    echo "buffer sync triggered. watch progress in Airflow UI or via dag_run table."
 else
-    echo "scheduler container '$SCHEDULER_CONTAINER' not running; trigger $BACKFILL_DAG manually once it's up."
+    echo "scheduler container '$SCHEDULER_CONTAINER' not running; trigger $BUFFER_DAG manually once it's up."
 fi

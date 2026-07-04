@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 # where ADS-B is row-preserving over bronze so plain count() suffices.
 
 _OPENSKY = "bronze.opensky_states"
-_ARCHIVE = "bronze.archive_states"
+_ADSBLOL = "bronze.adsblol_states"
 _ADSB = "bronze.adsb_states"
 _DIM_AIRLINES = "silver_ch.dim_airlines"
 
@@ -166,9 +166,10 @@ def _spec():
 
     specs = {}
 
-    # 1) Hourly traffic — accumulate-forever (replaces agg_hourly_traffic{,_history,_live_archive}).
+    # 1) Hourly traffic — accumulate-forever (replaces agg_hourly_traffic{,_adsblol,_opensky_settled}).
     specs["agg_hourly_traffic_acc"] = {
-        "drop_old": ["agg_hourly_traffic", "agg_hourly_traffic_history", "agg_hourly_traffic_live_archive"],
+        "drop_old": ["agg_hourly_traffic", "agg_hourly_traffic_history", "agg_hourly_traffic_live_archive",
+                     "agg_hourly_traffic_adsblol", "agg_hourly_traffic_opensky_settled"],
         "target": f"""
 CREATE TABLE IF NOT EXISTS gold_ch.agg_hourly_traffic_acc
 (
@@ -192,7 +193,7 @@ FROM {_OPENSKY}
 WHERE {_GEO} AND latitude IS NOT NULL AND longitude IS NOT NULL
 GROUP BY snapshot_hour
 """.strip(),
-        # Live = all bronze history; history = archive hours strictly below the live floor (disjoint, no
+        # Live = all bronze history; adsblol = adsblol hours strictly below the live floor (disjoint, no
         # double-count).
         "seed": [
             f"""
@@ -207,10 +208,10 @@ GROUP BY snapshot_hour
 INSERT INTO gold_ch.agg_hourly_traffic_acc
 SELECT
 {_HOURLY_STATE_SELECT}
-FROM {_ARCHIVE}
+FROM {_ADSBLOL}
 WHERE region = 'japan' AND latitude IS NOT NULL AND longitude IS NOT NULL
 GROUP BY snapshot_hour
--- coalesce: an empty live lane (blank-warehouse bootstrap) has a NULL floor; seed ALL archive hours then.
+-- coalesce: an empty live lane (blank-warehouse bootstrap) has a NULL floor; seed ALL adsblol hours then.
 HAVING snapshot_hour < coalesce(
     (SELECT min(toStartOfHour(snapshot_time)) FROM {_OPENSKY} WHERE {_GEO}),
     toDateTime('2099-01-01 00:00:00', 'UTC'))
@@ -399,7 +400,7 @@ SERVING_VIEWS = {spec["drop_old"][0]: spec["read"] for spec in SPECS.values() if
 
 # Explicit per-target seed-completion ledger: a target's name appears here ONLY after all of its seed
 # INSERTs succeeded. Gating on this (not on "table is non-empty") makes seeding retry-safe — a partial
-# seed (e.g. live INSERT lands, archive INSERT fails) leaves the marker absent, so the Airflow retry
+# seed (e.g. live INSERT lands, adsblol INSERT fails) leaves the marker absent, so the Airflow retry
 # truncates the partial rows and re-seeds in full instead of skipping the missing history. Single-writer:
 # the ledger has no CH-side lock, so this relies on the init DAG's max_active_runs=1 (no concurrent apply).
 _MARKER = "gold_ch.ch_mv_seeded"

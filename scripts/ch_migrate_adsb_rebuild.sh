@@ -55,11 +55,12 @@ sed -n '/^CREATE TABLE IF NOT EXISTS bronze.adsb_states$/,/SETTINGS index_granul
   | sed 's/bronze.adsb_states$/bronze.adsb_states_new/' \
   | chq --multiquery
 
-# 3. RELOAD FROM SOURCE — backfill_adsb projects the Parquet + bakes db_flags from _raw_json into _new (~23M rows).
-# mark=False: the data is in the SCRATCH table, not live, so the manifest must NOT advance (an abort/--build-only
-# would strand files); after the swap the per-tick loader replays any still-pending files (RMT collapses the dup).
+# 3. RELOAD FROM SOURCE — rebuild_adsb_from_garage projects the Parquet + bakes db_flags from _raw_json into _new
+# (~23M rows). mark=False: the data is in the SCRATCH table, not live, so the manifest must NOT advance (an
+# abort/--build-only would strand files); after the swap the per-tick loader replays any still-pending files (RMT
+# collapses the dup).
 echo ">> reloading bronze.adsb_states_new from the Garage Parquet (bakes db_flags; a few minutes)"
-py 'import json; from include import clickhouse as c; print(json.dumps(c.backfill_adsb(target_table="adsb_states_new", mark=False), default=str))'
+py 'import json; from include import clickhouse as c; print(json.dumps(c.rebuild_adsb_from_garage(target_table="adsb_states_new", mark=False), default=str))'
 
 # 4. COLLAPSE any crash-window replay from the reload (RMT). Source is unique, so this is a no-op backstop.
 echo ">> OPTIMIZE FINAL"

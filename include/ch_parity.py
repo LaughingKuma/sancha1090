@@ -46,7 +46,7 @@ _STATES_SRC_STRUCT = (
 )
 _ADSB_SRC_STRUCT = "capture_ts Nullable(Float64), hex Nullable(String)"
 _FLIGHTS_SRC_STRUCT = "ingested_at Nullable(String)"
-_ARCHIVE_SRC_STRUCT = "icao24 Nullable(String)"  # count()-only; one real column is enough to pin the schema
+_ADSBLOL_SRC_STRUCT = "icao24 Nullable(String)"  # count()-only; one real column is enough to pin the schema
 
 
 def _closed_cutoff() -> int:
@@ -168,7 +168,7 @@ def source_checks(cutoff: int) -> list[tuple[str, str, str, Callable[[float, flo
     # Build the completeness checks with a single captured `cutoff` epoch baked into BOTH sides of every window.
     # All EXACT (no eps). The metric per lane is the one that exactly counts distinct LEGIT source rows AND is
     # replay-immune: states = distinct content fp (collapses replays, keeps recaptures); adsb = (hex,capture_ts)
-    # which is unique-per-row == content and replay-immune; flights/archive = raw count (no surplus to remove).
+    # which is unique-per-row == content and replay-immune; flights/adsblol = raw count (no surplus to remove).
     dt = f"toDateTime({cutoff}, 'UTC')"
     return [
         ("bronze.opensky_states.content_fp",
@@ -191,11 +191,11 @@ def source_checks(cutoff: int) -> list[tuple[str, str, str, Callable[[float, flo
          f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/flights_raw/**/*.parquet', format='Parquet', "
          f"structure='{_FLIGHTS_SRC_STRUCT}') WHERE parseDateTime64BestEffortOrNull(ingested_at) < {dt}",
          exact()),
-        # archive: frozen one-time backfill, no trail -> exact raw count (no window needed).
-        ("bronze.archive_states.exact",
-         "SELECT count() FROM bronze.archive_states",
-         f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/archive_states_raw/**/*.parquet', "
-         f"format='Parquet', structure='{_ARCHIVE_SRC_STRUCT}')",
+        # adsblol: frozen one-time backfill, no trail -> exact raw count (no window needed).
+        ("bronze.adsblol_states.exact",
+         "SELECT count() FROM bronze.adsblol_states",
+         f"SELECT count() FROM s3({_GARAGE_COLLECTION}, filename='bronze/adsblol_states_raw/**/*.parquet', "
+         f"format='Parquet', structure='{_ADSBLOL_SRC_STRUCT}')",
          exact()),
     ]
 

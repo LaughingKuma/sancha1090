@@ -129,10 +129,10 @@ ORDER BY (snapshot_time, icao24, _dedup_fp)
 PRIMARY KEY (snapshot_time, icao24)
 SETTINGS allow_nullable_key = 1;
 
--- bronze.archive_states — opensky_states fields 1-20 + source (field 21; ODbL adsb.lol
--- provenance, include/archive_iceberg.py). Same partition/ORDER BY so dbt history unions
--- with the live lane column-for-column.
-CREATE TABLE IF NOT EXISTS bronze.archive_states
+-- bronze.adsblol_states — opensky_states fields 1-20 + source (field 21; ODbL adsb.lol provenance,
+-- include/adsblol_backfill.py). Same partition/ORDER BY so the dbt adsblol history unions with the
+-- live lane column-for-column.
+CREATE TABLE IF NOT EXISTS bronze.adsblol_states
 (
     icao24 Nullable(String), callsign Nullable(String), origin_country Nullable(String),
     time_position Nullable(DateTime64(6,'UTC')), last_contact Nullable(DateTime64(6,'UTC')),

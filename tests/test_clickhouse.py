@@ -126,16 +126,41 @@ def test_bake_adsb_flags_decodes_dbflags_and_drops_raw_json():
     assert out.column("_schema_version").to_pylist() == [1, 1, 1, 1, 1, 1]
 
 
-def test_backfill_adsb_scratch_build_does_not_mark_manifest(monkeypatch):
+class _FakeGarageFS:
+    def __init__(self, keys):
+        self._keys = keys
+
+    def find(self, path):
+        return [k for k in self._keys if k.startswith(path)]
+
+
+def _patch_rebuild_deps(monkeypatch, garage_keys, registered):
+    import include.s3_helpers as s3h
+    from include import adsb_manifest as am
+    monkeypatch.setattr(s3h, "get_s3fs", lambda: _FakeGarageFS(garage_keys))
+    monkeypatch.setattr(s3h, "get_bucket", lambda: "sancha1090")
+    monkeypatch.setattr(am, "all_adsb_state_uris", lambda: registered)
+    monkeypatch.setattr(ch, "command_best_effort", lambda *_a, **_k: True)
+
+
+def test_rebuild_adsb_refuses_unregistered_garage_objects(monkeypatch):
+    known = "sancha1090/bronze/adsb_state/dt=2026-07-01/known_5f3b.parquet"
+    stray = "sancha1090/bronze/adsb_state/dt=2026-07-01/stray.parquet"
+    _patch_rebuild_deps(monkeypatch, [known, stray], {f"s3://{known}"})
+    with pytest.raises(ch.StrayObjectError, match="stray.parquet"):
+        ch.rebuild_adsb_from_garage(target_table="adsb_states_new", mark=False)
+
+
+def test_rebuild_adsb_scratch_build_does_not_mark_manifest(monkeypatch):
     # P1: a scratch/migration build (mark=False) must NOT advance the ingestion manifest — the data isn't in the
     # live table until the swap, so marking would strand files on an abort; the per-tick loader replays post-swap.
     from include import adsb_manifest as am
-
-    monkeypatch.setattr(ch, "command_best_effort", lambda *_a, **_k: True)
+    known = "sancha1090/bronze/adsb_state/dt=2026-07-01/known_5f3b.parquet"
+    _patch_rebuild_deps(monkeypatch, [known], {f"s3://{known}"})
     marked = {"called": False}
     monkeypatch.setattr(am, "mark_ch_loaded", lambda *_a, **_k: marked.update(called=True) or 0)
 
-    out = ch.backfill_adsb(target_table="adsb_states_new", mark=False)
+    out = ch.rebuild_adsb_from_garage(target_table="adsb_states_new", mark=False)
     assert out == {"ok": True, "marked": 0}
     assert marked["called"] is False
 

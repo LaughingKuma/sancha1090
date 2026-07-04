@@ -56,10 +56,10 @@ def test_adsb_states_is_replacing_mergetree():
     assert "_dedup_fp" not in sql, "adsb needs no content fingerprint (replay twins are byte-identical)"
 
 
-def test_flights_and_archive_stay_plain_mergetree():
+def test_flights_and_adsblol_stay_plain_mergetree():
     # flights source has a legit committed_at-distinct same-grain pair, so the states fp would collapse a real
-    # row — flights (and the frozen, exact archive) must NOT be RMT-ified.
-    for table in ("opensky_flights", "archive_states"):
+    # row — flights (and the frozen, exact adsblol table) must NOT be RMT-ified.
+    for table in ("opensky_flights", "adsblol_states"):
         sql = _table_ddl(table)
         assert "ReplacingMergeTree" not in sql, f"{table} must stay plain MergeTree"
         assert "_dedup_fp" not in sql, f"{table} must not carry the states fingerprint"

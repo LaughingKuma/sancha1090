@@ -23,8 +23,8 @@ def test_exact_comparator():
 # --- run_source_gate with injected queriers (no live CH / Trino) -----------------------------------
 # The gate is EXACT, so the OK fixture must match the source row-for-row (no surplus).
 _CH_OK = {"bronze.opensky_flights": 100, "bronze.adsb_states": 100,
-          "bronze.opensky_states": 100, "bronze.archive_states": 100}
-_PARQUET = {"flights_raw": 100, "adsb_state": 100, "states,states_raw": 100, "archive_states_raw": 100}
+          "bronze.opensky_states": 100, "bronze.adsblol_states": 100}
+_PARQUET = {"flights_raw": 100, "adsb_state": 100, "states,states_raw": 100, "adsblol_states_raw": 100}
 _NOW = 1_780_000_000
 _FRESH_OK = {"agg_hourly_traffic": _NOW - 60, "fact_state_snapshots": _NOW - 60,
              "agg_country_traffic": _NOW - 60, "fct_adsb_state": _NOW - 60, "fact_flights": _NOW - 60}

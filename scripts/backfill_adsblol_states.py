@@ -16,7 +16,7 @@ sys.path.insert(0, "/opt/airflow")
 import polars as pl
 import sqlalchemy as sa
 
-from include import archive_backfill as ab
+from include import adsblol_backfill as ab
 from include import manifest
 from include.db import analytics_engine
 from include.s3_helpers import get_bucket, write_parquet
@@ -186,7 +186,7 @@ def run(start: date, end: date, min_traces: int, stop_after_missing: int, dry_ru
     missing = _MissingCounter(stop_after_missing)
     failures: list[str] = []
     for day in _day_range(start, end):
-        key = f"bronze/archive_states_raw/dt={day.isoformat()}/source=adsblol/part-000.parquet"
+        key = f"bronze/adsblol_states_raw/dt={day.isoformat()}/source=adsblol/part-000.parquet"
         uri = f"s3://{bucket}/{key}"
         if _manifest_status(uri, engine=engine) != "missing":
             print(f"{day}: already recorded — skipping")
@@ -238,7 +238,7 @@ def run(start: date, end: date, min_traces: int, stop_after_missing: int, dry_ru
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Backfill bronze.archive_states from adsb.lol globe_history")
+    p = argparse.ArgumentParser(description="Backfill bronze.adsblol_states from adsb.lol globe_history")
     p.add_argument("--start", required=True, help="first day, YYYY-MM-DD")
     p.add_argument("--end", required=True, help="last day inclusive, YYYY-MM-DD")
     p.add_argument("--min-traces", type=int, default=10_000,

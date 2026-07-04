@@ -20,7 +20,7 @@ with base as (
         -- same 2-valued contract JSONExtractInt gave), so the COALESCE(...,0) bit-tests below stay correct.
         s.db_flags as db_flags
     from {{ source('bronze', 'adsb_states') }} s
-    left join {{ ref('int_adsb_callsign_backfill') }} bf
+    left join {{ ref('int_adsb_callsign_from_opensky') }} bf
            on bf.hex = s.hex and bf.capture_ts = s.capture_ts
 )
 select

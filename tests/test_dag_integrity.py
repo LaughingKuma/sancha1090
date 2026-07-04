@@ -75,7 +75,7 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"refresh"},
     },
-    "backfill_from_buffer": {
+    "sync_vps_states_buffer": {
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {"sync_r2_to_garage"},

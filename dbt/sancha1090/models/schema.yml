@@ -59,7 +59,7 @@ models:
           - not_null
           - unique
 
-  - name: stg_states_history
+  - name: stg_states_adsblol
     description: "Backfilled pre-pipeline states (adsb.lol, ODbL); one row per (icao24, snapshot_time)"
     columns:
       - name: icao24
@@ -69,7 +69,7 @@ models:
         tests:
           - not_null
 
-  # agg_hourly_traffic_history + agg_hourly_traffic_live_archive are tag:ch_mv segments folded into the
+  # agg_hourly_traffic_adsblol + agg_hourly_traffic_opensky_settled are tag:ch_mv segments folded into the
   # self-maintaining agg_hourly_traffic_acc MV — they aren't standalone served relations on ClickHouse, so
   # their snapshot_hour not_null/unique coverage lives on the served agg_hourly_traffic view above.
 

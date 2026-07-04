@@ -117,8 +117,8 @@ Airflow UI at <http://localhost:38080> (admin / admin).
 `docker compose up` bootstraps the ClickHouse marts automatically: `clickhouse-init` provisions the
 bronze/dim schemas + the hex-country dictionary, then the one-shot **`clickhouse-marts-init`** seeds the
 dims, reloads the dict, and loads the aircraft registry — so the first transform run has its seed/registry/dict
-dependencies. (The optional multi-year **archive-history** backfill is a separate manual step:
-`scripts/ch_setup_marts.sh` runs the full setup including the archive.)
+dependencies. (The optional multi-year **adsb.lol history** backfill is a separate manual step:
+`scripts/ch_setup_marts.sh` runs the full setup including the adsb.lol history load.)
 
 Trigger `ingest_states` in Airflow to start populating; `tableize_states`
 and `transform_marts` cascade automatically via asset events.

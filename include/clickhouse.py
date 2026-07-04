@@ -25,7 +25,7 @@ _CH_DB = _safe_identifier(os.environ.get("CLICKHOUSE_DB", "bronze"))
 
 _STATES_PREFIXES = ("bronze/states_raw",)
 _FLIGHTS_PREFIXES = ("bronze/flights_raw",)
-_ARCHIVE_PREFIXES = ("bronze/archive_states_raw",)
+_ADSBLOL_PREFIXES = ("bronze/adsblol_states_raw",)
 # Cap files per INSERT so a pre-backfill drain can't OOM and each batch stays one part (no "too many parts").
 _DEFAULT_BATCH_FILES = 1000
 # adsb rows-per-file is ~40× a states region file, so use a much smaller batch to bound memory.
@@ -251,7 +251,11 @@ def reset_ch_bronze() -> None:
         conn.execute(sa.text("UPDATE public.adsb_ingestion_manifest SET ch_loaded_at = NULL"))
 
 
-def backfill_adsb(target_table: str = "adsb_states", mark: bool = True) -> dict:
+class StrayObjectError(RuntimeError):
+    """Garage objects under the ADS-B prefix that no manifest row claims — refuse to rebuild from them."""
+
+
+def rebuild_adsb_from_garage(target_table: str = "adsb_states", mark: bool = True) -> dict:
     # One recursive sweep of the partitioned tree (spike ~12s/19.2M), then mark all so the per-tick no-ops. v6.3:
     # the source Parquet carries _raw_json (60 cols) but the CH table now carries the baked db_flags instead, so
     # the SELECT can't stay SELECT * — project the passthrough cols + decode db_flags from the source _raw_json.
@@ -262,6 +266,19 @@ def backfill_adsb(target_table: str = "adsb_states", mark: bool = True) -> dict:
     # (No explicit structure= 636-hardening here — this reload sweep only ever runs on a non-empty glob.)
     from include import adsb_manifest as am
     from include.adsb_schema import CH_ADSB_COLUMNS
+
+    from include.s3_helpers import get_bucket, get_s3fs
+
+    # Membership guard: the s3() sweep ingests ANYTHING under the prefix, and a rebuild is exactly when
+    # nobody is watching. Manifest snapshot AFTER the listing narrows the just-landed race; on a false
+    # positive (file landed mid-listing), wait for ingest_adsb to register it and re-run.
+    fs = get_s3fs()
+    listed = {f"s3://{k}" for k in fs.find(f"{get_bucket()}/bronze/adsb_state/")
+              if k.endswith(".parquet")}
+    strays = sorted(listed - am.all_adsb_state_uris())
+    if strays:
+        raise StrayObjectError(
+            f"{len(strays)} unregistered parquet(s) under bronze/adsb_state/: {strays[:10]}")
 
     def q(c):
         return f"`{c}`" if c == "desc" else c  # `desc` is reserved; every other adsb col is a plain identifier
@@ -299,7 +316,7 @@ def backfill_flights(batch_files: int = 500) -> dict:
 def run_backfill(reset: bool = True) -> dict:
     if reset:
         reset_ch_bronze()
-        adsb = backfill_adsb()          # table just truncated → full s3() sweep is safe
+        adsb = rebuild_adsb_from_garage()  # table just truncated → full s3() sweep is safe
     else:
         adsb = load_adsb_pending_to_ch()  # resume: pending-only, never re-sweeps (no dup on MergeTree)
     return {"adsb": adsb, "states": backfill_states(), "flights": backfill_flights()}
@@ -393,14 +410,14 @@ def backfill_aircraft_db() -> dict:
         return {"ok": False, "rows": 0}
 
 
-def transform_archive_frame(df):
+def transform_adsblol_frame(df):
     # Reuse the shared states transform, re-attaching `source` (transform_states_frame drops it to the state cols).
     from include import bronze_transforms as bt
 
     return bt.transform_states_frame(df).with_columns(df.get_column("source").alias("source"))
 
 
-def _read_archive_frame(fs, uri: str):
+def _read_adsblol_frame(fs, uri: str):
     # Open-handle read avoids the `source=` hive-partition inference colliding with the file's own `source` column.
     import polars as pl
     import pyarrow as pa
@@ -417,13 +434,13 @@ def _read_archive_frame(fs, uri: str):
     return pl.from_arrow(pa.table(decoded))
 
 
-def _load_archive_pending_to_ch(engine: Optional[sa.Engine], batch_files: Optional[int]) -> dict:
+def _load_adsblol_pending_to_ch(engine: Optional[sa.Engine], batch_files: Optional[int]) -> dict:
     import polars as pl
 
     from include import manifest
     from include.s3_helpers import garage_pyarrow_fs
 
-    pending = manifest.pending_ch_uris(_ARCHIVE_PREFIXES[0], engine)
+    pending = manifest.pending_ch_uris(_ADSBLOL_PREFIXES[0], engine)
     if not pending:
         return {"ch_loaded": 0, "files": 0, "ok": True}
     fs = garage_pyarrow_fs()
@@ -433,24 +450,24 @@ def _load_archive_pending_to_ch(engine: Optional[sa.Engine], batch_files: Option
         frames, good = [], []
         for row in batch:
             try:
-                frames.append(_read_archive_frame(fs, row["object_uri"]))
+                frames.append(_read_adsblol_frame(fs, row["object_uri"]))
                 good.append(row)
             except Exception:
-                log.exception("CH archive: read failed for %s (skipped)", row["object_uri"])
+                log.exception("CH adsblol: read failed for %s (skipped)", row["object_uri"])
                 all_ok = False
         if not frames:
             continue
         try:
-            df = transform_archive_frame(pl.concat(frames, how="diagonal_relaxed"))
+            df = transform_adsblol_frame(pl.concat(frames, how="diagonal_relaxed"))
         except Exception:
-            log.exception("CH archive: read/transform failed for a %d-file batch (skipped)", len(frames))
+            log.exception("CH adsblol: read/transform failed for a %d-file batch (skipped)", len(frames))
             all_ok = False
             continue
-        ok, rows = insert_arrow_best_effort("archive_states", df.to_arrow())
+        ok, rows = insert_arrow_best_effort("adsblol_states", df.to_arrow())
         if ok:
-            # INSERT+mark aren't atomic. archive_states stays plain MergeTree (frozen, exact today, and a
+            # INSERT+mark aren't atomic. adsblol_states stays plain MergeTree (frozen, exact today, and a
             # states-style fingerprint can't apply — see 01_bronze.sql), so its idempotency is the truncate-first
-            # reload (backfill_archive_states), NOT a bare resume after a torn multi-block insert.
+            # reload (rebuild_adsblol_states), NOT a bare resume after a torn multi-block insert.
             manifest.mark_ch_loaded([r["object_uri"] for r in good], engine)
             loaded_rows += rows
             loaded_files += len(good)
@@ -459,39 +476,39 @@ def _load_archive_pending_to_ch(engine: Optional[sa.Engine], batch_files: Option
     return {"ch_loaded": loaded_rows, "files": loaded_files, "ok": all_ok}
 
 
-def load_archive_pending_to_ch(engine: Optional[sa.Engine] = None, *,
+def load_adsblol_pending_to_ch(engine: Optional[sa.Engine] = None, *,
                                batch_files: Optional[int] = 1) -> dict:
-    # The frozen archive backfill feeds the P3b history marts (stg_states_history -> agg_hourly_traffic).
-    # batch_files=1: each daily archive part is full-resolution (~2.6M rows), so drain one file per INSERT.
-    return _safe("archive load", lambda: _load_archive_pending_to_ch(engine, batch_files))
+    # The frozen adsblol backfill feeds the P3b history marts (stg_states_adsblol -> agg_hourly_traffic).
+    # batch_files=1: each daily adsblol part is full-resolution (~2.6M rows), so drain one file per INSERT.
+    return _safe("adsblol load", lambda: _load_adsblol_pending_to_ch(engine, batch_files))
 
 
-def backfill_archive_states(batch_files: int = 1) -> dict:
-    # P2 skips the frozen archive lane; one-time idempotent load (truncate + clear markers, then re-drain).
+def rebuild_adsblol_states(batch_files: int = 1) -> dict:
+    # P2 skips the frozen adsblol lane; one-time idempotent load (truncate + clear markers, then re-drain).
     from include import manifest
 
     try:
         client = ch_client()
         try:
-            client.command(f"TRUNCATE TABLE IF EXISTS {_CH_DB}.archive_states")
+            client.command(f"TRUNCATE TABLE IF EXISTS {_CH_DB}.adsblol_states")
         finally:
             client.close()
         manifest.ensure_table()
         with analytics_engine().begin() as conn:
             conn.execute(sa.text(
                 r"UPDATE public.ingestion_manifest SET ch_loaded_at = NULL "
-                r"WHERE object_uri LIKE '%/bronze/archive\_states\_raw/%'"))
+                r"WHERE object_uri LIKE '%/bronze/adsblol\_states\_raw/%'"))
     except Exception:
-        log.exception("CH archive_states reset failed (non-fatal)")
+        log.exception("CH adsblol_states reset failed (non-fatal)")
         return {"ok": False, "ch_loaded": 0, "files": 0}
-    return load_archive_pending_to_ch(batch_files=batch_files)
+    return load_adsblol_pending_to_ch(batch_files=batch_files)
 
 
 def setup_marts() -> dict:
     # One-time at P3 deploy: the non-dbt pieces (dims come via `dbt seed --target clickhouse`).
     return {
         "aircraft_db": backfill_aircraft_db(),
-        "archive_states": backfill_archive_states(),
+        "adsblol_states": rebuild_adsblol_states(),
         "dict_reloaded": reload_hex_country_dict(),
     }
 

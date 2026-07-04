@@ -11,7 +11,7 @@ SELECT count() FROM bronze.adsb_states;             -- 0
 SELECT count() FROM bronze.opensky_states;          -- 0
 SELECT name FROM system.tables WHERE database IN ('bronze','dim') ORDER BY 1;
 -- expect 5 bronze + 1 dim table + the dictionary (dictionaries also list in system.tables):
---   adsb_states, aircraft_db, archive_states, opensky_flights, opensky_states,
+--   adsb_states, adsblol_states, aircraft_db, opensky_flights, opensky_states,
 --   dim_hex_country, dict_hex_country
 
 -- 3. column-count sanity on the big table: 60 logical cols (include/adsb_schema.py CH_ADSB_COLUMNS —

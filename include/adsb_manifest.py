@@ -190,6 +190,15 @@ def mark_ch_loaded(filenames: list[str], engine: Optional[sa.Engine] = None) -> 
         return conn.execute(stmt, {"names": list(filenames)}).rowcount or 0
 
 
+def all_adsb_state_uris(engine: Optional[sa.Engine] = None) -> set[str]:
+    # Membership set for the rebuild guard: every adsb_state data URI the manifest has ever registered.
+    eng = engine or _engine()
+    _ensure_once(engine)
+    stmt = sa.text(f"SELECT s3_uri FROM {_TABLE} WHERE stream = 'adsb_state'")
+    with eng.begin() as conn:
+        return {r[0] for r in conn.execute(stmt).fetchall()}
+
+
 def pending_archive_adsb_uris(
     older_than_days: int, engine: Optional[sa.Engine] = None, limit: Optional[int] = None
 ) -> list[dict]:

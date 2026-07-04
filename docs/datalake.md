@@ -21,9 +21,9 @@ This document is the column-level reference for the **states/ADS-B core** of the
 two feeds above and the models built from them. Two newer lanes are **not yet documented here**:
 the v5.1 flights lane (`bronze.opensky_flights`, `silver.dim_aircraft_registry`,
 `gold.fact_flights`, `gold.agg_flight_routes`, `gold.longest_flights`,
-`gold.agg_operator_traffic`, `gold.agg_airport_daily`) and the v5.2 archive-history lane
-(`bronze.archive_states`, `silver.stg_states_history`, `gold.agg_hourly_traffic_history`,
-`gold.agg_hourly_traffic_live_archive`) — see the dbt sources and models for those.
+`gold.agg_operator_traffic`, `gold.agg_airport_daily`) and the v5.2 adsb.lol history lane
+(`bronze.adsblol_states`, `silver.stg_states_adsblol`, `gold.agg_hourly_traffic_adsblol`,
+`gold.agg_hourly_traffic_opensky_settled`) — see the dbt sources and models for those.
 
 ## Contents
 
@@ -57,7 +57,7 @@ flowchart TD
     %% ---- rooftop track: transform_adsb_silver (--select tag:adsb) ----
     BAS --> DAC["silver.dim_aircraft"]
     BAS --> FAS["silver.fct_adsb_state"]
-    BAS --> CBF["silver.int_adsb_callsign_backfill"]
+    BAS --> CBF["silver.int_adsb_callsign_from_opensky"]
     DAC --> FAS
     CBF --> FAS
     FAS --> ACTA["gold.agg_country_traffic_adsb"]
@@ -100,8 +100,8 @@ erDiagram
     fct_adsb_state }o--o| dim_aircraft : "icao24 = lower(hex)"
     fct_adsb_state }o--o| dim_airlines : "callsign_filled[1:3] = icao"
     fct_adsb_state }o--o| dim_hex_country : "from_base(hex,16) in [lo,hi]"
-    fct_adsb_state }o--o| int_adsb_callsign_backfill : "blank callsign by (hex, capture_ts)"
-    int_adsb_callsign_backfill }o--o| opensky_states : "nearest icao24 within ±window"
+    fct_adsb_state }o--o| int_adsb_callsign_from_opensky : "blank callsign by (hex, capture_ts)"
+    int_adsb_callsign_from_opensky }o--o| opensky_states : "nearest icao24 within ±window"
     fct_adsb_state ||--o{ agg_country_traffic_adsb : "by reg_country"
     fct_adsb_state ||--o{ agg_airline_traffic_adsb : "by airline"
     fact_state_snapshots }o--o| dim_airlines : "callsign[1:3] = icao"
@@ -112,8 +112,8 @@ erDiagram
 
 Two Airflow DAGs, each asset-triggered on its feed's bronze table, partition the states-core
 dbt graph by tag. `dim_*` seeds and rooftop models carry `tag:adsb`; the states core is
-otherwise untagged. (The flights and archive-history lanes, not documented here, carry
-`tag:flights` / `tag:history`.)
+otherwise untagged. (The flights and adsb.lol history lanes, not documented here, carry
+`tag:flights` / `tag:adsblol`.)
 
 | Object | Built by | Trigger asset | dbt selection |
 |--------|----------|---------------|---------------|
@@ -129,7 +129,7 @@ otherwise untagged. (The flights and archive-history lanes, not documented here,
 | `gold.agg_route_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
 | `silver.dim_aircraft` | `transform_adsb_silver` | `adsb_bronze_table` (rooftop) | `--select tag:adsb` |
 | `silver.fct_adsb_state` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
-| `silver.int_adsb_callsign_backfill` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
+| `silver.int_adsb_callsign_from_opensky` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
 | `silver.dim_airlines` / `dim_airports` / `dim_hex_country` (seeds) | `transform_adsb_silver` (`dbt seed`) | `adsb_bronze_table` | `tag:adsb` |
 | `gold.agg_country_traffic_adsb` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
 | `gold.agg_airline_traffic_adsb` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
@@ -341,7 +341,7 @@ shared across both feeds.
 | `capture_ts` | `double` | Observation capture time, epoch seconds (from bronze). |
 | `hex` | `varchar` | ICAO 24-bit address; may carry a `~` prefix for non-ICAO (TIS-B/ADS-R) addresses. |
 | `flight` | `varchar` | Raw callsign from the Mode-S frame (blank when the rarer identity message wasn't decoded). |
-| `callsign_filled` | `varchar` | `flight` if present, else the nearest OpenSky callsign for the same airframe (`int_adsb_callsign_backfill`). Drives the airline join. |
+| `callsign_filled` | `varchar` | `flight` if present, else the nearest OpenSky callsign for the same airframe (`int_adsb_callsign_from_opensky`). Drives the airline join. |
 | `callsign_source` | `varchar` | Provenance of `callsign_filled`: `adsb` (native), `opensky_backfill` (recovered), or NULL (no callsign in either feed). |
 | `lat` | `double` | WGS-84 latitude. |
 | `lon` | `double` | WGS-84 longitude. |
@@ -359,7 +359,7 @@ shared across both feeds.
 | `airline_country` | `varchar` | Country of the operating airline. |
 | `reg_country` | `varchar` | Registration country (hex-block lookup via `dim_hex_country`). |
 
-### `silver.int_adsb_callsign_backfill` — blank-callsign recovery (cross-feed)
+### `silver.int_adsb_callsign_from_opensky` — blank-callsign recovery (cross-feed)
 
 - **Grain:** one row per `(hex, capture_ts)` rooftop frame that decoded a position but **no
   callsign**, carrying the nearest OpenSky callsign for that airframe.
@@ -621,8 +621,8 @@ These predate v3.5 and are built by `transform_marts` alongside the newer marts.
 |------|----|----|------|
 | `fct_adsb_state` (`hex`) | `dim_aircraft` | `icao24 = lower(hex)` | LEFT, single-valued |
 | `fct_adsb_state` (`callsign_filled`) | `dim_airlines` | `icao = substr(trim(callsign_filled),1,3)` + `^[A-Z]{3}[0-9]` guard | LEFT |
-| `fct_adsb_state` (`hex`,`capture_ts`) | `int_adsb_callsign_backfill` | `hex` AND `capture_ts` | LEFT, single-valued |
-| `int_adsb_callsign_backfill` (`hex`) | `bronze.opensky_states` | `icao24 = hex` AND `snapshot_time` within ±`callsign_backfill_window_s` | nearest, `row_number()=1` (cross-feed) |
+| `fct_adsb_state` (`hex`,`capture_ts`) | `int_adsb_callsign_from_opensky` | `hex` AND `capture_ts` | LEFT, single-valued |
+| `int_adsb_callsign_from_opensky` (`hex`) | `bronze.opensky_states` | `icao24 = hex` AND `snapshot_time` within ±`callsign_backfill_window_s` | nearest, `row_number()=1` (cross-feed) |
 | `fct_adsb_state` (`hex`) | `dim_hex_country` | `try(from_base(lower(hex),16)) BETWEEN block_lo AND block_hi` | LEFT range |
 | `fact_state_snapshots` (`callsign`) | `dim_airlines` | `icao = substr(trim(callsign),1,3)` + guard | INNER (in `agg_airline_traffic`) |
 | `fct_flight_legs` (`first/last fix`) | `dim_airports` | nearest-airport haversine `≤ 100 km`, low-altitude only | LEFT, `row_number()=1` |
