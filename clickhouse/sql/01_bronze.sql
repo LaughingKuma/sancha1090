@@ -95,7 +95,7 @@ ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(capture_date)
 ORDER BY (capture_ts, hex)
 PRIMARY KEY capture_ts
-SETTINGS index_granularity = 8192, allow_nullable_key = 1;
+SETTINGS index_granularity = 8192, allow_nullable_key = 1, fsync_after_insert = 1, fsync_part_directory = 1;
 
 -- bronze.opensky_states — OpenSky /states (include/iceberg.py SCHEMA fields 1-20):
 -- Timestamptz -> DateTime64(6,'UTC'), Boolean -> Bool, Integer -> Int32.
@@ -127,7 +127,7 @@ ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(snapshot_date)
 ORDER BY (snapshot_time, icao24, _dedup_fp)
 PRIMARY KEY (snapshot_time, icao24)
-SETTINGS allow_nullable_key = 1;
+SETTINGS allow_nullable_key = 1, fsync_after_insert = 1, fsync_part_directory = 1;
 
 -- bronze.adsblol_states — opensky_states fields 1-20 + source (field 21; ODbL adsb.lol provenance,
 -- include/adsblol_backfill.py). Same partition/ORDER BY so the dbt adsblol history unions with the
@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS bronze.adsblol_states
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(snapshot_date)
 ORDER BY (snapshot_time, icao24)
-SETTINGS allow_nullable_key = 1;
+SETTINGS allow_nullable_key = 1, fsync_after_insert = 1, fsync_part_directory = 1;
 
 -- bronze.opensky_flights — OpenSky /flights (include/flights_iceberg.py FLIGHTS_SCHEMA
 -- fields 1-12). flight_duration_seconds is IntegerType -> Int32.
@@ -167,7 +167,7 @@ CREATE TABLE IF NOT EXISTS bronze.opensky_flights
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(first_seen_date)
 ORDER BY (first_seen, icao24)
-SETTINGS allow_nullable_key = 1;
+SETTINGS allow_nullable_key = 1, fsync_after_insert = 1, fsync_part_directory = 1;
 
 -- bronze.aircraft_db — OpenSky aircraft database subset (include/flights_iceberg.py
 -- AIRCRAFT_DB_SCHEMA fields 1-15). as_of_date is a real DateType column (field 13).

@@ -70,3 +70,12 @@ def test_no_source_check_uses_final():
     for _name, ch_sql, ref_sql, _cmp in p.source_checks(1_782_100_000):
         assert "FINAL" not in ch_sql.upper()
         assert "FINAL" not in ref_sql.upper()
+
+
+def test_per_tick_bronze_tables_fsync_inserts():
+    # The loader marks ch_loaded_at (durable postgres) right after the insert ACK; without part fsync an
+    # unclean host stop loses the part but keeps the mark (2026-07-04 reboot: 386-row phantom, gate red).
+    for table in ("opensky_states", "opensky_flights", "adsb_states", "adsblol_states"):
+        sql = _table_ddl(table)
+        assert "fsync_after_insert = 1" in sql, f"{table} must fsync parts at insert (mark-then-lose window)"
+        assert "fsync_part_directory = 1" in sql, f"{table} must fsync the part directory too"
