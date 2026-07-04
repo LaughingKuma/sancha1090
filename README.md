@@ -281,7 +281,15 @@ data open:
 - **[adsb.lol](https://adsb.lol)** — the deep history: their daily
   `globe_history` releases are one of the very few genuinely open archives of
   global aircraft traces, published under ODbL with no gatekeeping. The entire
-  pre-pipeline backfill exists because they publish what others paywall.
+  pre-pipeline backfill exists because they publish what others paywall. The same
+  full-day traces also resolve the **overflight route backstory** — where a flight
+  that only clips the antenna's ring actually came from and is headed — by walking
+  each aircraft's global trace into airport-to-airport segments
+  (`bronze.adsblol_flight_segments`, plus capture-only full paths in
+  `bronze.adsblol_flight_paths`) that `gold.fct_flight_legs` snaps to as a fallback
+  when neither endpoint fell inside the box. A daily DAG (`ingest_adsblol_routes`)
+  makes targeted per-hex fetches; a backlog driver
+  (`scripts/backfill_adsblol_routes.py`) streams the historical tarballs.
 
 If you run an ADS-B receiver, feed these networks.
 

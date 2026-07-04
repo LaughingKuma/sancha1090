@@ -7,6 +7,12 @@ models:
       - name: icao24
         tests:
           - not_null
+      - name: route_source
+        description: Attribution provenance — 'snap' (geometric endpoint snap) or 'adsblol' (global-trace fallback); NULL when unresolved.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['snap', 'adsblol']
 
   - name: agg_route_traffic
     description: "Top inferred origin-dest routes (both endpoints resolved, origin != dest) for the deck.gl arc map"

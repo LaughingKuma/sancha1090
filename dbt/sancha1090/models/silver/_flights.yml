@@ -9,3 +9,15 @@ models:
         tests:
           - not_null
           - unique
+  - name: stg_flight_segments_adsblol
+    description: Global flight segments extracted from adsb.lol full traces (route backstory lane).
+    columns:
+      - name: icao24
+        tests: [not_null]
+      - name: seg_start_time
+        tests: [not_null]
+  - name: int_flight_routes_adsblol
+    description: Airport-snapped segment endpoints; NULL endpoint = cruise or no airport within snap range.
+    columns:
+      - name: icao24
+        tests: [not_null]

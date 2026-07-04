@@ -169,6 +169,41 @@ PARTITION BY toYYYYMM(first_seen_date)
 ORDER BY (first_seen, icao24)
 SETTINGS allow_nullable_key = 1, fsync_after_insert = 1, fsync_part_directory = 1;
 
+-- bronze.adsblol_flight_segments — global flight segments from adsb.lol full traces
+-- (include/adsblol_routes.py); RMT versioned on ingested_at so a refetched trace upserts.
+CREATE TABLE IF NOT EXISTS bronze.adsblol_flight_segments
+(
+    icao24 Nullable(String), callsign Nullable(String),
+    seg_start Nullable(DateTime64(6,'UTC')), seg_end Nullable(DateTime64(6,'UTC')),
+    num_fixes Nullable(Int64),
+    first_lat Nullable(Float64), first_lon Nullable(Float64),
+    first_alt_ft Nullable(Float64), first_on_ground Nullable(Bool),
+    last_lat Nullable(Float64), last_lon Nullable(Float64),
+    last_alt_ft Nullable(Float64), last_on_ground Nullable(Bool),
+    trace_day Date, source Nullable(String),
+    ingested_at DateTime64(6,'UTC'), committed_at Nullable(DateTime64(6,'UTC'))
+)
+ENGINE = ReplacingMergeTree(ingested_at)
+PARTITION BY toYYYYMM(trace_day)
+ORDER BY (trace_day, icao24, seg_start)
+SETTINGS allow_nullable_key = 1, fsync_after_insert = 1, fsync_part_directory = 1;
+
+-- bronze.adsblol_flight_paths — full path points of the kept segments; capture-only
+-- (no consumer yet): retrofitting later would re-stream the whole ~125 GB tarball backlog.
+CREATE TABLE IF NOT EXISTS bronze.adsblol_flight_paths
+(
+    icao24 Nullable(String), seg_start Nullable(DateTime64(6,'UTC')),
+    ts Nullable(DateTime64(6,'UTC')),
+    lat Nullable(Float64), lon Nullable(Float64), alt_ft Nullable(Float64),
+    on_ground Nullable(Bool), gs_kt Nullable(Float64), track_deg Nullable(Float64),
+    trace_day Date, source Nullable(String),
+    ingested_at DateTime64(6,'UTC'), committed_at Nullable(DateTime64(6,'UTC'))
+)
+ENGINE = ReplacingMergeTree(ingested_at)
+PARTITION BY toYYYYMM(trace_day)
+ORDER BY (trace_day, icao24, ts)
+SETTINGS allow_nullable_key = 1, fsync_after_insert = 1, fsync_part_directory = 1;
+
 -- bronze.aircraft_db — OpenSky aircraft database subset (include/flights_iceberg.py
 -- AIRCRAFT_DB_SCHEMA fields 1-15). as_of_date is a real DateType column (field 13).
 CREATE TABLE IF NOT EXISTS bronze.aircraft_db

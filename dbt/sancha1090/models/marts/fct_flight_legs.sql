@@ -136,6 +136,26 @@ antenna as (
     select hex, max(is_military) as is_military
     from {{ ref('fct_adsb_state') }}
     group by hex
+),
+adsblol_routes as (
+    -- Global-trace fallback for overflights: the same flight observed worldwide by
+    -- adsb.lol, matched by airframe + leg-midpoint containment; earliest segment wins.
+    select icao24, leg_id,
+           origin_icao, origin_name, origin_lat, origin_lon,
+           dest_icao, dest_name, dest_lat, dest_lon
+    from (
+        select l.icao24 as icao24, l.leg_id as leg_id,
+               r.origin_icao, r.origin_name, r.origin_lat, r.origin_lon,
+               r.dest_icao, r.dest_name, r.dest_lat, r.dest_lon,
+               row_number() over (partition by l.icao24, l.leg_id order by r.seg_start_time) as rn
+        from legs l
+        join {{ ref('int_flight_routes_adsblol') }} r
+          on r.icao24 = lower(l.icao24)
+        where addSeconds(l.start_time, intDiv(dateDiff('second', l.start_time, l.end_time), 2))
+                  between r.seg_start_time and r.seg_end_time
+          and (r.origin_icao is not null or r.dest_icao is not null)
+    )
+    where rn = 1
 )
 select
     -- CH keeps the table qualifier in the output column name for `alias.col` (icao24/leg_id/callsign appear
@@ -149,10 +169,23 @@ select
     l.num_fixes,
     l.first_lat, l.first_lon, l.first_alt_m,
     l.last_lat,  l.last_lon,  l.last_alt_m,
-    o.origin_icao, o.origin_name, o.origin_lat, o.origin_lon,
-    d.dest_icao,   d.dest_name,   d.dest_lat,   d.dest_lon,
-    case when o.origin_icao is not null and d.dest_icao is not null
-         then concat(o.origin_icao, '-', d.dest_icao) end as route_inferred,
+    if(o.origin_icao is not null, o.origin_icao, ar.origin_icao) as origin_icao,
+    if(o.origin_icao is not null, o.origin_name, ar.origin_name) as origin_name,
+    if(o.origin_icao is not null, o.origin_lat,  ar.origin_lat)  as origin_lat,
+    if(o.origin_icao is not null, o.origin_lon,  ar.origin_lon)  as origin_lon,
+    if(d.dest_icao   is not null, d.dest_icao,   ar.dest_icao)   as dest_icao,
+    if(d.dest_icao   is not null, d.dest_name,   ar.dest_name)   as dest_name,
+    if(d.dest_icao   is not null, d.dest_lat,    ar.dest_lat)    as dest_lat,
+    if(d.dest_icao   is not null, d.dest_lon,    ar.dest_lon)    as dest_lon,
+    case when if(o.origin_icao is not null, o.origin_icao, ar.origin_icao) is not null
+          and if(d.dest_icao is not null, d.dest_icao, ar.dest_icao) is not null
+         then concat(if(o.origin_icao is not null, o.origin_icao, ar.origin_icao), '-',
+                     if(d.dest_icao is not null, d.dest_icao, ar.dest_icao)) end as route_inferred,
+    multiIf(
+        (o.origin_icao is null and ar.origin_icao is not null)
+            or (d.dest_icao is null and ar.dest_icao is not null), 'adsblol',
+        o.origin_icao is not null or d.dest_icao is not null, 'snap',
+        null) as route_source,
     ac.registration,
     ac.typecode,
     al.name    as airline_name,
@@ -171,3 +204,4 @@ left join {{ ref('dim_airlines') }} al
        on al.icao = substring(trimBoth(cc.callsign), 1, 3)
       and match(trimBoth(cc.callsign), '^[A-Z]{3}[0-9]')
 left join antenna ant on ant.hex = lower(l.icao24)
+left join adsblol_routes ar on ar.icao24 = l.icao24 and ar.leg_id = l.leg_id

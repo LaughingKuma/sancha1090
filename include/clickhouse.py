@@ -26,6 +26,8 @@ _CH_DB = _safe_identifier(os.environ.get("CLICKHOUSE_DB", "bronze"))
 _STATES_PREFIXES = ("bronze/states_raw",)
 _FLIGHTS_PREFIXES = ("bronze/flights_raw",)
 _ADSBLOL_PREFIXES = ("bronze/adsblol_states_raw",)
+_ADSBLOL_SEGMENTS_PREFIXES = ("bronze/adsblol_flight_segments",)
+_ADSBLOL_PATHS_PREFIXES = ("bronze/adsblol_flight_paths",)
 # Cap files per INSERT so a pre-backfill drain can't OOM and each batch stays one part (no "too many parts").
 _DEFAULT_BATCH_FILES = 1000
 # adsb rows-per-file is ~40× a states region file, so use a much smaller batch to bound memory.
@@ -502,6 +504,45 @@ def rebuild_adsblol_states(batch_files: int = 1) -> dict:
         log.exception("CH adsblol_states reset failed (non-fatal)")
         return {"ok": False, "ch_loaded": 0, "files": 0}
     return load_adsblol_pending_to_ch(batch_files=batch_files)
+
+
+def transform_adsblol_segments_frame(df):
+    import polars as pl
+
+    stamped = df.with_columns(
+        pl.from_epoch("seg_start", time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias("seg_start"),
+        pl.from_epoch("seg_end", time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias("seg_end"),
+        pl.col("trace_day").str.to_date().alias("trace_day"),
+        pl.col("ingested_at").str.to_datetime(time_unit="us", time_zone="UTC").alias("ingested_at"),
+    )
+    return stamped.with_columns(pl.col("ingested_at").alias("committed_at"))
+
+
+def transform_adsblol_paths_frame(df):
+    import polars as pl
+
+    stamped = df.with_columns(
+        pl.from_epoch("seg_start", time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias("seg_start"),
+        pl.from_epoch("ts", time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias("ts"),
+        pl.col("trace_day").str.to_date().alias("trace_day"),
+        pl.col("ingested_at").str.to_datetime(time_unit="us", time_zone="UTC").alias("ingested_at"),
+    )
+    return stamped.with_columns(pl.col("ingested_at").alias("committed_at"))
+
+
+def load_adsblol_segments_pending_to_ch(engine: Optional[sa.Engine] = None, *,
+                                        batch_files: Optional[int] = _DEFAULT_BATCH_FILES) -> dict:
+    return _safe("adsblol segments load", lambda: _drain_transformed(
+        _ADSBLOL_SEGMENTS_PREFIXES, transform_adsblol_segments_frame,
+        "adsblol_flight_segments", batch_files=batch_files, engine=engine))
+
+
+def load_adsblol_paths_pending_to_ch(engine: Optional[sa.Engine] = None, *,
+                                     batch_files: Optional[int] = 200) -> dict:
+    # Path files are ~2k rows per hex-day bundled per dt — smaller batches bound memory.
+    return _safe("adsblol paths load", lambda: _drain_transformed(
+        _ADSBLOL_PATHS_PREFIXES, transform_adsblol_paths_frame,
+        "adsblol_flight_paths", batch_files=batch_files, engine=engine))
 
 
 def setup_marts() -> dict:

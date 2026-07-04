@@ -143,6 +143,12 @@ EXPECTED_DAGS = {
         # Off-peak cold-archive maintenance; self-skips on hosts without the NFS mount, so it runs unpaused.
         "is_paused_upon_creation": False,
     },
+    "ingest_adsblol_routes": {
+        "schedule": "0 3 * * *",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"fetch_and_land", "load_to_clickhouse"},
+    },
 }
 
 

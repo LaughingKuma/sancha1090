@@ -52,3 +52,23 @@ sources:
           - name: snapshot_time
             tests:
               - not_null
+      - name: adsblol_flight_segments
+        description: "Global flight segments from adsb.lol full traces (ODbL); overflight route backstory, RMT versioned on ingested_at"
+        tags: ['adsblol']
+        columns:
+          - name: icao24
+            tests:
+              - not_null
+          - name: seg_start
+            tests:
+              - not_null
+      - name: adsblol_flight_paths
+        description: "Full path points of the kept segments (ODbL, capture-only — no dbt consumer yet); RMT versioned on ingested_at"
+        tags: ['adsblol']
+        columns:
+          - name: icao24
+            tests:
+              - not_null
+          - name: ts
+            tests:
+              - not_null

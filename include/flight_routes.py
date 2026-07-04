@@ -12,13 +12,28 @@ from include.db import rw_connect
 LOOKBACK_DAYS = int(os.environ.get("FLIGHT_ROUTES_LOOKBACK_DAYS", "7"))
 # CH gold-lane schema for the routes source (P3 built marts into gold_ch); one constant so P7's rename is a one-liner.
 CH_GOLD_SCHEMA = os.environ.get("CH_GOLD_SCHEMA", "gold_ch")
+CH_SILVER_SCHEMA = os.environ.get("CH_SILVER_SCHEMA", "silver_ch")
 
 
-def _compute() -> list[tuple]:
-    # Latest known route per callsign; both endpoints resolved so the tooltip line
-    # always reads "XXX → YYY". now('UTC') matches the UTC-stored first_seen (== fact_flights' window).
-    sql = f"""
-    WITH ranked AS (
+def _routes_sql() -> str:
+    # Both lanes ranked together so a fresher observation wins per callsign; adsblol
+    # rows join dim_airports for the iata/city fields fact_flights already carries.
+    return f"""
+    WITH unioned AS (
+      SELECT callsign, origin_icao, origin_iata, origin_city, dest_icao, dest_iata, dest_city, first_seen
+      FROM {CH_GOLD_SCHEMA}.fact_flights
+      WHERE callsign IS NOT NULL AND origin_icao IS NOT NULL AND dest_icao IS NOT NULL
+      UNION ALL
+      SELECT r.callsign,
+             r.origin_icao, nullIf(oa.iata, '') AS origin_iata, nullIf(oa.city, '') AS origin_city,
+             r.dest_icao,   nullIf(da.iata, '') AS dest_iata,   nullIf(da.city, '') AS dest_city,
+             r.seg_start_time AS first_seen
+      FROM {CH_SILVER_SCHEMA}.int_flight_routes_adsblol r
+      LEFT JOIN {CH_SILVER_SCHEMA}.dim_airports oa ON oa.icao = r.origin_icao
+      LEFT JOIN {CH_SILVER_SCHEMA}.dim_airports da ON da.icao = r.dest_icao
+      WHERE r.callsign IS NOT NULL AND r.origin_icao IS NOT NULL AND r.dest_icao IS NOT NULL
+    ),
+    ranked AS (
       SELECT
         callsign,
         origin_icao,
@@ -29,17 +44,20 @@ def _compute() -> list[tuple]:
         dest_city,
         toInt64(toUnixTimestamp(first_seen)) AS departed_epoch,
         row_number() OVER (PARTITION BY callsign ORDER BY first_seen DESC) AS rn
-      FROM {CH_GOLD_SCHEMA}.fact_flights
-      WHERE callsign IS NOT NULL
-        AND origin_icao IS NOT NULL
-        AND dest_icao IS NOT NULL
-        AND origin_icao <> dest_icao
+      FROM unioned
+      WHERE origin_icao <> dest_icao
         AND first_seen > now('UTC') - INTERVAL {LOOKBACK_DAYS} DAY
     )
     SELECT callsign, origin_icao, origin_code, origin_city,
            dest_icao, dest_code, dest_city, departed_epoch
     FROM ranked WHERE rn = 1
     """
+
+
+def _compute() -> list[tuple]:
+    # Latest known route per callsign; both endpoints resolved so the tooltip line
+    # always reads "XXX → YYY". now('UTC') matches the UTC-stored first_seen (== fact_flights' window).
+    sql = _routes_sql()
     client = ch_client()
     try:
         return client.query(sql).result_rows

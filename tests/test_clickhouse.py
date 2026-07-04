@@ -242,3 +242,44 @@ def test_load_adsb_chunks_backlog(adsb_manifest_eng, monkeypatch):
     assert out == {"ch_loaded": 6, "files": 2, "ok": True}  # 2 files × 3 rows
     assert len(inserts) == 2  # one INSERT per file, not one oversized batch
     assert am.pending_ch_adsb_uris(engine=adsb_manifest_eng) == []
+
+
+def test_transform_adsblol_segments_frame_types():
+    import polars as pl
+
+    from include.adsblol_routes import segments_frame
+    from include.clickhouse import transform_adsblol_segments_frame
+
+    raw = segments_frame([{
+        "icao24": "a61c53", "callsign": "GTI518",
+        "seg_start": 1782365490, "seg_end": 1782392243, "num_fixes": 5,
+        "first_lat": 32.5, "first_lon": 128.0, "first_alt_ft": 31000.0, "first_on_ground": False,
+        "last_lat": 61.17, "last_lon": -150.33, "last_alt_ft": 2975.0, "last_on_ground": False,
+        "trace_day": "2026-06-25", "source": "adsblol",
+    }])
+    out = transform_adsblol_segments_frame(raw)
+    assert out.schema["seg_start"] == pl.Datetime("us", "UTC")
+    assert out.schema["seg_end"] == pl.Datetime("us", "UTC")
+    assert out.schema["trace_day"] == pl.Date
+    assert out.schema["ingested_at"] == pl.Datetime("us", "UTC")
+    assert out.get_column("committed_at").to_list() == out.get_column("ingested_at").to_list()
+    assert out.get_column("seg_start").dt.epoch("s").to_list() == [1782365490]
+
+
+def test_transform_adsblol_paths_frame_types():
+    import polars as pl
+
+    from include.adsblol_routes import paths_frame
+    from include.clickhouse import transform_adsblol_paths_frame
+
+    raw = paths_frame([{
+        "icao24": "a61c53", "seg_start": 1782365490, "ts": 1782365500,
+        "lat": 32.5, "lon": 128.0, "alt_ft": 31000.0, "on_ground": False,
+        "gs_kt": 480.0, "track_deg": 55.0,
+        "trace_day": "2026-06-25", "source": "adsblol",
+    }])
+    out = transform_adsblol_paths_frame(raw)
+    assert out.schema["seg_start"] == pl.Datetime("us", "UTC")
+    assert out.schema["ts"] == pl.Datetime("us", "UTC")
+    assert out.schema["trace_day"] == pl.Date
+    assert out.get_column("ts").dt.epoch("s").to_list() == [1782365500]
