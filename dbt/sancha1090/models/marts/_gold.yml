@@ -8,11 +8,23 @@ models:
         tests:
           - not_null
       - name: route_source
-        description: Attribution provenance — 'snap' (geometric endpoint snap) or 'adsblol' (global-trace fallback); NULL when unresolved.
+        description: Leg-level provenance summary — 'adsblol' if the global-trace chain contributed an endpoint, else 'curated' if an override did, else 'snap'; NULL when unresolved. Per-endpoint truth is origin_source/dest_source.
         tests:
           - accepted_values:
               arguments:
-                values: ['snap', 'adsblol']
+                values: ['snap', 'adsblol', 'curated']
+      - name: origin_source
+        description: Source that filled origin_icao — geometric snap, chained adsb.lol trace, or curated override.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['snap', 'adsblol', 'curated']
+      - name: dest_source
+        description: Source that filled dest_icao.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['snap', 'adsblol', 'curated']
 
   - name: agg_route_traffic
     description: "Top inferred origin-dest routes (both endpoints resolved, origin != dest) for the deck.gl arc map"

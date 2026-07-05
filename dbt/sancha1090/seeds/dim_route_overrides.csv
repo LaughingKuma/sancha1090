@@ -1,0 +1,3 @@
+callsign,valid_from,valid_to,origin_icao,dest_icao,evidence
+GTI518,2026-06-01,2026-12-31,ZSPD,,"FlightAware: N486MC GTI517 ORD→PVG landed 2026-07-03, verified by Amit 2026-07-05"
+GTI517,2026-06-01,2026-12-31,,ZSPD,"FlightAware: N486MC GTI517 ORD→PVG landed 2026-07-03, verified by Amit 2026-07-05"

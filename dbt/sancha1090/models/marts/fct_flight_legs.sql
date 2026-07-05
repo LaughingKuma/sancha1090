@@ -1,8 +1,8 @@
 -- Reads the OpenSky context feed (fact_state_snapshots), so it's built by transform_marts (untagged),
 -- not the rooftop-triggered transform_adsb_silver — keeps it fresh on OpenSky context ticks.
 -- BOOTSTRAP: still refs tag:adsb relations built by transform_adsb_silver (dim_airports/dim_airlines/
--- dim_hex_country seeds, dim_aircraft, fct_adsb_state). Steady state is fine; on a FRESH deploy run
--- transform_adsb_silver once before transform_marts or this errors on a missing relation.
+-- dim_hex_country seeds, dim_aircraft, fct_adsb_state) AND the dim_route_overrides seed (loaded only by
+-- a manual `dbt seed`). On a FRESH deploy run transform_adsb_silver + seed before transform_marts.
 {{ config(
     materialized='table',
     query_settings={'max_bytes_before_external_group_by': 30000000, 'max_bytes_before_external_sort': 30000000}
@@ -138,70 +138,121 @@ antenna as (
     group by hex
 ),
 adsblol_routes as (
-    -- Global-trace fallback for overflights: the same flight observed worldwide by
-    -- adsb.lol, matched by airframe + leg-midpoint containment; earliest segment wins.
-    select icao24, leg_id,
-           origin_icao, origin_name, origin_lat, origin_lon,
+    -- Global-trace fallback for overflights, v6.10: legs join CHAIN windows (coverage-gap
+    -- segments chained into whole flights) — window overlap, per-endpoint pick: origin from
+    -- the earliest overlapping chain, dest from the latest; tuple() preserves NULL snaps.
+    select l.icao24 as icao24, l.leg_id as leg_id,
+           argMin(tuple(c.origin_icao), c.chain_start).1 as origin_icao,
+           argMin(tuple(c.origin_name), c.chain_start).1 as origin_name,
+           argMin(tuple(c.origin_lat),  c.chain_start).1 as origin_lat,
+           argMin(tuple(c.origin_lon),  c.chain_start).1 as origin_lon,
+           argMax(tuple(c.dest_icao), c.chain_end).1 as dest_icao,
+           argMax(tuple(c.dest_name), c.chain_end).1 as dest_name,
+           argMax(tuple(c.dest_lat),  c.chain_end).1 as dest_lat,
+           argMax(tuple(c.dest_lon),  c.chain_end).1 as dest_lon
+    from legs l
+    join {{ ref('int_flight_chains_adsblol') }} c
+      on c.icao24 = lower(l.icao24)
+     and c.chain_start <= l.end_time
+     and c.chain_end   >= l.start_time
+    group by l.icao24, l.leg_id
+),
+curated_routes as (
+    -- Curated last-resort fill (seed, evidence-backed): callsign + validity window;
+    -- latest valid_from wins when windows overlap; '' in the seed = no override.
+    -- An endpoint only counts as resolved once dim_airports confirms the ICAO exists.
+    select icao24, leg_id, origin_icao, origin_name, origin_lat, origin_lon,
            dest_icao, dest_name, dest_lat, dest_lon
     from (
         select l.icao24 as icao24, l.leg_id as leg_id,
-               r.origin_icao, r.origin_name, r.origin_lat, r.origin_lon,
-               r.dest_icao, r.dest_name, r.dest_lat, r.dest_lon,
-               row_number() over (partition by l.icao24, l.leg_id order by r.seg_start_time) as rn
+               oa.icao as origin_icao,
+               da.icao as dest_icao,
+               oa.name as origin_name, oa.lat as origin_lat, oa.lon as origin_lon,
+               da.name as dest_name,   da.lat as dest_lat,   da.lon as dest_lon,
+               row_number() over (partition by l.icao24, l.leg_id order by ov.valid_from desc) as rn
         from legs l
-        join {{ ref('int_flight_routes_adsblol') }} r
-          on r.icao24 = lower(l.icao24)
-        where addSeconds(l.start_time, intDiv(dateDiff('second', l.start_time, l.end_time), 2))
-                  between r.seg_start_time and r.seg_end_time
-          and (r.origin_icao is not null or r.dest_icao is not null)
+        join callsign_choice cc on cc.icao24 = l.icao24 and cc.leg_id = l.leg_id
+        join {{ ref('dim_route_overrides') }} ov
+          on ov.callsign = trimBoth(cc.callsign)
+         and toDate(l.start_time) between ov.valid_from and ov.valid_to
+        left join {{ ref('dim_airports') }} oa on oa.icao = nullIf(ov.origin_icao, '')
+        left join {{ ref('dim_airports') }} da on da.icao = nullIf(ov.dest_icao, '')
     )
     where rn = 1
 )
 select
-    -- CH keeps the table qualifier in the output column name for `alias.col` (icao24/leg_id/callsign appear
-    -- across the joined CTEs), so alias them explicitly to bare names (downstream + parity).
-    l.icao24 as icao24,
-    l.leg_id as leg_id,
-    cc.callsign as callsign,
-    l.start_time,
-    l.end_time,
-    l.duration_min,
-    l.num_fixes,
-    l.first_lat, l.first_lon, l.first_alt_m,
-    l.last_lat,  l.last_lon,  l.last_alt_m,
-    if(o.origin_icao is not null, o.origin_icao, ar.origin_icao) as origin_icao,
-    if(o.origin_icao is not null, o.origin_name, ar.origin_name) as origin_name,
-    if(o.origin_icao is not null, o.origin_lat,  ar.origin_lat)  as origin_lat,
-    if(o.origin_icao is not null, o.origin_lon,  ar.origin_lon)  as origin_lon,
-    if(d.dest_icao   is not null, d.dest_icao,   ar.dest_icao)   as dest_icao,
-    if(d.dest_icao   is not null, d.dest_name,   ar.dest_name)   as dest_name,
-    if(d.dest_icao   is not null, d.dest_lat,    ar.dest_lat)    as dest_lat,
-    if(d.dest_icao   is not null, d.dest_lon,    ar.dest_lon)    as dest_lon,
-    case when if(o.origin_icao is not null, o.origin_icao, ar.origin_icao) is not null
-          and if(d.dest_icao is not null, d.dest_icao, ar.dest_icao) is not null
-         then concat(if(o.origin_icao is not null, o.origin_icao, ar.origin_icao), '-',
-                     if(d.dest_icao is not null, d.dest_icao, ar.dest_icao)) end as route_inferred,
-    multiIf(
-        (o.origin_icao is null and ar.origin_icao is not null)
-            or (d.dest_icao is null and ar.dest_icao is not null), 'adsblol',
-        o.origin_icao is not null or d.dest_icao is not null, 'snap',
-        null) as route_source,
-    ac.registration,
-    ac.typecode,
-    al.name    as airline_name,
-    al.country as airline_country,
-    -- reg_country via the P1 range_hashed dict; macro guards '~' hexes.
-    {{ ch_hex_country('l.icao24') }} as reg_country,
-    coalesce(ant.is_military, false) as is_military,
-    ant.hex is not null              as crossed_antenna
-from legs l
-left join callsign_choice cc on cc.icao24 = l.icao24 and cc.leg_id = l.leg_id
-left join (select * from origin_snap where rn = 1) o on o.icao24 = l.icao24 and o.leg_id = l.leg_id
-left join (select * from dest_snap   where rn = 1) d on d.icao24 = l.icao24 and d.leg_id = l.leg_id
-left join {{ ref('dim_aircraft') }} ac on ac.icao24 = lower(l.icao24)
--- Operating airline of THIS leg via callsign; same GA-tail regex guard as silver.
-left join {{ ref('dim_airlines') }} al
-       on al.icao = substring(trimBoth(cc.callsign), 1, 3)
-      and match(trimBoth(cc.callsign), '^[A-Z]{3}[0-9]')
-left join antenna ant on ant.hex = lower(l.icao24)
-left join adsblol_routes ar on ar.icao24 = l.icao24 and ar.leg_id = l.leg_id
+    *,
+    case when origin_icao is not null and dest_icao is not null
+         then concat(origin_icao, '-', dest_icao) end as route_inferred,
+    -- Leg-level summary (v6.9 shape extended): trace lane wins the label when it contributed,
+    -- then curated, then pure-snap; per-endpoint truth lives in origin_source/dest_source.
+    multiIf(origin_source = 'adsblol' or dest_source = 'adsblol', 'adsblol',
+            origin_source = 'curated' or dest_source = 'curated', 'curated',
+            origin_source = 'snap'    or dest_source = 'snap',    'snap',
+            null) as route_source
+from (
+    select
+        -- CH keeps the table qualifier in the output column name for `alias.col` (icao24/leg_id/callsign
+        -- appear across the joined CTEs), so alias them explicitly to bare names (downstream + parity).
+        l.icao24 as icao24,
+        l.leg_id as leg_id,
+        cc.callsign as callsign,
+        l.start_time,
+        l.end_time,
+        l.duration_min,
+        l.num_fixes,
+        l.first_lat, l.first_lon, l.first_alt_m,
+        l.last_lat,  l.last_lon,  l.last_alt_m,
+        multiIf(o.origin_icao is not null, o.origin_icao,
+                ar.origin_icao is not null, ar.origin_icao,
+                cr.origin_icao) as origin_icao,
+        multiIf(o.origin_icao is not null, o.origin_name,
+                ar.origin_icao is not null, ar.origin_name,
+                cr.origin_name) as origin_name,
+        multiIf(o.origin_icao is not null, o.origin_lat,
+                ar.origin_icao is not null, ar.origin_lat,
+                cr.origin_lat) as origin_lat,
+        multiIf(o.origin_icao is not null, o.origin_lon,
+                ar.origin_icao is not null, ar.origin_lon,
+                cr.origin_lon) as origin_lon,
+        multiIf(d.dest_icao is not null, d.dest_icao,
+                ar.dest_icao is not null, ar.dest_icao,
+                cr.dest_icao) as dest_icao,
+        multiIf(d.dest_icao is not null, d.dest_name,
+                ar.dest_icao is not null, ar.dest_name,
+                cr.dest_name) as dest_name,
+        multiIf(d.dest_icao is not null, d.dest_lat,
+                ar.dest_icao is not null, ar.dest_lat,
+                cr.dest_lat) as dest_lat,
+        multiIf(d.dest_icao is not null, d.dest_lon,
+                ar.dest_icao is not null, ar.dest_lon,
+                cr.dest_lon) as dest_lon,
+        multiIf(o.origin_icao is not null, 'snap',
+                ar.origin_icao is not null, 'adsblol',
+                cr.origin_icao is not null, 'curated',
+                null) as origin_source,
+        multiIf(d.dest_icao is not null, 'snap',
+                ar.dest_icao is not null, 'adsblol',
+                cr.dest_icao is not null, 'curated',
+                null) as dest_source,
+        ac.registration,
+        ac.typecode,
+        al.name    as airline_name,
+        al.country as airline_country,
+        -- reg_country via the P1 range_hashed dict; macro guards '~' hexes.
+        {{ ch_hex_country('l.icao24') }} as reg_country,
+        coalesce(ant.is_military, false) as is_military,
+        ant.hex is not null              as crossed_antenna
+    from legs l
+    left join callsign_choice cc on cc.icao24 = l.icao24 and cc.leg_id = l.leg_id
+    left join (select * from origin_snap where rn = 1) o on o.icao24 = l.icao24 and o.leg_id = l.leg_id
+    left join (select * from dest_snap   where rn = 1) d on d.icao24 = l.icao24 and d.leg_id = l.leg_id
+    left join {{ ref('dim_aircraft') }} ac on ac.icao24 = lower(l.icao24)
+    -- Operating airline of THIS leg via callsign; same GA-tail regex guard as silver.
+    left join {{ ref('dim_airlines') }} al
+           on al.icao = substring(trimBoth(cc.callsign), 1, 3)
+          and match(trimBoth(cc.callsign), '^[A-Z]{3}[0-9]')
+    left join antenna ant on ant.hex = lower(l.icao24)
+    left join adsblol_routes ar on ar.icao24 = l.icao24 and ar.leg_id = l.leg_id
+    left join curated_routes cr on cr.icao24 = l.icao24 and cr.leg_id = l.leg_id
+)

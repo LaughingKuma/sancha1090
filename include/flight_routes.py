@@ -27,8 +27,8 @@ def _routes_sql() -> str:
       SELECT r.callsign,
              r.origin_icao, nullIf(oa.iata, '') AS origin_iata, nullIf(oa.city, '') AS origin_city,
              r.dest_icao,   nullIf(da.iata, '') AS dest_iata,   nullIf(da.city, '') AS dest_city,
-             r.seg_start_time AS first_seen
-      FROM {CH_SILVER_SCHEMA}.int_flight_routes_adsblol r
+             r.chain_start AS first_seen
+      FROM {CH_SILVER_SCHEMA}.int_flight_chains_adsblol r
       LEFT JOIN {CH_SILVER_SCHEMA}.dim_airports oa ON oa.icao = r.origin_icao
       LEFT JOIN {CH_SILVER_SCHEMA}.dim_airports da ON da.icao = r.dest_icao
       WHERE r.callsign IS NOT NULL AND r.origin_icao IS NOT NULL AND r.dest_icao IS NOT NULL

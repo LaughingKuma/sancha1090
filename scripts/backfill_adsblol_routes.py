@@ -34,7 +34,7 @@ def _target_hexes() -> set[str]:
     try:
         rows = client.query(
             f"SELECT DISTINCT lower(icao24) FROM {gold}.fct_flight_legs "
-            f"WHERE origin_icao IS NULL AND dest_icao IS NULL AND icao24 IS NOT NULL"
+            f"WHERE (origin_icao IS NULL OR dest_icao IS NULL) AND icao24 IS NOT NULL"
         ).result_rows
     finally:
         client.close()
@@ -77,7 +77,7 @@ def run(start: date, end: date, min_traces: int, dry_run: bool) -> int:
     print(f"{len(targets)} target hexes")
     failures: list[str] = []
     for day in _day_range(start, end):
-        # part-backfill, not part-000: the daily DAG owns part-000 for the same dt.
+        # Fixed part-backfill name (vs the daily lane's per-run stamps): it doubles as the day's resume marker.
         key = f"bronze/adsblol_flight_segments/dt={day.isoformat()}/part-backfill.parquet"
         uri = f"s3://{bucket}/{key}"
         if _manifest_status(uri, engine=engine) != "missing":

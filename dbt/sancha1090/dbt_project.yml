@@ -55,9 +55,16 @@ seeds:
       +column_types:
         lat: Float64
         lon: Float64
+    dim_route_overrides:
+      +column_types:
+        valid_from: Date
+        valid_to: Date
 
 vars:
   legs_gap_min: 90        # new leg on a >90-min sample gap (lenient: keep long-haul whole where coverage allows)
   legs_snap_km: 100       # max airport snap distance from a low-altitude endpoint fix
   legs_cruise_alt_m: 3000 # below this an endpoint is a takeoff/landing; above it = overflight -> NULL endpoint
   callsign_backfill_window_s: 600 # max gap to a same-airframe OpenSky snapshot when backfilling a blank ADS-B callsign
+  snap_iata_pref_km: 10   # an IATA-bearing airport this close beats a marginally-nearer no-IATA field (PALH vs PANC)
+  chain_speed_min_kmh: 300   # implied boundary groundspeed below this = the aircraft stopped (landing)
+  chain_speed_max_kmh: 1100  # above this = not the same continuous flight

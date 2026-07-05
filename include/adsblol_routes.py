@@ -234,7 +234,7 @@ def route_targets(day: date, *, client=None) -> list[str]:
     try:
         rows = c.query(
             f"SELECT DISTINCT lower(icao24) FROM {gold}.fct_flight_legs "
-            f"WHERE origin_icao IS NULL AND dest_icao IS NULL "
+            f"WHERE (origin_icao IS NULL OR dest_icao IS NULL) "
             f"AND toDate(start_time) = %(day)s AND icao24 IS NOT NULL",
             parameters={"day": day.isoformat()},
         ).result_rows
@@ -276,14 +276,17 @@ def run_daily(day: date, *, engine=None, fetch=None, spacing_s: float = FETCH_SP
     pdf = paths_frame(path_rows)
     result = {"targets": len(hexes), "fetched": len(pairs),
               "rows": df.height, "path_rows": pdf.height, "uri": None}
+    # One stamp per run: a same-day rerun lands additively (record_load keeps ch_loaded_at on a
+    # same-key rewrite, so overwriting part-000 never re-drained); the RMT dedups overlaps.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     if df.height:
-        key = f"bronze/adsblol_flight_segments/dt={day.isoformat()}/part-000.parquet"
+        key = f"bronze/adsblol_flight_segments/dt={day.isoformat()}/part-{stamp}.parquet"
         uri = write_parquet(df, key)
         starts = df.get_column("seg_start")
         manifest.record_load(uri, int(starts.min()), int(starts.max()), df.height, engine=engine)
         result["uri"] = uri
     if pdf.height:
-        pkey = f"bronze/adsblol_flight_paths/dt={day.isoformat()}/part-000.parquet"
+        pkey = f"bronze/adsblol_flight_paths/dt={day.isoformat()}/part-{stamp}.parquet"
         puri = write_parquet(pdf, pkey)
         ts = pdf.get_column("ts")
         manifest.record_load(puri, int(ts.min()), int(ts.max()), pdf.height, engine=engine)

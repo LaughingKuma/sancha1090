@@ -286,10 +286,28 @@ data open:
   that only clips the antenna's ring actually came from and is headed — by walking
   each aircraft's global trace into airport-to-airport segments
   (`bronze.adsblol_flight_segments`, plus capture-only full paths in
-  `bronze.adsblol_flight_paths`) that `gold.fct_flight_legs` snaps to as a fallback
-  when neither endpoint fell inside the box. A daily DAG (`ingest_adsblol_routes`)
-  makes targeted per-hex fetches; a backlog driver
+  `bronze.adsblol_flight_paths`). Because a trace breaks wherever crowdsourced
+  coverage drops out, those segments are then chained back into whole flights
+  (`silver.int_flight_chains_adsblol`) — including across UTC trace-day boundaries —
+  whenever the implied great-circle groundspeed across the gap is cruise-plausible
+  (300–1,100 km/h), and `gold.fct_flight_legs` fills each endpoint from the chain
+  window when the leg's own ends never fell inside the box. A daily DAG
+  (`ingest_adsblol_routes`) makes targeted per-hex fetches; a backlog driver
   (`scripts/backfill_adsblol_routes.py`) streams the historical tarballs.
+
+  Because that backstory mixes observation with inference, every route endpoint
+  records how it was derived in `origin_source`/`dest_source`, so any attribution
+  can be audited back to its basis and no guess is mistaken for a sighting:
+  - `snap` — **observed**: a directly seen low-altitude fix at the airport, inside
+    the tracked box.
+  - `adsblol` — **inferred**: two coverage-split segments chained because the
+    boundary groundspeed looked like cruise. This can be wrong for a stop the
+    traces never saw — an aircraft that landed and left again inside a gap reads as
+    one continuous flight.
+  - `curated` — **entered by hand**: an evidence-backed row in the
+    `dim_route_overrides` seed, applied *only* where observation and inference both
+    left the endpoint NULL, each row carrying its evidence string (e.g. a
+    FlightAware confirmation).
 
 If you run an ADS-B receiver, feed these networks.
 

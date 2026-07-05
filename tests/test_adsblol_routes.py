@@ -198,10 +198,16 @@ def test_run_daily_fetches_day_and_prior_lands_and_records(monkeypatch):
     out = routes.run_daily(DAY, engine=eng, fetch=fake_fetch)
     assert set(fetched) == {("a61c53", "2026-06-25"), ("a61c53", "2026-06-24")}
     assert out["rows"] > 0 and out["path_rows"] > 0
-    assert set(written) == {
-        "bronze/adsblol_flight_segments/dt=2026-06-25/part-000.parquet",
-        "bronze/adsblol_flight_paths/dt=2026-06-25/part-000.parquet",
-    }
+    import re
+    seg_keys = [k for k in written if k.startswith("bronze/adsblol_flight_segments/")]
+    path_keys = [k for k in written if k.startswith("bronze/adsblol_flight_paths/")]
+    assert len(seg_keys) == 1
+    assert len(path_keys) == 1
+    # Per-run stamp (v6.10): a same-day rerun must land a NEW object — a rewrite of a drained
+    # key never re-drains (record_load preserves ch_loaded_at).
+    m = re.fullmatch(r"bronze/adsblol_flight_segments/dt=2026-06-25/part-(\d{8}T\d{12})\.parquet", seg_keys[0])
+    assert m, seg_keys[0]
+    assert path_keys[0] == f"bronze/adsblol_flight_paths/dt=2026-06-25/part-{m.group(1)}.parquet"
     assert {r for _, r in recorded} == {out["rows"], out["path_rows"]}
     # Both attempts recorded: the landed day and the missing D-1.
     assert ledger.filter_unattempted(
@@ -256,5 +262,5 @@ def test_livemap_routes_sql_unions_adsblol():
     import include.flight_routes as fr
 
     sql = fr._routes_sql()
-    assert "int_flight_routes_adsblol" in sql
+    assert "int_flight_chains_adsblol" in sql
     assert "fact_flights" in sql

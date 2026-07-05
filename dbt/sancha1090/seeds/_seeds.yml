@@ -1,0 +1,14 @@
+version: 2
+
+seeds:
+  - name: dim_route_overrides
+    description: Manually curated route overrides, applied only where observed sources (snap, chained adsblol) leave an endpoint NULL; empty origin/dest = no override for that endpoint; every row carries evidence.
+    columns:
+      - name: callsign
+        tests: [not_null]
+      - name: valid_from
+        tests: [not_null]
+      - name: valid_to
+        tests: [not_null]
+      - name: evidence
+        tests: [not_null]
