@@ -509,7 +509,9 @@ def rebuild_adsblol_states(batch_files: int = 1) -> dict:
 def transform_adsblol_segments_frame(df):
     import polars as pl
 
-    stamped = df.with_columns(
+    # read_pending_frames reads by path, so pyarrow infers the dt= key dir as a hive
+    # column; drop it or insert_arrow rejects the extra column against the CH table.
+    stamped = df.drop("dt", strict=False).with_columns(
         pl.from_epoch("seg_start", time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias("seg_start"),
         pl.from_epoch("seg_end", time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias("seg_end"),
         pl.col("trace_day").str.to_date().alias("trace_day"),
@@ -521,7 +523,8 @@ def transform_adsblol_segments_frame(df):
 def transform_adsblol_paths_frame(df):
     import polars as pl
 
-    stamped = df.with_columns(
+    # Same hive dt= drop as the segments transform (path-based parquet read).
+    stamped = df.drop("dt", strict=False).with_columns(
         pl.from_epoch("seg_start", time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias("seg_start"),
         pl.from_epoch("ts", time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias("ts"),
         pl.col("trace_day").str.to_date().alias("trace_day"),

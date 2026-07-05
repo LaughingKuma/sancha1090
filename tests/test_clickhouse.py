@@ -266,6 +266,35 @@ def test_transform_adsblol_segments_frame_types():
     assert out.get_column("seg_start").dt.epoch("s").to_list() == [1782365490]
 
 
+def test_transform_adsblol_frames_drop_hive_dt_column():
+    # read_pending_frames reads by path, so pyarrow adds the dt= partition dir as a
+    # column; the transforms must strip it or the CH insert rejects the whole batch.
+    import polars as pl
+
+    from include.adsblol_routes import paths_frame, segments_frame
+    from include.clickhouse import (
+        transform_adsblol_paths_frame,
+        transform_adsblol_segments_frame,
+    )
+
+    seg = segments_frame([{
+        "icao24": "a61c53", "callsign": "GTI518",
+        "seg_start": 1782365490, "seg_end": 1782392243, "num_fixes": 5,
+        "first_lat": 32.5, "first_lon": 128.0, "first_alt_ft": 31000.0, "first_on_ground": False,
+        "last_lat": 61.17, "last_lon": -150.33, "last_alt_ft": 2975.0, "last_on_ground": False,
+        "trace_day": "2026-06-25", "source": "adsblol",
+    }]).with_columns(pl.lit("2026-06-25").alias("dt"))
+    assert "dt" not in transform_adsblol_segments_frame(seg).columns
+
+    pth = paths_frame([{
+        "icao24": "a61c53", "seg_start": 1782365490, "ts": 1782365500,
+        "lat": 32.5, "lon": 128.0, "alt_ft": 31000.0, "on_ground": False,
+        "gs_kt": 480.0, "track_deg": 55.0,
+        "trace_day": "2026-06-25", "source": "adsblol",
+    }]).with_columns(pl.lit("2026-06-25").alias("dt"))
+    assert "dt" not in transform_adsblol_paths_frame(pth).columns
+
+
 def test_transform_adsblol_paths_frame_types():
     import polars as pl
 
