@@ -29,10 +29,13 @@ def test_flight_legs_time_ordered(ch_cur):
 
 
 def test_no_endpoint_snapped_above_cruise(ch_cur):
+    # Scoped to the geometric snap: adsblol-attributed legs carry airports from the
+    # global trace, so a cruise-altitude in-box fix is expected there (v6.9 lane).
     bad = _q(ch_cur, "SELECT count(*) FROM gold_ch.fct_flight_legs "
-                     f"WHERE (origin_icao IS NOT NULL AND first_alt_m >= {CRUISE_ALT_M}) "
-                     f"   OR (dest_icao   IS NOT NULL AND last_alt_m  >= {CRUISE_ALT_M})")[0][0]
-    assert bad == 0, f"{bad} legs snapped an airport to a cruise-altitude fix (overflight)"
+                     "WHERE route_source = 'snap' "
+                     f"AND ((origin_icao IS NOT NULL AND first_alt_m >= {CRUISE_ALT_M}) "
+                     f"  OR (dest_icao   IS NOT NULL AND last_alt_m  >= {CRUISE_ALT_M}))")[0][0]
+    assert bad == 0, f"{bad} snap-attributed legs with a cruise-altitude endpoint fix"
 
 
 def test_route_inferred_consistent_with_endpoints(ch_cur):
