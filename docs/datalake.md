@@ -23,7 +23,9 @@ the v5.1 flights lane (`bronze.opensky_flights`, `silver.dim_aircraft_registry`,
 `gold.fact_flights`, `gold.agg_flight_routes`, `gold.longest_flights`,
 `gold.agg_operator_traffic`, `gold.agg_airport_daily`) and the v5.2 adsb.lol history lane
 (`bronze.adsblol_states`, `silver.stg_states_adsblol`, `gold.agg_hourly_traffic_adsblol`,
-`gold.agg_hourly_traffic_opensky_settled`) — see the dbt sources and models for those.
+`gold.agg_hourly_traffic_opensky_settled`) — see the dbt sources and models for those. The
+newer SP1 reconcile lane, which reads outputs of both, **is** documented — see
+[Reconcile — cross-source consensus](#reconcile--cross-source-consensus-sp1).
 
 ## Contents
 
@@ -31,6 +33,7 @@ the v5.1 flights lane (`bronze.opensky_flights`, `silver.dim_aircraft_registry`,
 - [Entity map](#entity-map)
 - [Refresh model — which DAG builds what](#refresh-model)
 - [Bronze](#bronze) · [Silver](#silver) · [Gold](#gold)
+- [Reconcile — cross-source consensus (SP1)](#reconcile--cross-source-consensus-sp1)
 - [Join keys & relationships](#join-keys--relationships)
 - [Known limitations](#known-limitations)
 
@@ -625,6 +628,142 @@ These predate v3.5 and are built by `transform_marts` alongside the newer marts.
 | `baro_altitude_m` | `double` | Barometric altitude (may be out of range). |
 | `velocity_mps` | `double` | Ground velocity (may be out of range). |
 | `anomaly_type` | `varchar` | Rule fired: `altitude_too_high` (>15000 m), `altitude_below_sea_level` (<−500 m), `velocity_too_high` (>350 m/s), `negative_velocity`, `invalid_latitude`, `invalid_longitude`. |
+
+---
+
+## Reconcile — cross-source consensus (SP1)
+
+An additive layer (`tag:reconcile`) over the flights and adsb.lol lanes above: it reads
+`gold.fact_flights`, `silver.int_flight_chains_adsblol`, and a new OpenSky-states opinion,
+and votes them into one consensus flight per airframe-window instead of picking a single
+best source. Nothing it reads is modified — `fact_flights` and `fct_flight_legs` stay as
+they are and remain its inputs.
+
+```
+gold.fact_flights ─────────────────┐
+silver.int_flight_legs_opensky ────┼──▶ int_flight_opinions ──▶ int_flight_spine ──▶ int_flight_attach ──▶ gold.fct_flights_reconciled
+silver.int_flight_chains_adsblol ──┘                                                                              ▲
+                                                        silver.dim_route_overrides (curated override) ────────────┘
+```
+
+### `silver.int_flight_legs_opensky` — OpenSky-states O/D opinion
+
+- **Grain:** one row per `(icao24, leg_id)` — a reconciler input, independent of `fct_flight_legs`.
+- **Source:** `silver.fact_state_snapshots`, the same sessionize (`>90-min` gap / on-ground flip /
+  callsign-flip turnaround) and altitude-gated, scheduled-service-gated nearest-airport snap as
+  `fct_flight_legs` uses (duplicated on purpose; a future dedup is expected to merge the two).
+- **Notes:** unlike `fct_flight_legs`, it does **not** fall back to adsb.lol or the curated seed —
+  a pure, single-source opinion for the reconciler to vote with.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `icao24` | `varchar` | Airframe ICAO 24-bit address. Grain key. |
+| `leg_id` | `bigint` | Sequential leg index per airframe. Grain key. |
+| `callsign` | `varchar` | Dominant callsign for the leg. |
+| `start_time` / `end_time` | `timestamp(6) with time zone` | Leg's airborne time window. |
+| `num_fixes` | `bigint` | Count of airborne fixes in the leg. |
+| `first_lat` / `first_lon` / `first_alt_m` | `double` | First airborne fix; gates the origin snap. |
+| `last_lat` / `last_lon` / `last_alt_m` | `double` | Last airborne fix; gates the dest snap. |
+| `origin_icao` / `origin_name` / `origin_lat` / `origin_lon` | `varchar` / `double` | Snapped origin, iff low-altitude. |
+| `dest_icao` / `dest_name` / `dest_lat` / `dest_lon` | `varchar` / `double` | Snapped destination, iff low-altitude. |
+
+### `silver.int_flight_opinions` — unified windowed opinions
+
+- **Grain:** one row per `(source, icao24, win_start)` — a `UNION ALL` of the three sources into
+  one common schema.
+- **Source:** `gold.fact_flights` (`source_rank` 1), `silver.int_flight_chains_adsblol` (rank 2),
+  `silver.int_flight_legs_opensky` (rank 3) — ranked by source authority, most to least direct.
+- **Notes:** the curated seed (`dim_route_overrides`) is deliberately **not** unioned in here — it
+  is windowless (a callsign + validity range, not a flight instance) and is applied later as an
+  override in `fct_flights_reconciled`, not as a vote.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `source` | `varchar` | `opensky_flights` \| `adsblol` \| `opensky_states`. |
+| `source_rank` | `UInt8` | Authority rank: 1 = opensky_flights, 2 = adsblol, 3 = opensky_states. |
+| `icao24` | `varchar` | Airframe. |
+| `win_start` / `win_end` | `timestamp(6) with time zone` | The opinion's time window. |
+| `callsign` | `varchar` | Callsign for that window (nullable). |
+| `origin_icao` / `dest_icao` | `varchar` | This source's O/D opinion (either may be NULL). |
+
+### `silver.int_flight_spine` — authority-ranked flight anchors
+
+- **Grain:** one row per `flight_id` — the reconciliation key every opinion attaches to.
+- **Source:** `silver.int_flight_opinions`, anchored by authority — every `opensky_flights`
+  opinion anchors unconditionally; an `adsblol` opinion anchors only where no `opensky_flights`
+  window overlaps it (same airframe, overlapping time, callsign-compatible); an `opensky_states`
+  opinion anchors only where no higher-authority anchor already covers it. A lower-authority
+  record can never out-anchor a cleaner source, so it can never merge two flights into one.
+- **Notes:** `flight_id = cityHash64(icao24, win_start, anchor_source)`. Near-duplicate
+  `opensky_flights` summaries can double-anchor one physical flight (~13% of that tier) — a known
+  follow-on dedup, not part of this lane.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `flight_id` | `UInt64` | Reconciliation key. Unique, not-null. |
+| `icao24` | `varchar` | Airframe. |
+| `flight_start` / `flight_end` | `timestamp(6) with time zone` | Anchor's time window. |
+| `anchor_callsign` | `varchar` | Anchor opinion's callsign. |
+| `anchor_source` | `varchar` | Which source anchored this flight. |
+| `anchor_rank` | `UInt8` | The anchor's source authority rank. |
+
+### `silver.int_flight_attach` — best-overlap opinion attach
+
+- **Grain:** one row per `(flight_id, source)` — one vote per source per flight.
+- **Source:** every `int_flight_opinions` row overlapping an `int_flight_spine` window
+  (callsign-guarded: opinion and anchor callsigns must match or either be NULL), collapsed to its
+  single best-overlap anchor, then to one vote per `(flight_id, source)` when a fragmented source
+  (e.g. adsb.lol's unchained short segments) independently max-overlaps the same anchor more than
+  once.
+- **Notes:** this is what stops a spanning record from merging two flights into one vote, and what
+  stops a fragmented source from casting more than one vote per flight.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `flight_id` | `UInt64` | Spine anchor this opinion attached to. Grain key. |
+| `source` | `varchar` | Voting source. Grain key with `flight_id`. |
+| `source_rank` | `UInt8` | Source authority rank (tiebreak input). |
+| `origin_icao` / `dest_icao` | `varchar` | This source's vote for the flight's O/D. |
+
+### `gold.fct_flights_reconciled` — cross-source consensus flight mart (headline, SP1)
+
+- **Grain:** one row per `flight_id`, scoped to flights relevant to the Japan box: kept iff
+  anchored by `opensky_flights`, or the flight's `(icao24, flight window)` contains at least one
+  `fact_state_snapshots` fix (a direct interval semi-join, inline in the model) — otherwise
+  adsb.lol's worldwide chains would inflate this Japan mart ~3x past the unfiltered spine.
+- **Source:** per-endpoint plurality vote across `silver.int_flight_attach`'s per-source votes;
+  an exact tie prefers a scheduled-service airport for airline-shaped callsigns before falling
+  back to source authority (flagged `tiebreak` either way); an endpoint only one source voted on
+  passes through as-is (flagged `single`, per endpoint — a 3-source flight can still be
+  origin-`single`); `dim_route_overrides` then applied as a curated override on top (flagged
+  `curated`).
+- **What it does:** for each endpoint, counts votes per candidate airport; the top-vote airport
+  wins (ties broken by scheduled-service preference for airline-shaped callsigns, then best
+  `source_rank`, then lexically); records which source backed the winner, how strong the
+  agreement was, and the full vote tally, so every resolution is auditable back to its basis
+  instead of presented as flat fact.
+- **Notes:** additive — `fact_flights` and `fct_flight_legs` are untouched and remain its inputs.
+  Measured effect: ~230.9k reconciled flights after the Japan-relevance filter (~415.8k in the
+  unfiltered spine), same-airport (`RJTT→RJTT`) collapse rate 6.5% vs. 14.1% for
+  `fct_flight_legs`. Where only one source has an opinion at an endpoint, or a near-airport pair
+  genuinely ties (e.g. civilian RJEC vs. military RJCA, 1-1), the result stays flagged
+  `single`/`tiebreak` rather than silently guessed — a visible residual, not a regression.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `flight_id` | `UInt64` | Reconciliation key. Unique, not-null. |
+| `icao24` | `varchar` | Airframe. |
+| `callsign` | `varchar` | Anchor's callsign. |
+| `start_time` / `end_time` | `timestamp(6) with time zone` | Anchor's time window. |
+| `anchor_source` | `varchar` | Which source anchored this flight in the spine. |
+| `n_sources` | `UInt64` | Distinct sources that voted on this flight. |
+| `origin_icao` / `dest_icao` | `varchar` | Consensus (or curated) O/D. |
+| `origin_source` / `dest_source` | `varchar` | `opensky_flights` \| `opensky_states` \| `adsblol` \| `curated` — which source backs the winner. |
+| `origin_agreement` / `dest_agreement` | `varchar` | `unanimous` \| `majority` \| `tiebreak` \| `single` \| `curated`. |
+| `origin_votes` / `dest_votes` | `Map(String, UInt64)` | Airport → vote count, for audit. |
+| `registration` / `typecode` | `varchar` | Airframe attrs from `dim_aircraft`. |
+| `airline_name` / `airline_country` | `varchar` | Operating airline (callsign prefix → `dim_airlines`). |
+| `reg_country` | `varchar` | Registration country (hex-block lookup). |
 
 ---
 

@@ -28,3 +28,32 @@ models:
         tests: [not_null]
       - name: chain_start
         tests: [not_null]
+  - name: int_flight_legs_opensky
+    description: OpenSky-states O/D opinion (sessionize + pure sched-gated snap + callsign-split); a reconciler input. Duplicates fct_flight_legs's snap until SP2 dedups.
+    columns:
+      - name: icao24
+        tests: [not_null]
+      - name: start_time
+        tests: [not_null]
+      - name: end_time
+        tests: [not_null]
+  - name: int_flight_opinions
+    description: Windowed O/D opinions from all sources in one common schema (source_rank 1=opensky_flights, 2=adsblol, 3=opensky_states); reconciler input.
+    columns:
+      - name: icao24
+        tests: [not_null]
+      - name: source
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['opensky_flights', 'adsblol', 'opensky_states']
+  - name: int_flight_spine
+    description: One row per authority-ranked flight anchor; flight_id is the reconciliation key. Near-duplicate opensky_flights summaries can double-anchor a physical flight (~13% of the tier); dedup is SP2.
+    columns:
+      - name: flight_id
+        tests: [not_null, unique]
+  - name: int_flight_attach
+    description: Each source opinion attached to its single best-overlap spine flight (callsign-guarded).
+    columns:
+      - name: flight_id
+        tests: [not_null]

@@ -311,6 +311,26 @@ data open:
     left the endpoint NULL, each row carrying its evidence string (e.g. a
     FlightAware confirmation).
 
+  `fct_flight_legs` fills each endpoint from a single best source in priority
+  order. A newer `gold.fct_flights_reconciled` mart instead resolves each
+  flight's O/D by **cross-source consensus**, scoped to flights the Japan box
+  is actually relevant to — anchored by OpenSky flight-summaries, or with at
+  least one states fix inside the flight window, since adsb.lol's worldwide
+  chains would otherwise inflate this Japan mart ~3x. Every source with an
+  opinion (OpenSky flight-summaries, the OpenSky-states sessionize+snap above,
+  and the adsb.lol chain) casts a vote per endpoint, plurality wins, and an
+  exact tie prefers a scheduled-service airport for airline-shaped callsigns
+  before falling back to the same source-authority order — flagged `tiebreak`
+  either way rather than silently picked. An endpoint only one source voted on
+  is flagged `single` (per endpoint, not per flight — a 3-source flight can
+  still be origin-`single`); the curated seed still overrides on top. Every
+  flight carries the full vote tally and an agreement label (`unanimous` /
+  `majority` / `tiebreak` / `single` / `curated`) per endpoint, so a low-trust
+  resolution stays visible instead of blending in — consensus measurably cuts
+  the same-airport (`RJTT→RJTT`) collapse rate from 14.1% in `fct_flight_legs`
+  to 6.5%. The single-source marts (`fact_flights`, `fct_flight_legs`) are
+  untouched and remain its inputs.
+
 If you run an ADS-B receiver, feed these networks.
 
 And the open reference datasets that decide *how* an aircraft is drawn, not whether

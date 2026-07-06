@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: fct_flights_reconciled
+    description: "Cross-source consensus flight mart: per flight, O/D + callsign + boundaries agreed across OpenSky-flights, OpenSky-states-snap, adsb.lol-chain, with curated override; per-endpoint provenance."
+    columns:
+      - name: flight_id
+        tests: [not_null, unique]
+      - name: origin_source
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['opensky_flights', 'opensky_states', 'adsblol', 'curated']
+      - name: dest_source
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['opensky_flights', 'opensky_states', 'adsblol', 'curated']
+      - name: origin_agreement
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['unanimous', 'majority', 'tiebreak', 'single', 'curated']
+      - name: dest_agreement
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['unanimous', 'majority', 'tiebreak', 'single', 'curated']
