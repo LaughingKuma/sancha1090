@@ -113,3 +113,14 @@ def test_agg_country_traffic_adsb_japan_top(ch_cur):
     assert "Japan" in counts, f"expected Japan among top-3 reg_countries, got {list(counts)}"
     leader_n = rows[0][1]
     assert counts["Japan"] >= 0.7 * leader_n, f"Japan far below leader: {counts['Japan']} vs {leader_n}"
+
+
+def test_airline_legs_never_snap_to_unscheduled_airports(ch_cur):
+    # Mirror of the dbt singular guard: the sched gate is a hard candidate filter.
+    bad = _q(ch_cur, "SELECT count(*) FROM gold_ch.fct_flight_legs l "
+                     "LEFT JOIN silver_ch.dim_airports oa ON oa.icao = l.origin_icao "
+                     "LEFT JOIN silver_ch.dim_airports da ON da.icao = l.dest_icao "
+                     "WHERE l.callsign IS NOT NULL AND match(trimBoth(l.callsign), '^[A-Z]{3}[0-9]') "
+                     "AND ((l.origin_source = 'snap' AND oa.icao IS NOT NULL AND NOT oa.scheduled_service) "
+                     "  OR (l.dest_source = 'snap' AND da.icao IS NOT NULL AND NOT da.scheduled_service))")[0][0]
+    assert bad == 0, f"{bad} airline-shaped legs snapped to unscheduled airports"

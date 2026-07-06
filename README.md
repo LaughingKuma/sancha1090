@@ -299,7 +299,9 @@ data open:
   records how it was derived in `origin_source`/`dest_source`, so any attribution
   can be audited back to its basis and no guess is mistaken for a sighting:
   - `snap` — **observed**: a directly seen low-altitude fix at the airport, inside
-    the tracked box.
+    the tracked box. Airline-shaped callsigns (`^[A-Z]{3}[0-9]`) only snap to
+    scheduled-service airports, so a 787 is never attributed to a military strip;
+    GA and military callsigns still snap against the full airport set.
   - `adsblol` — **inferred**: two coverage-split segments chained because the
     boundary groundspeed looked like cruise. This can be wrong for a stop the
     traces never saw — an aircraft that landed and left again inside a gap reads as
@@ -324,7 +326,8 @@ it appears:
   silhouette each aircraft is drawn with.
 - **[tar1090](https://github.com/wiedehopf/tar1090)** — its ICAO 24-bit address →
   country table drives the registration-country flags.
-- **[OpenFlights](https://github.com/jpatokal/openflights)** — airport names and coordinates.
+- **[OurAirports](https://ourairports.com/data/)** — airport names, coordinates, and
+  scheduled-service classification.
 
 ## License & data attribution
 
@@ -342,4 +345,4 @@ cleanup cross-referenced against [Wikidata](https://www.wikidata.org)
 ([CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)); aircraft type
 designators from ICAO Doc 8643; the ICAO 24-bit address → country table from
 [tar1090](https://github.com/wiedehopf/tar1090); airport data from
-[OpenFlights](https://github.com/jpatokal/openflights).
+[OurAirports](https://ourairports.com/data/), released to the public domain.

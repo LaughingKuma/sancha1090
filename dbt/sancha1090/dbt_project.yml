@@ -55,6 +55,8 @@ seeds:
       +column_types:
         lat: Float64
         lon: Float64
+        # dbt-clickhouse seed CSV inference is unreliable (same trap as lat/lon).
+        scheduled_service: Bool
     dim_route_overrides:
       +column_types:
         valid_from: Date

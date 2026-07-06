@@ -130,14 +130,21 @@ otherwise untagged. (The flights and adsb.lol history lanes, not documented here
 | `silver.dim_aircraft` | `transform_adsb_silver` | `adsb_bronze_table` (rooftop) | `--select tag:adsb` |
 | `silver.fct_adsb_state` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
 | `silver.int_adsb_callsign_from_opensky` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
-| `silver.dim_airlines` / `dim_airports` / `dim_hex_country` (seeds) | `transform_adsb_silver` (`dbt seed`) | `adsb_bronze_table` | `tag:adsb` |
+| `silver.dim_airlines` / `dim_hex_country` / `dim_route_overrides` (seeds) | `clickhouse-marts-init` / `scripts/ch_setup_marts.sh` (`dbt seed`) | deploy/bootstrap | `--select tag:adsb dim_route_overrides --exclude dim_airports` |
+| `silver.dim_airports` (seed) | `clickhouse-marts-init` / `scripts/ch_setup_marts.sh` (`dbt seed`) | deploy/bootstrap | `--full-refresh --select dim_airports` |
 | `gold.agg_country_traffic_adsb` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
 | `gold.agg_airline_traffic_adsb` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
 
+`dim_airports` is split because it is the schema-changed 9-column seed; the other seeds are
+schema-stable and take a plain `dbt seed`.
+
 > **Bootstrap note.** `fct_flight_legs` is untagged (so it refreshes on the OpenSky context feed) but
 > reads `tag:adsb` relations (the dim seeds, `dim_aircraft`, `fct_adsb_state`). On a fresh
-> deploy, run `transform_adsb_silver` once before `transform_marts`, or the build errors on a
-> missing relation.
+> deploy, run the seed bootstrap (`clickhouse-marts-init` or `scripts/ch_setup_marts.sh`) and
+> `transform_adsb_silver` once before `transform_marts`, or the build errors on a missing relation.
+> On a redeploy over an existing warehouse, `dim_airports` still needs the scoped
+> `dbt seed --full-refresh --select dim_airports`; a plain seed fails against the old 7-column
+> table.
 
 ---
 
@@ -417,10 +424,14 @@ shared across both feeds.
 ### `silver.dim_airports` — airport dimension (seed)
 
 - **Grain:** one row per airport ICAO 4-letter code, unique not-null.
-- **Source:** OpenFlights `airports.dat` → `scripts/build_dim_airports.py` (first-occurrence-wins;
-  the builder refuses to overwrite the seed if it parses 0 airports).
+- **Source:** OurAirports `airports.csv` + `countries.csv` (public domain) →
+  `scripts/build_dim_airports.py`. Duplicate ICAOs are resolved by type priority
+  (`large_airport` > `medium_airport` > `small_airport` > `seaplane_base` > `heliport`), then
+  `scheduled_service`, then lexically smallest name; the builder refuses to overwrite the seed if
+  it parses fewer than 10,000 airports.
 - **Notes:** `lat`/`lon` power the nearest-airport haversine snap of leg endpoints in
-  `fct_flight_legs`. Anchor airports always present: RJTT, RJAA, KJFK, EGLL.
+  `fct_flight_legs`. `closed` and `balloonport` types are excluded. `scheduled_service` gates snap
+  candidates for airline-shaped callsigns. Anchor airports always present: RJTT, RJAA, KJFK, EGLL.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -431,6 +442,8 @@ shared across both feeds.
 | `country` | `varchar` | Country. |
 | `lat` | `double` | Latitude, degrees. |
 | `lon` | `double` | Longitude, degrees. |
+| `airport_type` | `varchar` | OurAirports type (e.g. `large_airport`); `closed`/`balloonport` excluded. |
+| `scheduled_service` | `boolean` | Whether the airport has scheduled service; gates snap candidates for airline-shaped callsigns. |
 
 ### `silver.dim_hex_country` — registration-country range table (seed)
 

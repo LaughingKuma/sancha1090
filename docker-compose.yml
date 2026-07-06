@@ -72,6 +72,8 @@ x-airflow-common:
     - ./superset:/opt/airflow/superset:ro
     # ro: lets test_adsb_schema validate the bronze.adsb_states DDL vs ADSB_COLUMNS in the container run
     - ./clickhouse:/opt/airflow/clickhouse:ro
+    # ro: exposes this file to the bootstrap-consistency test so it can be checked against ch_setup_marts.sh
+    - ./docker-compose.yml:/opt/airflow/docker-compose.yml:ro
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres-airflow:
@@ -459,11 +461,14 @@ services:
     # heavy adsblol backfill): seed the dims (silver_ch + dim.dim_hex_country) -> reload the range_hashed dict
     # -> load bronze.aircraft_db, so the first transform_* tick has its seed/registry/dict deps. The optional
     # adsb.lol history backfill (agg_hourly_traffic_adsblol) stays a manual step — see the README.
+    # dim_airports seed is split off with a scoped --full-refresh: a recreate over an existing CH volume
+    # still holding the old 7-column table fails NO_SUCH_COLUMN_IN_TABLE on a plain seed.
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
         set -euo pipefail
-        cd /opt/airflow/dbt/sancha1090 && dbt seed --profiles-dir . --target clickhouse --no-use-colors
+        cd /opt/airflow/dbt/sancha1090 && dbt seed --exclude dim_airports --profiles-dir . --target clickhouse --no-use-colors
+        cd /opt/airflow/dbt/sancha1090 && dbt seed --full-refresh --select dim_airports --profiles-dir . --target clickhouse --no-use-colors
         cd /opt/airflow && python -c "from include.clickhouse import bootstrap_marts; print(bootstrap_marts())"
     restart: "no"
 

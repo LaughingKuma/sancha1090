@@ -16,16 +16,19 @@ origin_snap as (
                                        {{ haversine_km('s.first_lat', 's.first_lon', 'a.lat', 'a.lon') }}) as rn
     from (
         select icao24, seg_start_time, first_lat, first_lon,
+               -- Airliners don't land at unscheduled strips: gate their snap candidates (spec 2026-07-05).
+               {{ airline_shaped('callsign') }} as airline_shaped,
                arrayJoin([toInt32(floor(first_lat)) - 1, toInt32(floor(first_lat)), toInt32(floor(first_lat)) + 1]) as lat_bucket
         from segs
         where first_on_ground or first_alt_m < {{ var('legs_cruise_alt_m') }}
     ) s
-    join (select icao, iata, name, lat, lon, toInt32(floor(lat)) as lat_bucket from {{ ref('dim_airports') }}) a
+    join (select icao, iata, name, lat, lon, scheduled_service, toInt32(floor(lat)) as lat_bucket from {{ ref('dim_airports') }}) a
       on a.lat_bucket = s.lat_bucket
     where a.lat between s.first_lat - {{ var('legs_snap_km') }} / 110.574 and s.first_lat + {{ var('legs_snap_km') }} / 110.574
       and abs(modulo(a.lon - s.first_lon + 540, 360) - 180)
             <= {{ var('legs_snap_km') }} / (111.32 * greatest(cos(radians(s.first_lat)), 0.01))
       and {{ haversine_km('s.first_lat', 's.first_lon', 'a.lat', 'a.lon') }} <= {{ var('legs_snap_km') }}
+      and (not s.airline_shaped or a.scheduled_service)
 ),
 dest_snap as (
     select s.icao24, s.seg_start_time,
@@ -37,16 +40,19 @@ dest_snap as (
                                        {{ haversine_km('s.last_lat', 's.last_lon', 'a.lat', 'a.lon') }}) as rn
     from (
         select icao24, seg_start_time, last_lat, last_lon,
+               -- Airliners don't land at unscheduled strips: gate their snap candidates (spec 2026-07-05).
+               {{ airline_shaped('callsign') }} as airline_shaped,
                arrayJoin([toInt32(floor(last_lat)) - 1, toInt32(floor(last_lat)), toInt32(floor(last_lat)) + 1]) as lat_bucket
         from segs
         where last_on_ground or last_alt_m < {{ var('legs_cruise_alt_m') }}
     ) s
-    join (select icao, iata, name, lat, lon, toInt32(floor(lat)) as lat_bucket from {{ ref('dim_airports') }}) a
+    join (select icao, iata, name, lat, lon, scheduled_service, toInt32(floor(lat)) as lat_bucket from {{ ref('dim_airports') }}) a
       on a.lat_bucket = s.lat_bucket
     where a.lat between s.last_lat - {{ var('legs_snap_km') }} / 110.574 and s.last_lat + {{ var('legs_snap_km') }} / 110.574
       and abs(modulo(a.lon - s.last_lon + 540, 360) - 180)
             <= {{ var('legs_snap_km') }} / (111.32 * greatest(cos(radians(s.last_lat)), 0.01))
       and {{ haversine_km('s.last_lat', 's.last_lon', 'a.lat', 'a.lon') }} <= {{ var('legs_snap_km') }}
+      and (not s.airline_shaped or a.scheduled_service)
 )
 select
     s.icao24 as icao24,

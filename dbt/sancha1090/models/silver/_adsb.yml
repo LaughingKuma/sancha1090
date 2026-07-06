@@ -47,9 +47,17 @@ seeds:
           - not_null
 
   - name: dim_airports
-    description: "OpenFlights airports keyed by ICAO 4-letter code (lat/lon for nearest-airport snapping)"
+    description: "OurAirports airports keyed by ICAO 4-letter code (lat/lon for nearest-airport snapping); scheduled_service gates snap candidates for airline-shaped callsigns"
     columns:
       - name: icao
         tests:
           - not_null
           - unique
+      - name: scheduled_service
+        tests:
+          - not_null
+      - name: airport_type
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['large_airport', 'medium_airport', 'small_airport', 'heliport', 'seaplane_base']

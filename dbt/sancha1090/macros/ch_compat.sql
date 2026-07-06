@@ -24,3 +24,9 @@ if(
 {% macro ch_blank_null(col) -%}
 nullIf({{ col }}, '')
 {%- endmacro %}
+
+{# Airliners don't land at unscheduled strips: shared snap-gate shape for callsign columns
+   that look like a scheduled-service flight number (3-letter ICAO airline prefix + digit). #}
+{% macro airline_shaped(callsign_col) -%}
+({{ callsign_col }} is not null and match(trimBoth({{ callsign_col }}), '^[A-Z]{3}[0-9]'))
+{%- endmacro %}
