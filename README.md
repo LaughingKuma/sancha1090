@@ -290,46 +290,55 @@ data open:
   coverage drops out, those segments are then chained back into whole flights
   (`silver.int_flight_chains_adsblol`) — including across UTC trace-day boundaries —
   whenever the implied great-circle groundspeed across the gap is cruise-plausible
-  (300–1,100 km/h), and `gold.fct_flight_legs` fills each endpoint from the chain
-  window when the leg's own ends never fell inside the box. A daily DAG
-  (`ingest_adsblol_routes`) makes targeted per-hex fetches; a backlog driver
+  (300–1,100 km/h). A daily DAG (`ingest_adsblol_routes`) makes targeted per-hex
+  fetches against the still-unresolved endpoints; a backlog driver
   (`scripts/backfill_adsblol_routes.py`) streams the historical tarballs.
 
-  Because that backstory mixes observation with inference, every route endpoint
-  records how it was derived in `origin_source`/`dest_source`, so any attribution
-  can be audited back to its basis and no guess is mistaken for a sighting:
-  - `snap` — **observed**: a directly seen low-altitude fix at the airport, inside
-    the tracked box. Airline-shaped callsigns (`^[A-Z]{3}[0-9]`) only snap to
-    scheduled-service airports, so a 787 is never attributed to a military strip;
-    GA and military callsigns still snap against the full airport set.
+  `gold.fct_flights_reconciled` is the **canonical O/D source**: it resolves each
+  flight's origin/destination by **cross-source consensus**, scoped to flights the
+  Japan box is actually relevant to — anchored by OpenSky flight-summaries, or with
+  at least one states fix inside the flight window, since adsb.lol's worldwide
+  chains would otherwise inflate this Japan mart ~3x. Because that consensus mixes
+  observation with inference, every route endpoint records how it was derived in
+  `origin_source`/`dest_source`, so any attribution can be audited back to its
+  basis and no guess is mistaken for a sighting:
+  - `opensky_flights` — **observed** (ground truth): OpenSky's own arrival/departure
+    flight-summary record for this flight — the highest-authority source.
+  - `opensky_states` — **observed**: a directly seen low-altitude fix at the
+    airport, inside the tracked box. Airline-shaped callsigns (`^[A-Z]{3}[0-9]`)
+    only snap to scheduled-service airports, so a 787 is never attributed to a
+    military strip; GA and military callsigns still snap against the full
+    airport set.
   - `adsblol` — **inferred**: two coverage-split segments chained because the
     boundary groundspeed looked like cruise. This can be wrong for a stop the
     traces never saw — an aircraft that landed and left again inside a gap reads as
     one continuous flight.
   - `curated` — **entered by hand**: an evidence-backed row in the
-    `dim_route_overrides` seed, applied *only* where observation and inference both
-    left the endpoint NULL, each row carrying its evidence string (e.g. a
-    FlightAware confirmation).
+    `dim_route_overrides` seed, applied *only* where every source left the
+    endpoint NULL, each row carrying its evidence string (e.g. a FlightAware
+    confirmation).
 
-  `fct_flight_legs` fills each endpoint from a single best source in priority
-  order. A newer `gold.fct_flights_reconciled` mart instead resolves each
-  flight's O/D by **cross-source consensus**, scoped to flights the Japan box
-  is actually relevant to — anchored by OpenSky flight-summaries, or with at
-  least one states fix inside the flight window, since adsb.lol's worldwide
-  chains would otherwise inflate this Japan mart ~3x. Every source with an
-  opinion (OpenSky flight-summaries, the OpenSky-states sessionize+snap above,
-  and the adsb.lol chain) casts a vote per endpoint, plurality wins, and an
-  exact tie prefers a scheduled-service airport for airline-shaped callsigns
-  before falling back to the same source-authority order — flagged `tiebreak`
-  either way rather than silently picked. An endpoint only one source voted on
-  is flagged `single` (per endpoint, not per flight — a 3-source flight can
-  still be origin-`single`); the curated seed still overrides on top. Every
+  Every source with an opinion (OpenSky flight-summaries, the OpenSky-states
+  sessionize+snap, and the adsb.lol chain) casts a vote per endpoint, plurality
+  wins, and an exact tie prefers a scheduled-service airport for airline-shaped
+  callsigns before falling back to the same source-authority order — flagged
+  `tiebreak` either way rather than silently picked. An endpoint only one source
+  voted on is flagged `single` (per endpoint, not per flight — a 3-source flight
+  can still be origin-`single`); the curated seed still overrides on top. Every
   flight carries the full vote tally and an agreement label (`unanimous` /
   `majority` / `tiebreak` / `single` / `curated`) per endpoint, so a low-trust
-  resolution stays visible instead of blending in — consensus measurably cuts
-  the same-airport (`RJTT→RJTT`) collapse rate from 14.1% in `fct_flight_legs`
-  to 6.5%. The single-source marts (`fact_flights`, `fct_flight_legs`) are
-  untouched and remain its inputs.
+  resolution stays visible instead of blending in — consensus measurably cuts the
+  same-airport (`RJTT→RJTT`) collapse rate from ~14% under the old single-source
+  blend to ~6.7%. A hardened spine merges near-duplicate flight-summary anchors
+  for the same physical flight and caps implausibly long single-source anchors, so
+  a handful of noisy records can't double-count or fuse two flights into one.
+  Every top-route, operator, longest-flight, and daily-airport-movement aggregate
+  now derives from this one consensus mart, replacing what used to be two parallel
+  route marts. `fact_flights` stays untouched as an input; `gold.fct_flight_legs`
+  is the single-lane OpenSky-states inferred view — sessionized and
+  airport-snapped from the OpenSky-context feed alone, with no
+  adsb.lol or curated blending — for consumers that want that one source's
+  opinion on its own.
 
 If you run an ADS-B receiver, feed these networks.
 

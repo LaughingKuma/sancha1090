@@ -57,25 +57,15 @@ TRACK_QUERY = """
     ORDER BY capture_ts
 """
 
-# "Where else has it been": clean fact_flights history + rooftop legs fresher than the OpenSky
-# watermark fill the ~48h arrival lag. UNION wrapped in a subquery so ORDER BY/LIMIT bind the whole set.
+# "Where else has it been": one clean source now — the reconciled consensus mart (SP2) carries
+# resolved O/D + endpoint geo + provenance, so no read-time fact_flights/legs UNION or watermark.
 FLIGHTS_QUERY = f"""
-    WITH (SELECT coalesce(max(last_seen), toDateTime64('1970-01-01 00:00:00', 6))
-          FROM {CH_DB}.fact_flights WHERE icao24 = {{hex:String}}) AS wm
-    SELECT * FROM (
-        SELECT 'opensky' AS src, last_seen AS ts,
-               coalesce(origin_iata, origin_icao) AS o_code, coalesce(origin_city, origin_name) AS o_name,
-               coalesce(dest_iata,   dest_icao)   AS d_code, coalesce(dest_city,   dest_name)   AS d_name, callsign
-        FROM {CH_DB}.fact_flights
-        WHERE icao24 = {{hex:String}} AND (origin_icao IS NOT NULL OR dest_icao IS NOT NULL)
-        UNION ALL
-        SELECT 'rooftop' AS src, end_time AS ts,
-               origin_icao AS o_code, origin_name AS o_name,
-               dest_icao   AS d_code, dest_name   AS d_name, callsign
-        FROM {CH_DB}.fct_flight_legs
-        WHERE icao24 = {{hex:String}} AND end_time > wm
-          AND (origin_icao IS NOT NULL OR dest_icao IS NOT NULL)
-    ) ORDER BY ts DESC LIMIT 10
+    SELECT 'reconciled' AS src, end_time AS ts,
+           coalesce(origin_iata, origin_icao) AS o_code, coalesce(origin_city, origin_name) AS o_name,
+           coalesce(dest_iata,   dest_icao)   AS d_code, coalesce(dest_city,   dest_name)   AS d_name, callsign
+    FROM {CH_DB}.fct_flights_reconciled
+    WHERE icao24 = {{hex:String}} AND (origin_icao IS NOT NULL OR dest_icao IS NOT NULL)
+    ORDER BY ts DESC LIMIT 10
 """
 
 @asynccontextmanager
@@ -100,7 +90,7 @@ _routes: dict = {}
 # (server_ts, [[hex, lon, lat, capture_ts, alt_baro], ...]) per successful poll; in-process
 # is fine now — a restart refills the full wake window in ~2 min
 _track_buf: collections.deque = collections.deque(maxlen=max(1, int(HISTORY_BUFFER_S / POLL_SECONDS)))
-# /flights is on-click + rarely changing (fact_flights is batch, rooftop legs ~hourly) — cache per hex.
+# /flights is on-click + rarely changing (the reconciled mart is batch) — cache per hex.
 _flights_cache: dict = {}
 FLIGHTS_CACHE_TTL_S = float(os.environ.get("LIVEMAP_FLIGHTS_CACHE_TTL_S", "120"))
 try:

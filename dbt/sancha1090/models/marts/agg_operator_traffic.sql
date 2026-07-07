@@ -1,26 +1,21 @@
-{{ config(materialized='table', tags=['flights']) }}
+{{ config(materialized='table', tags=['reconcile']) }}
 
--- Flights per operator: registry operator wins; airline-coded callsigns (AAA123) fill
--- the gaps via dim_airlines, mirroring the guard used by the livemap MV.
+-- Flights per operator on the reconciled mart: registry operator wins; airline_name (already resolved
+-- from the callsign in the mart) fills the gap. tag:reconcile -> builds in transform_marts.
 with named as (
     select
-        f.*,
-        trimBoth(coalesce(
-            nullif(f.operator, ''),
-            case when match(trimBoth(f.callsign), '^[A-Z]{3}[0-9]')
-                 then al.name end
-        )) as operator_name
-    from {{ ref('fact_flights') }} f
-    left join {{ ref('dim_airlines') }} al
-        on al.icao = substring(trimBoth(f.callsign), 1, 3)
+        r.icao24 as icao24,
+        r.start_time as start_time,
+        trimBoth(coalesce(nullif(ac.operator, ''), r.airline_name)) as operator_name
+    from {{ ref('fct_flights_reconciled') }} r
+    left join {{ ref('dim_aircraft') }} ac on ac.icao24 = lower(r.icao24)
 )
 select
     operator_name,
     count(*)               as flight_count,
     count(distinct icao24) as distinct_aircraft,
-    max(first_seen)        as last_flight
+    max(start_time)        as last_flight
 from named
-where operator_name is not null
-  and seen_in_context
+where operator_name is not null and operator_name != ''
 group by 1
 order by flight_count desc

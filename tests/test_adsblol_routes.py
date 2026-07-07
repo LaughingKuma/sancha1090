@@ -258,9 +258,40 @@ def test_run_daily_isolates_a_persistently_failing_pair(monkeypatch):
         [("a61c53", "2026-06-25"), ("a61c53", "2026-06-24")], eng) == []
 
 
-def test_livemap_routes_sql_unions_adsblol():
+class _FakeResult:
+    def __init__(self, rows):
+        self.result_rows = rows
+
+
+class _FakeClient:
+    def __init__(self, rows):
+        self._rows = rows
+        self.seen = {}
+
+    def query(self, sql, parameters=None):
+        self.seen["sql"] = sql
+        self.seen["parameters"] = parameters
+        return _FakeResult(self._rows)
+
+
+def test_route_targets_overlaps_on_either_endpoint():
+    # SQL lower()s icao24; the fake returns rows already lowered as the driver would.
+    fake = _FakeClient([("a61c53",), ("abc123",), ("a61c53",)])
+    out = routes.route_targets(DAY, client=fake)
+    sql = fake.seen["sql"]
+    # Overlap predicate targets both departure-day and arrival-day flights.
+    assert "toDate(start_time) = %(day)s" in sql
+    assert "toDate(end_time) = %(day)s" in sql
+    assert "origin_icao IS NULL OR dest_icao IS NULL" in sql
+    assert "icao24 IS NOT NULL" in sql
+    assert fake.seen["parameters"] == {"day": DAY.isoformat()}
+    assert out == ["a61c53", "abc123"]  # deduped + sorted
+
+
+def test_routes_sql_reads_reconciled():
     import include.flight_routes as fr
 
     sql = fr._routes_sql()
-    assert "int_flight_chains_adsblol" in sql
-    assert "fact_flights" in sql
+    assert "fct_flights_reconciled" in sql          # single consensus source (SP2)
+    assert "int_flight_chains_adsblol" not in sql   # the fact_flights + adsblol union is gone
+    assert "UNION" not in sql.upper()

@@ -232,10 +232,13 @@ def route_targets(day: date, *, client=None) -> list[str]:
     gold = os.environ.get("CH_GOLD_SCHEMA", "gold_ch")
     c = client or ch_client()
     try:
+        # Overlap on either endpoint: a flight landing on 'day' but departing 'day-1' must be
+        # targeted on the 'day' run so run_daily's (day, day-1) fetch grabs its arrival trace.
         rows = c.query(
-            f"SELECT DISTINCT lower(icao24) FROM {gold}.fct_flight_legs "
+            f"SELECT DISTINCT lower(icao24) FROM {gold}.fct_flights_reconciled "
             f"WHERE (origin_icao IS NULL OR dest_icao IS NULL) "
-            f"AND toDate(start_time) = %(day)s AND icao24 IS NOT NULL",
+            f"AND (toDate(start_time) = %(day)s OR toDate(end_time) = %(day)s) "
+            f"AND icao24 IS NOT NULL",
             parameters={"day": day.isoformat()},
         ).result_rows
     finally:

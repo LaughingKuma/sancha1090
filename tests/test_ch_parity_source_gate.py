@@ -27,7 +27,8 @@ _CH_OK = {"bronze.opensky_flights": 100, "bronze.adsb_states": 100,
 _PARQUET = {"flights_raw": 100, "adsb_state": 100, "states,states_raw": 100, "adsblol_states_raw": 100}
 _NOW = 1_780_000_000
 _FRESH_OK = {"agg_hourly_traffic": _NOW - 60, "fact_state_snapshots": _NOW - 60,
-             "agg_country_traffic": _NOW - 60, "fct_adsb_state": _NOW - 60, "fact_flights": _NOW - 60}
+             "agg_country_traffic": _NOW - 60, "fct_adsb_state": _NOW - 60, "fact_flights": _NOW - 60,
+             "fct_flights_reconciled": _NOW - 60}
 
 
 def _completeness_fake(ch_counts, parquet_counts):
@@ -57,7 +58,7 @@ def test_source_gate_passes_when_complete_and_fresh():
         ch_query=_completeness_fake(_CH_OK, _PARQUET),
         serving_query=_freshness_fake(_NOW, _FRESH_OK))
     assert out["all_ok"]
-    assert out["passed"] == out["total"] == 9   # 4 completeness + 5 freshness (states/context + adsb + flights; anomalies excluded)
+    assert out["passed"] == out["total"] == 10   # 4 completeness + 6 freshness (states/context + adsb + flights + reconciled; anomalies excluded)
 
 
 def test_source_gate_raises_when_ch_short_of_source():

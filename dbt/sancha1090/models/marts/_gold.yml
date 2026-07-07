@@ -8,26 +8,26 @@ models:
         tests:
           - not_null
       - name: route_source
-        description: Leg-level provenance summary — 'adsblol' if the global-trace chain contributed an endpoint, else 'curated' if an override did, else 'snap'; NULL when unresolved. Per-endpoint truth is origin_source/dest_source.
+        description: Leg-level provenance summary — 'snap' when a geometric airport snap resolved an endpoint, NULL otherwise. Per-endpoint truth is origin_source/dest_source. (adsblol/curated blend moved to fct_flights_reconciled in SP2.)
         tests:
           - accepted_values:
               arguments:
-                values: ['snap', 'adsblol', 'curated']
+                values: ['snap']
       - name: origin_source
-        description: Source that filled origin_icao — geometric snap, chained adsb.lol trace, or curated override.
+        description: Source that filled origin_icao — geometric snap only (SP2).
         tests:
           - accepted_values:
               arguments:
-                values: ['snap', 'adsblol', 'curated']
+                values: ['snap']
       - name: dest_source
-        description: Source that filled dest_icao.
+        description: Source that filled dest_icao — geometric snap only (SP2).
         tests:
           - accepted_values:
               arguments:
-                values: ['snap', 'adsblol', 'curated']
+                values: ['snap']
 
   - name: agg_route_traffic
-    description: "Top inferred origin-dest routes (both endpoints resolved, origin != dest) for the deck.gl arc map"
+    description: "Top consensus origin→dest routes (both endpoints resolved, origin != dest) from fct_flights_reconciled — one mart replacing the SP1 inferred+authoritative split"
     columns:
       - name: route_inferred
         tests:
@@ -71,16 +71,8 @@ models:
               arguments:
                 values: ['d0', 'd2', 'backfill']
 
-  - name: agg_flight_routes
-    description: "Ground-truth top routes (both endpoints known, seen-in-context only) — counterpart to the inferred agg_route_traffic"
-    columns:
-      - name: route
-        tests:
-          - not_null
-          - unique
-
   - name: agg_operator_traffic
-    description: "Flights per operator (registry operator, dim_airlines fallback), seen-in-context only"
+    description: "Flights per operator (registry operator, airline_name fallback) from fct_flights_reconciled"
     columns:
       - name: operator_name
         tests:
@@ -88,7 +80,7 @@ models:
           - unique
 
   - name: longest_flights
-    description: "Top-10 longest-duration flights per day among seen-in-context aircraft"
+    description: "Top-10 longest-duration reconciled flights per day, plausibility-filtered (resolved distinct endpoints, duration <= 24h)"
     columns:
       - name: flight_day
         tests:

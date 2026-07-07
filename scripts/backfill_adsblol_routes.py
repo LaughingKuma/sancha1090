@@ -33,7 +33,7 @@ def _target_hexes() -> set[str]:
     client = ch_client()
     try:
         rows = client.query(
-            f"SELECT DISTINCT lower(icao24) FROM {gold}.fct_flight_legs "
+            f"SELECT DISTINCT lower(icao24) FROM {gold}.fct_flights_reconciled "
             f"WHERE (origin_icao IS NULL OR dest_icao IS NULL) AND icao24 IS NOT NULL"
         ).result_rows
     finally:

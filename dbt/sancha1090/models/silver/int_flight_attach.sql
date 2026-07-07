@@ -26,7 +26,12 @@ attached as (
         flight_id, source, source_rank, origin_icao, dest_icao, overlap_s, win_start,
         row_number() over (
             partition by flight_id, source
-            order by overlap_s desc, win_start asc
+            -- opensky_flights near-dups: most-resolved first (a merged near-dup must not vote with a wide
+            -- NULL-endpoint capture). Other sources keep SP1's overlap-first (resolvedness term = 0, inert).
+            order by multiIf(source = 'opensky_flights',
+                             toInt8(if(origin_icao is not null, 1, 0) + if(dest_icao is not null, 1, 0)),
+                             toInt8(0)) desc,
+                     overlap_s desc, win_start asc
         ) as source_rn
     from cand
     where rn = 1

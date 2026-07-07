@@ -12,7 +12,7 @@ from airflow.sdk import dag, task
     description="Resolve overflight route backstory from adsb.lol global traces",
     start_date=pendulum.datetime(2026, 7, 1, tz="UTC"),
     # 12:00 JST: adsb.lol has published yesterday's globe_history by early UTC morning,
-    # and transform_marts has already rebuilt fct_flight_legs for D-1's legs.
+    # and transform_marts has already rebuilt fct_flights_reconciled for D-1's legs.
     schedule="0 3 * * *",
     catchup=False,
     max_active_runs=1,

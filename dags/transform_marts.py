@@ -46,9 +46,18 @@ def transform_marts():
 
         return ensure()
 
-    # Two all_success leaves (dbt_test_ch, ensure_ch_mvs): a run/test failure propagates and reds the run.
+    @task(task_id="push_flight_routes")
+    def push_flight_routes() -> int:
+        # CH -> RisingWave route-memory publish, gated on a test-passing reconciled build; runs on the frequent
+        # bronze_states_table tick (SP2 moved it here from transform_flights) so routes stay fresh within minutes.
+        from include.flight_routes import refresh_flight_routes
+
+        return refresh_flight_routes()
+
+    # Two all_success leaves (push_flight_routes, ensure_ch_mvs): a run/test failure propagates and reds the run.
     dbt_run_ch >> dbt_test_ch
     dbt_run_ch >> ensure_ch_mvs()
+    dbt_test_ch >> push_flight_routes()
 
 
 transform_marts()

@@ -1,7 +1,7 @@
 {{ config(materialized='table', tags=['reconcile']) }}
 
--- OpenSky-states O/D opinion for the reconciler: sessionize + pure sched-gated snap (no adsblol/curated
--- fallback) + callsign-flip split. Duplicates fct_flight_legs's sessionize+snap on purpose (SP2 dedups).
+-- OpenSky-states O/D opinion for the reconciler: sessionize + pure sched-gated snap + callsign-flip split.
+-- fct_flight_legs consumes this model (SP2 dedup); the canonical OpenSky-states sessionize+snap opinion.
 with ordered as (
     select
         icao24, snapshot_time, latitude, longitude, baro_altitude_m, on_ground, callsign,

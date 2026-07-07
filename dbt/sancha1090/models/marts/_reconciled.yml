@@ -26,3 +26,23 @@ models:
           - accepted_values:
               arguments:
                 values: ['unanimous', 'majority', 'tiebreak', 'single', 'curated']
+      - name: origin_name
+        description: Resolved origin airport name (dim_airports); NULL when origin_icao is NULL.
+      - name: origin_iata
+        description: Origin IATA code (dim_airports, '' normalized to NULL); NULL when origin_icao is NULL or the airport has no IATA.
+      - name: origin_city
+        description: Origin city (dim_airports, '' normalized to NULL); NULL when origin_icao is NULL.
+      - name: origin_lat
+        description: Origin latitude (dim_airports); NULL when origin_icao is NULL.
+      - name: origin_lon
+        description: Origin longitude (dim_airports); NULL when origin_icao is NULL.
+      - name: dest_name
+        description: Resolved dest airport name (dim_airports); NULL when dest_icao is NULL.
+      - name: dest_iata
+        description: Dest IATA code (dim_airports, '' normalized to NULL); NULL when dest_icao is NULL or the airport has no IATA.
+      - name: dest_city
+        description: Dest city (dim_airports, '' normalized to NULL); NULL when dest_icao is NULL.
+      - name: dest_lat
+        description: Dest latitude (dim_airports); NULL when dest_icao is NULL.
+      - name: dest_lon
+        description: Dest longitude (dim_airports); NULL when dest_icao is NULL.

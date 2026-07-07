@@ -74,7 +74,7 @@ models:
   # their snapshot_hour not_null/unique coverage lives on the served agg_hourly_traffic view above.
 
   - name: agg_airport_daily
-    description: "Daily arrivals/departures per tracked airport (JST days); extended backwards by the v5.2 flights backfill"
+    description: "Daily arrivals/departures at JP airports (JST days), from fct_flights_reconciled's consensus endpoints"
     columns:
       - name: traffic_day
         tests:

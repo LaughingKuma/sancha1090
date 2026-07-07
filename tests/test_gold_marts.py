@@ -73,11 +73,11 @@ def test_flight_legs_duration_and_fixes_nonnegative(ch_cur):
 
 
 def test_agg_route_traffic_top_route_valid(ch_cur):
-    rows = _q(ch_cur, "SELECT route_inferred, origin_icao, dest_icao, leg_count, origin_lat, dest_lon "
-                      "FROM gold_ch.agg_route_traffic ORDER BY leg_count DESC LIMIT 1")
+    rows = _q(ch_cur, "SELECT route_inferred, origin_icao, dest_icao, flight_count, origin_lat, dest_lon "
+                      "FROM gold_ch.agg_route_traffic ORDER BY flight_count DESC LIMIT 1")
     assert rows, "agg_route_traffic is empty"
-    route, origin, dest, leg_count, olat, dlon = rows[0]
-    assert leg_count > 0
+    route, origin, dest, flight_count, olat, dlon = rows[0]
+    assert flight_count > 0
     assert origin != dest, f"degenerate self-loop route {route}"
     assert olat is not None and dlon is not None, "arc coords must be non-null for the map"
 

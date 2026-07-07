@@ -12,41 +12,27 @@ from include.db import rw_connect
 LOOKBACK_DAYS = int(os.environ.get("FLIGHT_ROUTES_LOOKBACK_DAYS", "7"))
 # CH gold-lane schema for the routes source (P3 built marts into gold_ch); one constant so P7's rename is a one-liner.
 CH_GOLD_SCHEMA = os.environ.get("CH_GOLD_SCHEMA", "gold_ch")
-CH_SILVER_SCHEMA = os.environ.get("CH_SILVER_SCHEMA", "silver_ch")
 
 
 def _routes_sql() -> str:
-    # Both lanes ranked together so a fresher observation wins per callsign; adsblol
-    # rows join dim_airports for the iata/city fields fact_flights already carries.
+    # Latest known route per callsign from the reconciled consensus mart (SP2): one source, endpoint geo
+    # already resolved. now('UTC') matches the UTC-stored start_time.
     return f"""
-    WITH unioned AS (
-      SELECT callsign, origin_icao, origin_iata, origin_city, dest_icao, dest_iata, dest_city, first_seen
-      FROM {CH_GOLD_SCHEMA}.fact_flights
-      WHERE callsign IS NOT NULL AND origin_icao IS NOT NULL AND dest_icao IS NOT NULL
-      UNION ALL
-      SELECT r.callsign,
-             r.origin_icao, nullIf(oa.iata, '') AS origin_iata, nullIf(oa.city, '') AS origin_city,
-             r.dest_icao,   nullIf(da.iata, '') AS dest_iata,   nullIf(da.city, '') AS dest_city,
-             r.chain_start AS first_seen
-      FROM {CH_SILVER_SCHEMA}.int_flight_chains_adsblol r
-      LEFT JOIN {CH_SILVER_SCHEMA}.dim_airports oa ON oa.icao = r.origin_icao
-      LEFT JOIN {CH_SILVER_SCHEMA}.dim_airports da ON da.icao = r.dest_icao
-      WHERE r.callsign IS NOT NULL AND r.origin_icao IS NOT NULL AND r.dest_icao IS NOT NULL
-    ),
-    ranked AS (
+    WITH ranked AS (
       SELECT
         callsign,
         origin_icao,
-        coalesce(origin_iata, origin_icao) AS origin_code,
+        coalesce(nullIf(origin_iata, ''), origin_icao) AS origin_code,
         origin_city,
         dest_icao,
-        coalesce(dest_iata, dest_icao) AS dest_code,
+        coalesce(nullIf(dest_iata, ''), dest_icao) AS dest_code,
         dest_city,
-        toInt64(toUnixTimestamp(first_seen)) AS departed_epoch,
-        row_number() OVER (PARTITION BY callsign ORDER BY first_seen DESC) AS rn
-      FROM unioned
-      WHERE origin_icao <> dest_icao
-        AND first_seen > now('UTC') - INTERVAL {LOOKBACK_DAYS} DAY
+        toInt64(toUnixTimestamp(start_time)) AS departed_epoch,
+        row_number() OVER (PARTITION BY callsign ORDER BY start_time DESC) AS rn
+      FROM {CH_GOLD_SCHEMA}.fct_flights_reconciled
+      WHERE callsign IS NOT NULL AND origin_icao IS NOT NULL AND dest_icao IS NOT NULL
+        AND origin_icao <> dest_icao
+        AND start_time > now('UTC') - INTERVAL {LOOKBACK_DAYS} DAY
     )
     SELECT callsign, origin_icao, origin_code, origin_city,
            dest_icao, dest_code, dest_city, departed_epoch
@@ -56,7 +42,7 @@ def _routes_sql() -> str:
 
 def _compute() -> list[tuple]:
     # Latest known route per callsign; both endpoints resolved so the tooltip line
-    # always reads "XXX → YYY". now('UTC') matches the UTC-stored first_seen (== fact_flights' window).
+    # always reads "XXX → YYY". now('UTC') matches the UTC-stored start_time.
     sql = _routes_sql()
     client = ch_client()
     try:
@@ -79,7 +65,7 @@ def refresh_flight_routes() -> int:
             # Versioned publish (RW has no read-write txns): write a new gen, FLUSH, then
             # drop older gens — readers select max(gen) so a failed load keeps serving the
             # last complete route set. An empty compute means an upstream gap (the 7-day
-            # fact_flights lookback can't legitimately be empty once the lane is live), so
+            # fct_flights_reconciled lookback can't legitimately be empty once the lane is live), so
             # we deliberately DON'T advance gen on empty — same stale-over-blank choice as
             # range_outline; map.js already downgrades old rows to "usual route".
             cur.execute("SELECT coalesce(max(gen), 0) + 1 FROM dim_flight_routes")

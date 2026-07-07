@@ -20,12 +20,15 @@ and the geometry/enrichment join in `gold.fct_flight_legs`:
 This document is the column-level reference for the **states/ADS-B core** of the lake — the
 two feeds above and the models built from them. Two newer lanes are **not yet documented here**:
 the v5.1 flights lane (`bronze.opensky_flights`, `silver.dim_aircraft_registry`,
-`gold.fact_flights`, `gold.agg_flight_routes`, `gold.longest_flights`,
-`gold.agg_operator_traffic`, `gold.agg_airport_daily`) and the v5.2 adsb.lol history lane
+`gold.fact_flights`) and the v5.2 adsb.lol history lane
 (`bronze.adsblol_states`, `silver.stg_states_adsblol`, `gold.agg_hourly_traffic_adsblol`,
 `gold.agg_hourly_traffic_opensky_settled`) — see the dbt sources and models for those. The
-newer SP1 reconcile lane, which reads outputs of both, **is** documented — see
-[Reconcile — cross-source consensus](#reconcile--cross-source-consensus-sp1).
+newer SP1/SP2 reconcile lane, which reads outputs of both, **is** documented — see
+[Reconcile — cross-source consensus](#reconcile--cross-source-consensus-sp1). SP2 made
+`gold.fct_flights_reconciled` the canonical O/D source: `gold.agg_route_traffic` (documented in
+[Gold](#gold) below), `gold.agg_operator_traffic`, `gold.longest_flights`, and
+`gold.agg_airport_daily` were all rebuilt on it (`tag:reconcile`, built by `transform_marts`),
+and the old split-lane `gold.agg_flight_routes` is retired.
 
 ## Contents
 
@@ -54,8 +57,8 @@ flowchart TD
     STG --> ANO["gold.anomalies"]
     FSS --> AHT["gold.agg_hourly_traffic"]
     FSS --> AAT["gold.agg_airline_traffic"]
-    FSS --> FFL["gold.fct_flight_legs"]
-    FFL --> ART["gold.agg_route_traffic"]
+    FSS --> ILO["silver.int_flight_legs_opensky"]
+    ILO --> FFL["gold.fct_flight_legs"]
 
     %% ---- rooftop track: transform_adsb_silver (--select tag:adsb) ----
     BAS --> DAC["silver.dim_aircraft"]
@@ -93,13 +96,17 @@ labels are the join predicates.
 
 ```mermaid
 erDiagram
-    fact_state_snapshots ||--o{ fct_flight_legs : "sessionized per icao24 into legs"
+    fact_state_snapshots ||--o{ int_flight_legs_opensky : "sessionized per icao24 into legs"
+    int_flight_legs_opensky ||--o{ fct_flight_legs : "snap-only pass-through (SP2)"
     fct_flight_legs }o--o| dim_airports : "first/last fix haversine-snapped"
     fct_flight_legs }o--o| dim_airlines : "callsign[1:3] = icao"
     fct_flight_legs }o--o| dim_aircraft : "icao24 = lower(hex)"
     fct_flight_legs }o--o| dim_hex_country : "from_base(hex,16) in [lo,hi]"
     fct_flight_legs }o--o| fct_adsb_state : "antenna rollup hex = lower(icao24)"
-    fct_flight_legs ||--o{ agg_route_traffic : "aggregated by route"
+    fct_flights_reconciled ||--o{ agg_route_traffic : "consensus O/D aggregation (SP2)"
+    fct_flights_reconciled ||--o{ agg_operator_traffic : "by operator (SP2)"
+    fct_flights_reconciled ||--o{ longest_flights : "top-10/day by duration (SP2)"
+    fct_flights_reconciled ||--o{ agg_airport_daily : "JP daily movements (SP2)"
     fct_adsb_state }o--o| dim_aircraft : "icao24 = lower(hex)"
     fct_adsb_state }o--o| dim_airlines : "callsign_filled[1:3] = icao"
     fct_adsb_state }o--o| dim_hex_country : "from_base(hex,16) in [lo,hi]"
@@ -469,20 +476,30 @@ shared across both feeds.
 
 Consumer-facing marts. The **v3.5** headline marts (`fct_flight_legs`, `agg_route_traffic`,
 `agg_airline_traffic`, `agg_country_traffic_adsb`) plus the rooftop `agg_airline_traffic_adsb`
-are documented first; three **legacy** OpenSky-context marts follow.
+are documented first; three **legacy** OpenSky-context marts follow. (**SP2:** `agg_route_traffic`'s
+source moved to the reconciled consensus mart — see its entry below and
+[Reconcile](#reconcile--cross-source-consensus-sp1).)
 
-### `gold.fct_flight_legs` — inferred flight legs (headline)
+### `gold.fct_flight_legs` — OpenSky-states inferred provenance view (headline)
 
 - **Grain:** one row per `(icao24, leg_id)` — one inferred flight leg per airframe.
-- **Source:** **cross-feed** — OpenSky context `fact_state_snapshots` for geometry, fused with rooftop
-  `fct_adsb_state` + dims for enrichment.
-- **What it does:** sessionizes each airframe's OpenSky context state stream into legs (a new leg on a
-  `> 90-min` sample gap or an `on_ground` true-flip), then snaps low-altitude (`< 3000 m`)
-  first/last fixes to the nearest airport (haversine `≤ 100 km`) to infer origin/dest.
+- **Source:** **SP2:** a thin pass-through over `silver.int_flight_legs_opensky` (the reconciler's
+  own OpenSky-states sessionize+snap opinion, documented under
+  [Reconcile](#reconcile--cross-source-consensus-sp1)) — no more duplicated sessionize+snap logic
+  — fused with rooftop `fct_adsb_state` for `is_military`/`crossed_antenna` enrichment only.
+- **What it does:** carries `int_flight_legs_opensky`'s sessionize (a new leg on a `> 90-min`
+  sample gap, an `on_ground` true-flip, or a callsign-flip turnaround) and altitude-gated
+  (`< 3000 m`) nearest-airport snap (haversine `≤ 100 km`) through unchanged; adds
+  airframe/airline/country enrichment and the antenna rollup.
 - **Notes:** `route_inferred` is **approximate, not authoritative** — the ~12-min cadence snaps
   to the first/last *in-coverage* fix, not the runway; transoceanic legs fragment into
-  one-endpoint-NULL halves. dbt tests: `not_null icao24`, `unique (icao24, leg_id)`, and no
-  endpoint snapped above cruise altitude.
+  one-endpoint-NULL halves. **SP2:** endpoint resolution beyond the geometric snap (the adsb.lol
+  chain fallback and curated overrides) moved to `gold.fct_flights_reconciled` — this view is now
+  **snap-only**, so `origin_source`/`dest_source`/`route_source` only ever read `'snap'` or NULL.
+  The adsb.lol route-target ingest (`route_targets()` in `include/adsblol_routes.py`) was
+  repointed to `fct_flights_reconciled` in the same change, so this view no longer selects fetch
+  targets either. dbt tests: `not_null icao24`, `unique (icao24, leg_id)`, and no endpoint snapped
+  above cruise altitude.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -500,10 +517,13 @@ are documented first; three **legacy** OpenSky-context marts follow.
 | `origin_icao` | `varchar` | Nearest airport to the first fix within 100 km **iff** low-altitude; else NULL (overflight). |
 | `origin_name` | `varchar` | Snapped origin airport name. |
 | `origin_lat` / `origin_lon` | `double` | Snapped origin coordinates. |
+| `origin_source` | `varchar` | `'snap'` when the geometric snap resolved `origin_icao`, else NULL (SP2: snap-only). |
 | `dest_icao` | `varchar` | Nearest airport to the last fix within 100 km **iff** low-altitude; else NULL. |
 | `dest_name` | `varchar` | Snapped destination airport name. |
 | `dest_lat` / `dest_lon` | `double` | Snapped destination coordinates. |
+| `dest_source` | `varchar` | `'snap'` when the geometric snap resolved `dest_icao`, else NULL (SP2: snap-only). |
 | `route_inferred` | `varchar` | `origin_icao-dest_icao` when both resolve, else NULL. **Inferred**, not authoritative. |
+| `route_source` | `varchar` | `'snap'` if either endpoint resolved via the geometric snap, else NULL. Leg-level summary; per-endpoint truth is `origin_source`/`dest_source`. |
 | `registration` | `varchar` | Tail from `dim_aircraft` (sparse — antenna-derived). |
 | `typecode` | `varchar` | Type code from `dim_aircraft` (sparse). |
 | `airline_name` | `varchar` | Operating airline (callsign prefix → `dim_airlines`). |
@@ -512,15 +532,18 @@ are documented first; three **legacy** OpenSky-context marts follow.
 | `is_military` | `boolean` | Military flag from the rooftop rollup; `false` if never seen by the antenna. |
 | `crossed_antenna` | `boolean` | True if this airframe appears in the rooftop feed. |
 
-### `gold.agg_route_traffic` — top inferred routes
+### `gold.agg_route_traffic` — top consensus routes
 
-- **Grain:** one row per resolved route (`origin != dest`), derived 1:N from `fct_flight_legs`.
+- **Grain:** one row per resolved route (`origin != dest`), derived 1:N from
+  `gold.fct_flights_reconciled` (**SP2** — previously derived from `fct_flight_legs` alone).
 - **Purpose:** busiest origin→dest routes by frequency, with both endpoints' coordinates for a
   deck.gl arc map.
-- **Notes:** only both-endpoints-resolved legs are ranked, and self-loops (`origin == dest`) are
-  filtered out. Transoceanic legs fragment and never appear here, so the leaderboard skews
-  intra-continental; for authoritative airport pairs use the v5.1 flights lane
-  (`fact_flights` / `agg_flight_routes`) — this mart is not reconciled against it.
+- **Notes:** **SP2** consolidated what were two parallel route marts — the inferred
+  `agg_route_traffic` (ex-`fct_flight_legs`) and the authoritative `agg_flight_routes`
+  (ex-`fact_flights`, now **retired**) — into this one mart, built on the reconciled mart's
+  cross-source consensus endpoints. Only both-endpoints-resolved flights are ranked, and
+  self-loops (`origin == dest`) are filtered out. Geo comes straight off
+  `fct_flights_reconciled` — no `dim_airports` join needed.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -531,9 +554,9 @@ are documented first; three **legacy** OpenSky-context marts follow.
 | `dest_icao` | `varchar` | Destination airport ICAO. |
 | `dest_name` | `varchar` | Destination airport name. |
 | `dest_lat` / `dest_lon` | `double` | Destination coordinates (arc end). |
-| `leg_count` | `bigint` | Number of legs on this route (sort key). |
+| `flight_count` | `bigint` | Number of reconciled flights on this route (sort key; **SP2** rename of `leg_count`). |
 | `distinct_aircraft` | `bigint` | Distinct airframes flown on this route. |
-| `last_seen` | `timestamp(6) with time zone` | Most recent leg `end_time` on this route. |
+| `last_seen` | `timestamp(6) with time zone` | Most recent flight `end_time` on this route. |
 
 ### `gold.agg_airline_traffic` — hourly airline leaderboard
 
@@ -634,10 +657,12 @@ These predate v3.5 and are built by `transform_marts` alongside the newer marts.
 ## Reconcile — cross-source consensus (SP1)
 
 An additive layer (`tag:reconcile`) over the flights and adsb.lol lanes above: it reads
-`gold.fact_flights`, `silver.int_flight_chains_adsblol`, and a new OpenSky-states opinion,
-and votes them into one consensus flight per airframe-window instead of picking a single
-best source. Nothing it reads is modified — `fact_flights` and `fct_flight_legs` stay as
-they are and remain its inputs.
+`gold.fact_flights`, `silver.int_flight_chains_adsblol`, and its own OpenSky-states opinion
+(`silver.int_flight_legs_opensky`), and votes them into one consensus flight per
+airframe-window instead of picking a single best source. `fact_flights` stays untouched and
+remains an input; **SP2** rewired `gold.fct_flight_legs` the other way around — it is now a
+thin snap-only pass-through built *on top of* this lane's `int_flight_legs_opensky`, not an
+independent input the reconciler reads.
 
 ```
 gold.fact_flights ─────────────────┐
@@ -646,14 +671,23 @@ silver.int_flight_chains_adsblol ──┘                                      
                                                         silver.dim_route_overrides (curated override) ────────────┘
 ```
 
+**SP2** rebuilt the O/D aggregates on `fct_flights_reconciled` (all `tag:reconcile`, built by
+`transform_marts`): `gold.agg_route_traffic`, `gold.agg_operator_traffic`, `gold.longest_flights`,
+`gold.agg_airport_daily`, plus `include/flight_routes.py` (RisingWave route memory) and the
+livemap `/flights` per-airframe drill-down — all single-source reads of the reconciled mart now,
+replacing earlier per-consumer UNIONs of `fact_flights`/`fct_flight_legs`/adsb.lol chains.
+`silver.int_flight_legs_opensky` also feeds `gold.fct_flight_legs` directly (see
+[Gold](#gold)) — a thin snap-only pass-through, no longer an independent reconciler input.
+
 ### `silver.int_flight_legs_opensky` — OpenSky-states O/D opinion
 
-- **Grain:** one row per `(icao24, leg_id)` — a reconciler input, independent of `fct_flight_legs`.
-- **Source:** `silver.fact_state_snapshots`, the same sessionize (`>90-min` gap / on-ground flip /
-  callsign-flip turnaround) and altitude-gated, scheduled-service-gated nearest-airport snap as
-  `fct_flight_legs` uses (duplicated on purpose; a future dedup is expected to merge the two).
-- **Notes:** unlike `fct_flight_legs`, it does **not** fall back to adsb.lol or the curated seed —
-  a pure, single-source opinion for the reconciler to vote with.
+- **Grain:** one row per `(icao24, leg_id)` — the canonical OpenSky-states sessionize+snap opinion;
+  a reconciler input. **SP2** dedup: `gold.fct_flight_legs` now consumes this model directly
+  (previously it duplicated the same sessionize+snap logic independently).
+- **Source:** `silver.fact_state_snapshots`, sessionized (`>90-min` gap / on-ground flip /
+  callsign-flip turnaround) and altitude-gated, scheduled-service-gated nearest-airport snapped.
+- **Notes:** unlike `fct_flights_reconciled`, it does **not** fall back to adsb.lol or the curated
+  seed — a pure, single-source opinion for the reconciler to vote with.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -690,13 +724,24 @@ silver.int_flight_chains_adsblol ──┘                                      
 
 - **Grain:** one row per `flight_id` — the reconciliation key every opinion attaches to.
 - **Source:** `silver.int_flight_opinions`, anchored by authority — every `opensky_flights`
-  opinion anchors unconditionally; an `adsblol` opinion anchors only where no `opensky_flights`
-  window overlaps it (same airframe, overlapping time, callsign-compatible); an `opensky_states`
-  opinion anchors only where no higher-authority anchor already covers it. A lower-authority
-  record can never out-anchor a cleaner source, so it can never merge two flights into one.
-- **Notes:** `flight_id = cityHash64(icao24, win_start, anchor_source)`. Near-duplicate
-  `opensky_flights` summaries can double-anchor one physical flight (~13% of that tier) — a known
-  follow-on dedup, not part of this lane.
+  opinion is first merged with its own near-duplicates (**SP2**, see below), then anchors
+  unconditionally; an `adsblol` opinion anchors only where no `opensky_flights` window
+  overlaps it (same airframe, overlapping time, callsign-compatible); an `opensky_states`
+  opinion anchors only where no higher-authority anchor already covers it **and** its window is
+  no longer than `var('flight_max_hours')` (**SP2** — a states opinion spanning longer than a
+  real flight is a fused ground rotation, not one flight, so it's rejected from anchoring rather
+  than inflating the spine). A lower-authority record can never out-anchor a cleaner source, so
+  it can never merge two flights into one.
+- **Notes:** `flight_id = cityHash64(icao24, win_start, anchor_source)`. **SP2 spine hardening**
+  closed the near-duplicate-anchor gap flagged at SP1: `opensky_flights` summaries for one
+  airframe within `var('anchor_merge_gap_min')` (30 min) of each other, with a compatible
+  callsign, are clustered (two-stage gap-then-callsign-break) into one merged anchor before
+  voting; `opensky_states` anchors longer than `var('flight_max_hours')` (8 h) are capped out of
+  the spine instead of anchoring an implausibly long "flight". Net effect: reconciled flight
+  count dropped from ~230.9k to ~224.1k (less double-anchor inflation). A residual tail remains
+  out of scope for the flat hour cap — some `opensky_flights`/`adsblol` anchors up to 43h/76h are
+  genuine multi-flight fusions from over-clustering/over-chaining upstream, not addressable
+  without a boundary-gap or implied-distance cap on those builders (a follow-on, not this lane).
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -725,7 +770,7 @@ silver.int_flight_chains_adsblol ──┘                                      
 | `source_rank` | `UInt8` | Source authority rank (tiebreak input). |
 | `origin_icao` / `dest_icao` | `varchar` | This source's vote for the flight's O/D. |
 
-### `gold.fct_flights_reconciled` — cross-source consensus flight mart (headline, SP1)
+### `gold.fct_flights_reconciled` — cross-source consensus flight mart (headline, SP1/SP2)
 
 - **Grain:** one row per `flight_id`, scoped to flights relevant to the Japan box: kept iff
   anchored by `opensky_flights`, or the flight's `(icao24, flight window)` contains at least one
@@ -742,12 +787,20 @@ silver.int_flight_chains_adsblol ──┘                                      
   `source_rank`, then lexically); records which source backed the winner, how strong the
   agreement was, and the full vote tally, so every resolution is auditable back to its basis
   instead of presented as flat fact.
-- **Notes:** additive — `fact_flights` and `fct_flight_legs` are untouched and remain its inputs.
-  Measured effect: ~230.9k reconciled flights after the Japan-relevance filter (~415.8k in the
-  unfiltered spine), same-airport (`RJTT→RJTT`) collapse rate 6.5% vs. 14.1% for
-  `fct_flight_legs`. Where only one source has an opinion at an endpoint, or a near-airport pair
-  genuinely ties (e.g. civilian RJEC vs. military RJCA, 1-1), the result stays flagged
-  `single`/`tiebreak` rather than silently guessed — a visible residual, not a regression.
+- **Notes:** additive to `fact_flights`, which stays untouched and remains an input (`fct_flight_legs`
+  is no longer a peer input — **SP2** made it a consumer of this lane's `int_flight_legs_opensky`
+  instead, see [Gold](#gold)). **SP2** hardened the spine (near-duplicate anchor merge +
+  over-long anchor cap — see `silver.int_flight_spine`) and added the 10 endpoint geo columns
+  below; reconciled flight count dropped from ~230.9k to ~224.1k (224,108 measured) as
+  double-anchor inflation was removed. Same-airport (`RJTT→RJTT`) collapse rate measures ~6.7%,
+  well under the SP1-era ~14.1% blended-`fct_flight_legs` baseline that motivated this lane
+  (post-SP2 `fct_flight_legs` is snap-only and measures ~3.1% on its own, but that's a narrower,
+  differently-built population — not an apples-to-apples comparison). Where only one source has
+  an opinion at an endpoint, or a near-airport pair genuinely ties (e.g. civilian RJEC vs.
+  military RJCA, 1-1), the result stays flagged `single`/`tiebreak` rather than silently guessed —
+  a visible residual, not a regression. Japan-intl flights (foreign endpoint outside the box)
+  resolve only their Japan-side endpoint — `origin_name`/`dest_name` fill ~77%/~79% of rows, NULL
+  exactly where that endpoint's ICAO is unresolved, not a defect.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -758,6 +811,10 @@ silver.int_flight_chains_adsblol ──┘                                      
 | `anchor_source` | `varchar` | Which source anchored this flight in the spine. |
 | `n_sources` | `UInt64` | Distinct sources that voted on this flight. |
 | `origin_icao` / `dest_icao` | `varchar` | Consensus (or curated) O/D. |
+| `origin_name` / `dest_name` | `varchar` | Resolved airport name (`dim_airports`); NULL when the endpoint ICAO is NULL (SP2). |
+| `origin_iata` / `dest_iata` | `varchar` | IATA code (`dim_airports`, `''` normalized to NULL); NULL if the endpoint ICAO is NULL or has no IATA (SP2). |
+| `origin_city` / `dest_city` | `varchar` | City served (`dim_airports`); NULL when the endpoint ICAO is NULL (SP2). |
+| `origin_lat` / `origin_lon` / `dest_lat` / `dest_lon` | `double` | Endpoint coordinates (`dim_airports`); NULL when the endpoint ICAO is NULL (SP2). |
 | `origin_source` / `dest_source` | `varchar` | `opensky_flights` \| `opensky_states` \| `adsblol` \| `curated` — which source backs the winner. |
 | `origin_agreement` / `dest_agreement` | `varchar` | `unanimous` \| `majority` \| `tiebreak` \| `single` \| `curated`. |
 | `origin_votes` / `dest_votes` | `Map(String, UInt64)` | Airport → vote count, for audit. |
@@ -782,18 +839,21 @@ silver.int_flight_chains_adsblol ──┘                                      
 | `fct_flight_legs` (`callsign`) | `dim_airlines` | `icao = substr(trim(callsign),1,3)` + guard | LEFT |
 | `fct_flight_legs` (`icao24`) | `dim_hex_country` | `try(from_base(lower(icao24),16)) BETWEEN ...` | LEFT range |
 | `fct_flight_legs` (`icao24`) | `fct_adsb_state` (antenna rollup) | `hex = lower(icao24)` | LEFT (cross-feed fusion) |
-| `agg_route_traffic` | `fct_flight_legs` | grouped by `route_inferred` | derived 1:N |
+| `agg_route_traffic` | `fct_flights_reconciled` | grouped by `route_inferred` (SP2) | derived 1:N |
 | **cross-feed identity** | | `fct_adsb_state.hex = lower(fact_state_snapshots.icao24)` | rooftop ↔ OpenSky |
 
 ## Known limitations
 
 - **Inferred routes ≠ ground truth.** `fct_flight_legs.route_inferred` is reconstructed from a
-  ~12-min sampled feed and snaps to the nearest in-coverage airport, not the actual runway.
-  Authoritative origin/dest from OpenSky arrival/departure data lives in the v5.1 flights lane
-  (`fact_flights`); `route_inferred` is not reconciled against it.
-- **Transoceanic fragmentation.** Long-haul flights that leave coverage mid-ocean split into two
-  legs, each with one NULL endpoint, so they're excluded from `agg_route_traffic` — which skews
-  the leaderboard toward intra-continental routes.
+  ~12-min sampled feed and snaps to the nearest in-coverage airport, not the actual runway, and is
+  itself a raw, unreconciled snap. Authoritative origin/dest from OpenSky arrival/departure data
+  lives in the v5.1 flights lane (`fact_flights`); **SP1/SP2** cross-source-reconcile the two (plus
+  adsb.lol chains) in `gold.fct_flights_reconciled` — see
+  [Reconcile](#reconcile--cross-source-consensus-sp1).
+- **Transoceanic / one-sided endpoints.** Flights that leave OpenSky-states coverage mid-ocean, or
+  where only one side is inside the tracked box (the Japan-intl case), can resolve only one
+  endpoint in `fct_flights_reconciled` (NULL on the other) — these are excluded from
+  `agg_route_traffic`, which skews the leaderboard toward intra-continental/domestic routes.
 - **Sparse airframe enrichment.** `dim_aircraft` only has rows for airframes the rooftop has
   seen, so cross-feed enrichment in `fct_flight_legs` stays NULL for everything else. For
   rooftop-seen airframes, the v5.1 global registry (`dim_aircraft_registry`) backfills

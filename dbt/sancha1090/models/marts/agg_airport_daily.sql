@@ -1,31 +1,34 @@
-{{ config(materialized='table', tags=['flights']) }}
+{{ config(materialized='table', tags=['reconcile']) }}
 
--- Daily arrivals/departures per tracked airport, over ALL of bronze.opensky_flights —
--- this is the multi-year trend line the v5.2 REST backfill extends backwards.
--- No fact_flights seen-join: pre-pipeline flights can't match antenna-era aircraft.
--- A flight surfaces in multiple capture windows (d0/d2/backfill): dedupe first.
-with deduped as (
+-- Daily movements at JP airports from the RECONCILED mart's consensus endpoints (SP2),
+-- replacing raw bronze.opensky_flights — fixes RJCJ/RJCC and RJEC/RJCA mislabels.
+with movements as (
     select
-        *,
-        row_number() over (
-            partition by icao24, first_seen, captured_for_airport, direction
-            order by committed_at desc
-        ) as rn
-    from {{ source('bronze', 'opensky_flights') }}
+        origin_icao as airport_icao,
+        'departure' as direction,
+        icao24,
+        -- JST day: departures count on the day they left (start_time).
+        toDate(toTimeZone(start_time, 'Asia/Tokyo')) as traffic_day
+    from {{ ref('fct_flights_reconciled') }}
+    where origin_icao is not null and start_time is not null
+    union all
+    select
+        dest_icao as airport_icao,
+        'arrival' as direction,
+        icao24,
+        -- JST day: arrivals count on the day they landed (end_time).
+        toDate(toTimeZone(end_time, 'Asia/Tokyo')) as traffic_day
+    from {{ ref('fct_flights_reconciled') }}
+    where dest_icao is not null and end_time is not null
 )
 select
-    captured_for_airport as airport_icao,
+    airport_icao,
     direction,
-    -- Arrivals belong to the day they landed, departures to the day they left —
-    -- in JST: these are Japanese airports, and UTC days would shift every
-    -- 00:00-09:00 JST movement onto the previous calendar day.
-    -- toTimeZone re-attaches JST to the UTC DateTime64 so toDate reads the JST calendar date.
-    toDate(toTimeZone(
-        case when direction = 'arrival' then last_seen else first_seen end,
-        'Asia/Tokyo'
-    )) as traffic_day,
-    count(*) as flights,
+    traffic_day,
+    count(*)               as flights,
     count(distinct icao24) as unique_aircraft
-from deduped
-where rn = 1
+from movements
+-- JP-only (RJ mainland + RO Ryukyu): foreign endpoints would show only their
+-- Japan-touching flights, a misleading partial count.
+where startsWith(airport_icao, 'RJ') or startsWith(airport_icao, 'RO')
 group by 1, 2, 3

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from airflow.sdk import dag, task
+from airflow.sdk import dag
 from airflow.providers.standard.operators.bash import BashOperator
 
 from include.assets import bronze_flights_table
@@ -12,7 +12,7 @@ _DBT_CH = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target
 
 @dag(
     dag_id="transform_flights",
-    description="Build tag:flights dbt-clickhouse models from bronze flights/registry, then push routes to RisingWave",
+    description="Build tag:flights dbt-clickhouse models from bronze flights/registry",
     schedule=[bronze_flights_table],
     catchup=False,
     max_active_runs=1,
@@ -36,15 +36,9 @@ def transform_flights():
         bash_command=_DBT_CH.format(cmd="test --select tag:flights"),
     )
 
-    @task
-    def push_flight_routes() -> int:
-        # CH -> RisingWave versioned publish: only after a fresh, test-passing gold_ch.fact_flights build.
-        from include.flight_routes import refresh_flight_routes
-
-        return refresh_flight_routes()
-
-    # Linear gate: build -> test -> publish. A run or test failure reds the run and withholds the RW publish.
-    dbt_run_ch >> dbt_test_ch >> push_flight_routes()
+    # Linear gate: build -> test. The RW route publish moved to transform_marts (SP2: route source is now
+    # gold_ch.fct_flights_reconciled, built there).
+    dbt_run_ch >> dbt_test_ch
 
 
 transform_flights()

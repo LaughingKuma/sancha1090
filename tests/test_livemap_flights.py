@@ -16,14 +16,13 @@ def livemap():
     return mod
 
 
-def test_flights_query_is_watermark_merge(livemap):
+def test_flights_query_reads_reconciled(livemap):
     q = livemap.FLIGHTS_QUERY
     # schema comes from LIVEMAP_CH_DB so the env knob really governs the query, not just the client
-    assert f"{livemap.CH_DB}.fact_flights" in q
-    assert f"{livemap.CH_DB}.fct_flight_legs" in q
-    assert "UNION ALL" in q
-    assert "end_time > wm" in q          # rooftop only newer than the opensky watermark (no double-count)
-    assert "ORDER BY ts DESC" in q       # applied to the WRAPPED union, not just the last SELECT
+    assert f"{livemap.CH_DB}.fct_flights_reconciled" in q
+    assert "UNION ALL" not in q          # single clean source now, no read-time union
+    assert "fct_flight_legs" not in q
+    assert "ORDER BY ts DESC" in q
     assert "LIMIT 10" in q
     assert "{hex:String}" in q           # parameterized, never interpolated
     assert "coalesce(origin_iata, origin_icao)" in q  # ICAO-only airports still surface a code, not null
@@ -33,7 +32,7 @@ def test_fetch_flights_shapes_rows(livemap, monkeypatch):
     ts = datetime.datetime(2026, 6, 29, 8, 55, 59)  # naive, matching CH driver output
 
     class FakeRes:
-        result_rows = [("rooftop", ts, "RJTT", "Tokyo Haneda", None, None, "ANA265 ")]
+        result_rows = [("reconciled", ts, "RJTT", "Tokyo Haneda", None, None, "ANA265 ")]
 
     class FakeClient:
         def query(self, _sql, parameters=None):
@@ -46,7 +45,7 @@ def test_fetch_flights_shapes_rows(livemap, monkeypatch):
     monkeypatch.setattr(livemap, "_ch_client", lambda: FakeClient())
     out = livemap._fetch_flights("ABC123")
     assert out == [{
-        "src": "rooftop",
+        "src": "reconciled",
         "ts": ts.replace(tzinfo=datetime.timezone.utc).timestamp(),  # 1782723359.0
         "origin": {"code": "RJTT", "name": "Tokyo Haneda"},
         "dest": {"code": None, "name": None},
@@ -92,7 +91,7 @@ def test_flights_cached_after_first_call(livemap, monkeypatch):
 
 
 def test_flights_query_runs_against_live_ch(livemap, ch_cur):
-    # busiest airframe → guaranteed history to merge; ch_cur skips when CH is unreachable
+    # busiest airframe → guaranteed history; ch_cur skips when CH is unreachable
     ch_cur.execute("SELECT icao24 FROM gold_ch.fact_flights GROUP BY icao24 ORDER BY count() DESC LIMIT 1")
     hex_ = ch_cur.fetchall()[0][0]
     ch_cur.execute(livemap.FLIGHTS_QUERY, {"hex": hex_})

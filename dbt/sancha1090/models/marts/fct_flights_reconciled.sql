@@ -100,37 +100,48 @@ curated as (
         left join {{ ref('dim_airports') }} oa on oa.icao = nullIf(ov.origin_icao, '')
         left join {{ ref('dim_airports') }} da on da.icao = nullIf(ov.dest_icao, '')
     ) where rn = 1
+),
+resolved as (
+    select
+        sp.flight_id as flight_id,
+        sp.icao24 as icao24,
+        trimBoth(sp.anchor_callsign) as callsign,
+        sp.flight_start as start_time,
+        sp.flight_end as end_time,
+        sp.anchor_source as anchor_source,
+        coalesce(nc.n_sources, 0) as n_sources,
+        -- per endpoint: curated override > consensus winner
+        coalesce(cur.origin_icao, ow.origin_icao) as origin_icao,
+        multiIf(cur.origin_icao is not null, 'curated', ow.origin_icao is not null, ow.origin_src, null) as origin_source,
+        multiIf(cur.origin_icao is not null, 'curated', ow.origin_icao is not null, ow.origin_agr, null) as origin_agreement,
+        ovm.origin_votes as origin_votes,
+        coalesce(cur.dest_icao, dw.dest_icao) as dest_icao,
+        multiIf(cur.dest_icao is not null, 'curated', dw.dest_icao is not null, dw.dest_src, null) as dest_source,
+        multiIf(cur.dest_icao is not null, 'curated', dw.dest_icao is not null, dw.dest_agr, null) as dest_agreement,
+        dvm.dest_votes as dest_votes,
+        ac.registration, ac.typecode,
+        al.name as airline_name, al.country as airline_country,
+        {{ ch_hex_country('sp.icao24') }} as reg_country
+    from {{ ref('int_flight_spine') }} sp
+    left join origin_win ow on ow.flight_id = sp.flight_id
+    left join origin_votes_map ovm on ovm.flight_id = sp.flight_id
+    left join dest_win dw on dw.flight_id = sp.flight_id
+    left join dest_votes_map dvm on dvm.flight_id = sp.flight_id
+    left join n_src nc on nc.flight_id = sp.flight_id
+    left join curated cur on cur.flight_id = sp.flight_id
+    left join {{ ref('dim_aircraft') }} ac on ac.icao24 = lower(sp.icao24)
+    left join {{ ref('dim_airlines') }} al
+           on al.icao = substring(trimBoth(sp.anchor_callsign), 1, 3)
+          and match(trimBoth(sp.anchor_callsign), '^[A-Z]{3}[0-9]')
+    -- else adsb.lol's worldwide chains inflate this Japan mart ~3x.
+    where sp.anchor_source = 'opensky_flights' or sp.flight_id in (select flight_id from box_observed)
 )
 select
-    sp.flight_id as flight_id,
-    sp.icao24 as icao24,
-    sp.anchor_callsign as callsign,
-    sp.flight_start as start_time,
-    sp.flight_end as end_time,
-    sp.anchor_source as anchor_source,
-    coalesce(nc.n_sources, 0) as n_sources,
-    -- origin: curated override > consensus
-    coalesce(cur.origin_icao, ow.origin_icao) as origin_icao,
-    multiIf(cur.origin_icao is not null, 'curated', ow.origin_icao is not null, ow.origin_src, null) as origin_source,
-    multiIf(cur.origin_icao is not null, 'curated', ow.origin_icao is not null, ow.origin_agr, null) as origin_agreement,
-    ovm.origin_votes as origin_votes,
-    coalesce(cur.dest_icao, dw.dest_icao) as dest_icao,
-    multiIf(cur.dest_icao is not null, 'curated', dw.dest_icao is not null, dw.dest_src, null) as dest_source,
-    multiIf(cur.dest_icao is not null, 'curated', dw.dest_icao is not null, dw.dest_agr, null) as dest_agreement,
-    dvm.dest_votes as dest_votes,
-    ac.registration, ac.typecode,
-    al.name as airline_name, al.country as airline_country,
-    {{ ch_hex_country('sp.icao24') }} as reg_country
-from {{ ref('int_flight_spine') }} sp
-left join origin_win ow on ow.flight_id = sp.flight_id
-left join origin_votes_map ovm on ovm.flight_id = sp.flight_id
-left join dest_win dw on dw.flight_id = sp.flight_id
-left join dest_votes_map dvm on dvm.flight_id = sp.flight_id
-left join n_src nc on nc.flight_id = sp.flight_id
-left join curated cur on cur.flight_id = sp.flight_id
-left join {{ ref('dim_aircraft') }} ac on ac.icao24 = lower(sp.icao24)
-left join {{ ref('dim_airlines') }} al
-       on al.icao = substring(trimBoth(sp.anchor_callsign), 1, 3)
-      and match(trimBoth(sp.anchor_callsign), '^[A-Z]{3}[0-9]')
--- else adsb.lol's worldwide chains inflate this Japan mart ~3x.
-where sp.anchor_source = 'opensky_flights' or sp.flight_id in (select flight_id from box_observed)
+    r.*,
+    oap.name as origin_name, nullIf(oap.iata, '') as origin_iata, nullIf(oap.city, '') as origin_city,
+    oap.lat as origin_lat, oap.lon as origin_lon,
+    dap.name as dest_name, nullIf(dap.iata, '') as dest_iata, nullIf(dap.city, '') as dest_city,
+    dap.lat as dest_lat, dap.lon as dest_lon
+from resolved r
+left join {{ ref('dim_airports') }} oap on oap.icao = r.origin_icao
+left join {{ ref('dim_airports') }} dap on dap.icao = r.dest_icao

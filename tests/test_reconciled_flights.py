@@ -39,21 +39,23 @@ def test_rjec_civilian_beats_rjca_military_when_outvoted(ch_cur):
 
 
 def test_rjec_mislabel_regression_anchors(ch_cur):
-    # Concrete stable anchors (backfilled historical): consensus overturns/agrees RJEC for JA316J's sister
-    # airframes. ADO81 861b64 2026-06-06 = {RJEC:2,RJCA:1} majority; 851c20 JAL551 2026-07-02 = RJEC unanimous.
-    ado = _q(ch_cur, "SELECT dest_icao, dest_agreement FROM gold_ch.fct_flights_reconciled "
+    # Historical RJEC-vs-RJCA mislabel anchors: pin the stable OUTCOME (RJEC wins via consensus or sched-service
+    # tiebreak), not the vote margin — the opensky_states RJEC vote ages out of the ~30-day context feed.
+    ado = _q(ch_cur, "SELECT dest_icao FROM gold_ch.fct_flights_reconciled "
                      "WHERE icao24='861b64' AND callsign='ADO81' AND toDate(start_time)='2026-06-06'")
-    assert ado and all(r[0]=='RJEC' and r[1] in ('majority','unanimous') for r in ado), f"ADO81 anchor not RJEC-majority: {ado}"
+    assert ado and all(r[0]=='RJEC' for r in ado), f"ADO81 anchor not RJEC: {ado}"
     jal = _q(ch_cur, "SELECT dest_icao FROM gold_ch.fct_flights_reconciled "
                      "WHERE icao24='851c20' AND callsign='JAL551' AND toDate(start_time)='2026-07-02'")
     assert jal and all(r[0]=='RJEC' for r in jal), f"JAL551 851c20 anchor not RJEC: {jal}"
 
 
-def test_reconciled_reduces_same_airport_vs_legs(ch_cur):
-    # SP1's actual RJTT->RJTT claim: reconciled same-airport rate is materially below the fct_flight_legs baseline.
+def test_reconciled_same_airport_below_legacy_blend(ch_cur):
+    # SP2: fct_flight_legs is now snap-only (~3% same-airport, but resolves far fewer routes), so the SP1
+    # "reconciled < fct_flight_legs" framing inverts. Durable guard instead: reconciled's collapsed
+    # origin==dest rate stays well below the SP1-era BLENDED-legs baseline (~14.1%). ~6.5% today; 0.12 is a
+    # loose ceiling (a rate bound, not a row count) that still catches a real regression toward the old blend.
     r = _q(ch_cur, "SELECT countIf(origin_icao IS NOT NULL AND origin_icao=dest_icao)/count() FROM gold_ch.fct_flights_reconciled")[0][0]
-    l = _q(ch_cur, "SELECT countIf(origin_icao IS NOT NULL AND origin_icao=dest_icao)/count() FROM gold_ch.fct_flight_legs")[0][0]
-    assert r < l, f"reconciled same-airport {r} not below fct_flight_legs {l}"
+    assert r < 0.12, f"reconciled same-airport {r} not below the ~14.1% legacy blended-legs baseline"
 
 
 def test_tiebreaks_are_genuine(ch_cur):

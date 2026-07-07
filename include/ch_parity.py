@@ -216,9 +216,14 @@ SOURCE_FRESHNESS_CHECKS: list[tuple[str, str, str, Callable[[float, float], bool
      "SELECT max(capture_ts) FROM silver_ch.fct_adsb_state",
      "SELECT toUnixTimestamp(now())", fresh(_FRESHNESS_LAG_TOL_S)),
     # Flights lane (transform_flights): max(last_seen) — the daily ingest's D-0 departures keep this recent;
-    # a 3-day lag means the lane stalled. Covers agg_airport_daily / agg_flight_routes transitively (same build).
+    # a 3-day lag means the lane stalled. (The O/D aggregates now build off fct_flights_reconciled — see below.)
     ("fact_flights.freshness",
      "SELECT toUnixTimestamp(max(last_seen)) FROM gold_ch.fact_flights",
+     "SELECT toUnixTimestamp(now())", fresh(_FLIGHTS_FRESHNESS_LAG_TOL_S)),
+    # Reconciled consensus mart (SP2) — built by transform_marts. Covers the O/D-derived aggregates
+    # (agg_route_traffic / agg_operator_traffic / longest_flights / agg_airport_daily) transitively (same build).
+    ("fct_flights_reconciled.freshness",
+     "SELECT toUnixTimestamp(max(end_time)) FROM gold_ch.fct_flights_reconciled",
      "SELECT toUnixTimestamp(now())", fresh(_FLIGHTS_FRESHNESS_LAG_TOL_S)),
     # anomalies is intentionally excluded: it's a sparse/filtered mart, so max(snapshot_time) is the last anomaly
     # (legitimately hours old on a calm sky) — not a build-freshness signal. Its data presence is covered by the

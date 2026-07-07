@@ -1,27 +1,30 @@
-{{ config(materialized='table', tags=['flights']) }}
+{{ config(materialized='table', tags=['reconcile']) }}
 
--- Top-N longest flights per day among aircraft the context feed surfaced.
+-- Top-N longest reconciled flights per day: operator/model from dim_aircraft, cities from the mart's endpoint geo.
+-- Plausibility filters drop fused adsb.lol chains (e.g. a 76h Vancouver->Vancouver self-loop); 24h ceiling keeps real ~19h ultra-long-hauls.
 with ranked as (
     select
-        toDate(first_seen) as flight_day,
-        callsign,
-        icao24,
-        registration,
-        operator,
-        model,
-        origin_icao,
-        origin_city,
-        dest_icao,
-        dest_city,
-        first_seen,
-        flight_duration_seconds,
+        toDate(r.start_time) as flight_day,
+        r.callsign,
+        r.icao24 as icao24,
+        r.registration as registration,
+        ac.operator,
+        ac.model,
+        r.origin_icao,
+        r.origin_city,
+        r.dest_icao,
+        r.dest_city,
+        r.start_time as first_seen,
+        dateDiff('second', r.start_time, r.end_time) as flight_duration_seconds,
         row_number() over (
-            partition by toDate(first_seen)
-            order by flight_duration_seconds desc
+            partition by toDate(r.start_time)
+            order by dateDiff('second', r.start_time, r.end_time) desc
         ) as day_rank
-    from {{ ref('fact_flights') }}
-    where flight_duration_seconds is not null
-      and seen_in_context
+    from {{ ref('fct_flights_reconciled') }} r
+    left join {{ ref('dim_aircraft') }} ac on ac.icao24 = lower(r.icao24)
+    where r.start_time is not null and r.end_time is not null
+      and r.origin_icao is not null and r.dest_icao is not null and r.origin_icao != r.dest_icao
+      and dateDiff('second', r.start_time, r.end_time) between 1 and 86400
 )
 select * from ranked
 where day_rank <= 10

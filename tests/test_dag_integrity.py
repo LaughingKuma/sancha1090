@@ -29,11 +29,13 @@ EXPECTED_DAGS = {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"dbt_run_ch", "dbt_test_ch", "ensure_ch_mvs"},
+        "task_ids": {"dbt_run_ch", "dbt_test_ch", "ensure_ch_mvs", "push_flight_routes"},
         # dbt_run_ch builds; dbt_test_ch + ensure_ch_mvs are all_success leaves, so a run OR test failure
-        # propagates (upstream_failed) and reds the run — nothing masks a dbt failure.
+        # propagates (upstream_failed) and reds the run — nothing masks a dbt failure. push_flight_routes is
+        # gated on dbt_test_ch (SP2 moved it here: route source is now the reconciled mart, built by this DAG).
         "downstream_task_ids": {
             "dbt_run_ch": {"dbt_test_ch", "ensure_ch_mvs"},
+            "dbt_test_ch": {"push_flight_routes"},
         },
     },
     "transform_adsb_silver": {
@@ -120,11 +122,11 @@ EXPECTED_DAGS = {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"dbt_run_ch", "dbt_test_ch", "push_flight_routes"},
-        # Linear gate: build -> test -> publish. A run or test failure reds the run and withholds the RW publish.
+        "task_ids": {"dbt_run_ch", "dbt_test_ch"},
+        # Linear gate: build -> test. The RW route publish moved to transform_marts (SP2: route source is now
+        # the reconciled mart, built there).
         "downstream_task_ids": {
             "dbt_run_ch": {"dbt_test_ch"},
-            "dbt_test_ch": {"push_flight_routes"},
         },
     },
     "maintain_bronze_dedup": {
