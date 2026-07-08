@@ -234,6 +234,8 @@
   .ff-more:hover { color: var(--amber); }
   .ff-more:focus-visible { outline: 2px solid var(--ink-dim); outline-offset: 2px; }
   .ff-date { color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+  /* per-leg callsign — dim so the O/D route stays the focus; each row is a distinct flight, not the header's */
+  .ff-call { color: var(--ink-dim); font-variant-numeric: tabular-nums; }
   .ff-route { text-align: right; }
   /* rooftop = this antenna saw the leg (fresher than OpenSky's ~48h-lagged report) */
   .ff-rooftop .ff-date::before { content: "◦ "; color: var(--amber); }
@@ -327,7 +329,7 @@
     </dl>
     <div class="sp-track" id="sp-track">—</div>
     <div class="sp-flights" id="sp-flights" hidden>
-      <div class="sp-flights-hd">Recent flights</div>
+      <div class="sp-flights-hd" id="sp-flights-hd">Recent flights</div>
       <ol class="sp-flights-list" id="sp-flights-list"></ol>
     </div>
     <div class="sp-lost" id="sp-lost" hidden>SIGNAL LOST</div>

@@ -11,6 +11,7 @@ const spotlightEl = spEl("spotlight");
 // (codes/callsigns/airport names are attacker-transmittable, so never innerHTML).
 const flightsWrapEl = spEl("sp-flights");
 const flightsListEl = spEl("sp-flights-list");
+const flightsHdEl = spEl("sp-flights-hd");
 const ffCode = (end) => (end && end.code) || "?";
 const ffDate = (ts) => {
   if (ts == null) return "";
@@ -22,18 +23,24 @@ function renderFlights(list, expanded = false) {
   flightsListEl.replaceChildren();
   flightsListEl.classList.toggle("expanded", expanded);
   if (!list || !list.length) { flightsWrapEl.hidden = true; return; }
+  // list is this airframe's history (keyed by hex) — label with the reg so rows don't read as the header flight's legs
+  const reg = spEl("sp-reg").textContent;
+  flightsHdEl.textContent = reg && reg !== "—" ? `Recent flights · ${reg}` : "Recent flights";
   for (const f of expanded ? list : list.slice(0, FLIGHTS_COLLAPSED)) {
     const li = document.createElement("li");
     li.className = f.src === "rooftop" ? "ff-row ff-rooftop" : "ff-row";
     const date = document.createElement("span");
     date.className = "ff-date";
     date.textContent = ffDate(f.ts);
+    const call = document.createElement("span"); // per-leg callsign: each row is its own flight number, not the header's
+    call.className = "ff-call";
+    call.textContent = f.callsign || "";
     const route = document.createElement("span");
     route.className = "ff-route";
     route.textContent = `${ffCode(f.origin)} → ${ffCode(f.dest)}`;
     const oName = f.origin && f.origin.name, dName = f.dest && f.dest.name;
     if (oName || dName) route.title = `${oName || ffCode(f.origin)} → ${dName || ffCode(f.dest)}`;
-    li.append(date, route);
+    li.append(date, call, route);
     flightsListEl.appendChild(li);
   }
   if (!expanded && list.length > FLIGHTS_COLLAPSED) {
