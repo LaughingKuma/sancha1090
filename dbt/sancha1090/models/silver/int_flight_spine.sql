@@ -89,7 +89,7 @@ states_anchors as (
     select a.icao24 as icao24, a.win_start as win_start, a.win_end as win_end, a.callsign as callsign
     from opensky_states a
     left join higher h on h.icao24 = a.icao24
-    where dateDiff('hour', a.win_start, a.win_end) <= {{ var('flight_max_hours') }}  -- D4.2: drop fused rotations
+    where (toUnixTimestamp(a.win_end) - toUnixTimestamp(a.win_start)) / 3600.0 <= {{ var('flight_max_hours') }}  -- D4.2: drop fused rotations
     group by a.icao24, a.win_start, a.win_end, a.callsign
     having sum(if(h.icao24 is not null
                   and h.win_start <= a.win_end and h.win_end >= a.win_start

@@ -74,3 +74,10 @@ vars:
   anchor_merge_gap_min: 30  # two opensky_flights summaries for one icao24 this close (compatible callsign) = one physical flight
   flight_max_hours: 8  # an airborne anchor longer than this fuses a rotation; reject it from collapse-prone sources
   swim_max_flight_hours: 20  # SWIM kept messages carry igtd but no eta; cap the callsign→hex window off departure (covers ~19h ultra-long-haul)
+  chain_stop_gap_h: 1        # a boundary gap this long can hide a ground stop
+  chain_stop_speed_kmh: 550  # below this implied gc speed across such a gap, a jet must have stopped
+  chain_stop_alt_m: 8000     # jets only: turboprops legitimately cruise slow below this
+  chain_low_fix_alt_m: 300   # a boundary fix below this (baro) is landing/departing, not cruising
+  chain_low_fix_gap_min: 45  # low fix + a turnaround-sized gap = it landed; smaller gaps still chain
+  reconcile_anchor_max_hours: 16  # no Japan-relevant nonstop exceeds ~14.5h; longer windows are fused rotations
+  fused_envelope_speed_kmh: 550   # opensky_flights window vs O/D distance sanity floor

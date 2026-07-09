@@ -315,15 +315,21 @@ data open:
   coverage drops out, those segments are then chained back into whole flights
   (`silver.int_flight_chains_adsblol`) — including across UTC trace-day boundaries —
   whenever the implied great-circle groundspeed across the gap is cruise-plausible
-  (300–1,100 km/h). A daily DAG (`ingest_adsblol_routes`) makes targeted per-hex
+  (300–1,100 km/h) — unless the gap hides a ground stop: an hour-plus gap a jet
+  crosses at under 550 km/h, or a sub-1,000 ft fix beside a turnaround-sized
+  gap, breaks the chain instead of fusing a tech-stop rotation into one flight.
+  A daily DAG (`ingest_adsblol_routes`) makes targeted per-hex
   fetches against the still-unresolved endpoints; a backlog driver
   (`scripts/backfill_adsblol_routes.py`) streams the historical tarballs.
 
   `gold.fct_flights_reconciled` is the **canonical O/D source**: it resolves each
   flight's origin/destination by **cross-source consensus**, scoped to flights the
   Japan box is actually relevant to — anchored by OpenSky flight-summaries, or with
-  at least one states fix inside the flight window, since adsb.lol's worldwide
-  chains would otherwise inflate this Japan mart ~3x. Because that consensus mixes
+  at least one in-box states fix inside the flight window (checked against full
+  bronze history, so flights don't age out of the mart), since adsb.lol's worldwide
+  chains would otherwise inflate this Japan mart ~3x. Windows that fuse a multi-leg
+  rotation under a sticky callsign (longer than any real nonstop, or far too slow
+  for their own O/D distance) are rejected before they can anchor or vote. Because that consensus mixes
   observation with inference, every route endpoint records how it was derived in
   `origin_source`/`dest_source`, so any attribution can be audited back to its
   basis and no guess is mistaken for a sighting:

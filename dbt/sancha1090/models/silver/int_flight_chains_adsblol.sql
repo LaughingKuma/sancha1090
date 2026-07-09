@@ -11,8 +11,8 @@ with segs as (
         s.seg_start_time as seg_start_time,
         s.seg_end_time as seg_end_time,
         s.num_fixes,
-        s.first_lat, s.first_lon, s.first_on_ground,
-        s.last_lat, s.last_lon, s.last_on_ground,
+        s.first_lat, s.first_lon, s.first_alt_m, s.first_on_ground,
+        s.last_lat, s.last_lon, s.last_alt_m, s.last_on_ground,
         r.origin_icao, r.origin_name, r.origin_lat, r.origin_lon,
         r.dest_icao, r.dest_name, r.dest_lat, r.dest_lon
     from {{ ref('stg_flight_segments_adsblol') }} s
@@ -29,7 +29,9 @@ boundaries as (
         lagInFrame(toNullable(last_lon), 1, NULL)
             over (partition by icao24 order by seg_start_time, seg_end_time rows between 1 preceding and current row) as prev_last_lon,
         lagInFrame(toNullable(last_on_ground), 1, NULL)
-            over (partition by icao24 order by seg_start_time, seg_end_time rows between 1 preceding and current row) as prev_last_on_ground
+            over (partition by icao24 order by seg_start_time, seg_end_time rows between 1 preceding and current row) as prev_last_on_ground,
+        lagInFrame(toNullable(last_alt_m), 1, NULL)
+            over (partition by icao24 order by seg_start_time, seg_end_time rows between 1 preceding and current row) as prev_last_alt_m
     from segs
 ),
 flagged as (
@@ -38,6 +40,17 @@ flagged as (
             when prev_end_time is null then 1
             when dateDiff('second', prev_end_time, seg_start_time) <= 0 then 1
             when coalesce(prev_last_on_ground, true) or first_on_ground then 1
+            -- a jet covering <550 km/h of great-circle across a multi-hour gap stopped somewhere inside it
+            -- (fused tech-stops: descent+stop+climb all inside one coverage gap; alt gate exempts turboprops)
+            when dateDiff('second', prev_end_time, seg_start_time) >= {{ var('chain_stop_gap_h') }} * 3600
+                 and greatest(coalesce(prev_last_alt_m, 0), coalesce(first_alt_m, 0)) >= {{ var('chain_stop_alt_m') }}
+                 and {{ haversine_km('prev_last_lat', 'prev_last_lon', 'first_lat', 'first_lon') }}
+                         / (dateDiff('second', prev_end_time, seg_start_time) / 3600.0)
+                     < {{ var('chain_stop_speed_kmh') }} then 1
+            -- a fix below ~1000 ft is seconds from touchdown; with a turnaround-sized gap it landed even
+            -- when implied speed looks cruise-plausible (baro-referenced: high-elevation fields fail open)
+            when dateDiff('second', prev_end_time, seg_start_time) >= {{ var('chain_low_fix_gap_min') }} * 60
+                 and least(coalesce(prev_last_alt_m, 99999), coalesce(first_alt_m, 99999)) < {{ var('chain_low_fix_alt_m') }} then 1
             when {{ haversine_km('prev_last_lat', 'prev_last_lon', 'first_lat', 'first_lon') }}
                      / (dateDiff('second', prev_end_time, seg_start_time) / 3600.0)
                    not between {{ var('chain_speed_min_kmh') }} and {{ var('chain_speed_max_kmh') }} then 1
