@@ -28,14 +28,16 @@ def test_consensus_resolves_real_disagreements_by_majority(ch_cur):
 
 
 def test_rjec_civilian_beats_rjca_military_when_outvoted(ch_cur):
-    # Civ/mil disambiguation: where RJEC (civ) out-votes RJCA (JGSDF) in a genuine two-way contest,
-    # consensus must pick RJEC. Both-present guard required -- Map[] defaults a missing key to 0.
-    contest = "mapContains(dest_votes,'RJCA') AND mapContains(dest_votes,'RJEC')"
-    bad = _q(ch_cur, f"SELECT count() FROM gold_ch.fct_flights_reconciled "
-                     f"WHERE {contest} AND dest_votes['RJEC'] > dest_votes['RJCA'] AND dest_icao != 'RJEC' AND dest_source != 'curated'")[0][0]
-    assert bad == 0, f"{bad} flights had RJEC out-voting RJCA yet did not resolve RJEC"
-    fires = _q(ch_cur, f"SELECT count() FROM gold_ch.fct_flights_reconciled WHERE {contest} AND dest_votes['RJEC'] > dest_votes['RJCA'] AND dest_icao = 'RJEC'")[0][0]
-    assert fires > 0, "the RJEC-over-RJCA resolution never fires"
+    # SP4 upgraded this guard: the runway gate bars airline-jet votes for RJCA (JGSDF 2,624 ft strip)
+    # upstream, so the RJEC/RJCA ballot contest can no longer form -- pin the stronger invariant.
+    bad = _q(ch_cur, "SELECT count() FROM gold_ch.fct_flights_reconciled r "
+                     "JOIN silver_ch.int_jet_airframes j ON j.icao24 = lower(r.icao24) "
+                     "WHERE match(trimBoth(coalesce(r.callsign,'')), '^[A-Z]{3}[0-9]') "
+                     "AND (r.origin_icao = 'RJCA' OR r.dest_icao = 'RJCA') "
+                     "AND coalesce(r.origin_source,'') != 'curated' AND coalesce(r.dest_source,'') != 'curated'")[0][0]
+    assert bad == 0, f"{bad} airline-jet flights carry RJCA despite the feasibility gate"
+    fires = _q(ch_cur, "SELECT count() FROM gold_ch.fct_flights_reconciled WHERE dest_icao = 'RJEC'")[0][0]
+    assert fires > 0, "RJEC never resolves as a destination"
 
 
 def test_rjec_mislabel_regression_anchors(ch_cur):

@@ -9,21 +9,45 @@ from urllib.parse import urlparse
 
 AIRPORTS_URL = "https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/airports.csv"
 COUNTRIES_URL = "https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/countries.csv"
+RUNWAYS_URL = "https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/runways.csv"
 SEED = Path(__file__).resolve().parent.parent / "dbt/sancha1090/seeds/dim_airports.csv"
 
 _ICAO_RE = re.compile(r"[A-Z]{4}")
 _DROP_TYPES = {"closed", "balloonport"}
+_CLOSED_VALUES = {"1", "yes", "true"}
 # Dedup priority on a shared ICAO: bigger field wins, then scheduled service, then lexical name.
 _TYPE_RANK = {"large_airport": 0, "medium_airport": 1, "small_airport": 2, "seaplane_base": 3, "heliport": 4}
-_COLUMNS = ["icao", "iata", "name", "city", "country", "lat", "lon", "airport_type", "scheduled_service"]
+_COLUMNS = ["icao", "iata", "name", "city", "country", "lat", "lon", "airport_type", "scheduled_service",
+            "runway_length_ft"]
 
 
 def _countries(text: str) -> dict[str, str]:
     return {r["code"]: r["name"] for r in csv.DictReader(io.StringIO(text)) if r.get("code") and r.get("name")}
 
 
-def build(airports_text: str, countries_text: str) -> list[dict]:
+def _runway_lengths(text: str) -> dict[str, int]:
+    # Keyed on ident (runways.csv's join column), not icao_code -- callers must look up the raw ident.
+    best: dict[str, int] = {}
+    for r in csv.DictReader(io.StringIO(text)):
+        if (r.get("closed") or "").strip().lower() in _CLOSED_VALUES:
+            continue
+        ident = r.get("airport_ident", "")
+        if not ident:
+            continue
+        try:
+            length = int(r.get("length_ft") or "")
+        except ValueError:
+            continue
+        if length <= 0:
+            continue
+        if length > best.get(ident, 0):
+            best[ident] = length
+    return best
+
+
+def build(airports_text: str, countries_text: str, runways_text: str = "") -> list[dict]:
     names = _countries(countries_text)
+    runways = _runway_lengths(runways_text)
     best: dict[str, tuple[tuple, dict]] = {}
     for r in csv.DictReader(io.StringIO(airports_text)):
         typ = r.get("type", "")
@@ -39,6 +63,8 @@ def build(airports_text: str, countries_text: str) -> list[dict]:
             "city": r.get("municipality", ""), "country": names.get(r.get("iso_country", ""), r.get("iso_country", "")),
             "lat": r.get("latitude_deg", ""), "lon": r.get("longitude_deg", ""),
             "airport_type": typ, "scheduled_service": "true" if sched else "false",
+            # 0 = unknown/no runway data, never a real length -> the feasibility gate's don't-block sentinel.
+            "runway_length_ft": str(runways.get(r.get("ident", ""), 0)),
         }
         if icao not in best or rank < best[icao][0]:
             best[icao] = (rank, row)
@@ -54,7 +80,7 @@ def _fetch(url: str) -> str:
 
 
 def main() -> int:
-    rows = build(_fetch(AIRPORTS_URL), _fetch(COUNTRIES_URL))
+    rows = build(_fetch(AIRPORTS_URL), _fetch(COUNTRIES_URL), _fetch(RUNWAYS_URL))
     # Never clobber a good committed seed with an empty/near-empty parse.
     if len(rows) < 10_000:
         raise SystemExit(f"build_dim_airports: parsed only {len(rows)} airports; refusing to overwrite seed")

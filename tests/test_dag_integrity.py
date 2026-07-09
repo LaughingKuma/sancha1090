@@ -167,6 +167,12 @@ EXPECTED_DAGS = {
             "load_ladd_pulls": {"check_ladd_freshness"},
         },
     },
+    "ingest_vrs_routes": {
+        "schedule": "0 17 * * *",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"load_vrs_routes"},
+    },
 }
 
 

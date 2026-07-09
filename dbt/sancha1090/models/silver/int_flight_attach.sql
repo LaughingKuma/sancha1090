@@ -35,7 +35,27 @@ attached as (
         ) as source_rn
     from cand
     where rn = 1
+),
+-- SP4: vrs_routes votes but never anchors (standing data has no window). Exactly one vote per flight,
+-- keyed on the anchor's normalized callsign; jet-infeasible endpoints gated like every other opinion.
+vrs_votes as (
+    select
+        sp.flight_id as flight_id,
+        'vrs_routes' as source, toUInt8(2) as source_rank,
+        if({{ jet_infeasible_endpoint(airline_shaped('sp.anchor_callsign'), 'j.icao24 is not null', 'oa.runway_length_ft', 'oa.airport_type') }},
+           NULL, v.origin_icao) as origin_icao,
+        if({{ jet_infeasible_endpoint(airline_shaped('sp.anchor_callsign'), 'j.icao24 is not null', 'da.runway_length_ft', 'da.airport_type') }},
+           NULL, v.dest_icao) as dest_icao
+    from {{ ref('int_flight_spine') }} sp
+    join {{ ref('stg_vrs_routes') }} v on v.callsign_norm = {{ callsign_norm('sp.anchor_callsign') }}
+    left join {{ ref('int_jet_airframes') }} j on j.icao24 = lower(sp.icao24)
+    left join {{ ref('dim_airports') }} oa on oa.icao = v.origin_icao
+    left join {{ ref('dim_airports') }} da on da.icao = v.dest_icao
 )
 select flight_id, source, source_rank, origin_icao, dest_icao
 from attached
 where source_rn = 1
+union all
+select flight_id, source, source_rank, origin_icao, dest_icao
+from vrs_votes
+where origin_icao is not null or dest_icao is not null

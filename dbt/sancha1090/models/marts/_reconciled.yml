@@ -10,12 +10,12 @@ models:
         tests:
           - accepted_values:
               arguments:
-                values: ['swim', 'opensky_flights', 'opensky_states', 'adsblol', 'curated']
+                values: ['swim', 'vrs_routes', 'opensky_flights', 'opensky_states', 'adsblol', 'curated']
       - name: dest_source
         tests:
           - accepted_values:
               arguments:
-                values: ['swim', 'opensky_flights', 'opensky_states', 'adsblol', 'curated']
+                values: ['swim', 'vrs_routes', 'opensky_flights', 'opensky_states', 'adsblol', 'curated']
       - name: origin_agreement
         tests:
           - accepted_values:

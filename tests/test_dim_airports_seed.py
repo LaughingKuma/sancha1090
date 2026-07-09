@@ -28,6 +28,7 @@ def _rows() -> list[dict]:
 def test_columns_exact():
     assert list(_rows()[0].keys()) == [
         "icao", "iata", "name", "city", "country", "lat", "lon", "airport_type", "scheduled_service",
+        "runway_length_ft",
     ]
 
 
@@ -47,6 +48,12 @@ def test_latlon_are_floats_in_range():
         lat, lon = float(r["lat"]), float(r["lon"])
         assert -90 <= lat <= 90, f"{r['icao']} lat out of range: {lat}"
         assert -180 <= lon <= 180, f"{r['icao']} lon out of range: {lon}"
+
+
+def test_runway_length_is_non_negative_int():
+    # UInt32 in the dbt seed column_types -- guard against a blank/negative value breaking the load.
+    for r in _rows():
+        assert r["runway_length_ft"].isdigit(), f"{r['icao']} runway_length_ft not a plain int: {r['runway_length_ft']}"
 
 
 @pytest.mark.parametrize(("icao", "expected"), list(ANCHORS.items()))

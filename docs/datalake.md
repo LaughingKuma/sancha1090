@@ -669,9 +669,10 @@ an independent input the reconciler reads.
 
 ```text
 silver.int_swim_opinion (rank 1) ───────────┐
-gold.fact_flights (rank 2) ──────────────────┤
-silver.int_flight_chains_adsblol (rank 3) ───┼──▶ int_flight_opinions ──▶ int_flight_spine ──▶ int_flight_attach ──▶ gold.fct_flights_reconciled
-silver.int_flight_legs_opensky (rank 4) ─────┘                                                                              ▲    ▲
+gold.fact_flights (rank 3) ──────────────────┤
+silver.int_flight_chains_adsblol (rank 4) ───┼──▶ int_flight_opinions ──▶ int_flight_spine ──▶ int_flight_attach ──▶ gold.fct_flights_reconciled
+silver.int_flight_legs_opensky (rank 5) ─────┘                                                                    ▲         ▲    ▲
+                                                        silver.dim_vrs_routes (rank 2, votes at attach, SP4) ─────┘         │    │
                                                         silver.dim_route_overrides (curated override) ─────────────────────┘    │
                                                                       dim.dim_ladd (is_ladd suppression flag, SP3b) ────────────┘
 ```
@@ -687,7 +688,9 @@ replacing earlier per-consumer UNIONs of `fact_flights`/`fct_flight_legs`/adsb.l
 **SP3b** added FAA SWIM as a 4th ranked vote source and the FAA LADD privacy list as an
 orthogonal display-suppression flag. `silver.int_swim_opinion` votes at **source_rank 1** — the
 highest authority, though plurality still outvotes rank; rank only breaks a tie (the renumbered
-map — `swim`=1, `opensky_flights`=2, `adsblol`=3, `opensky_states`=4 — is pinned by the
+map — `swim`=1, `opensky_flights`=2, `adsblol`=3, `opensky_states`=4, later renumbered again by
+**SP4** to `swim`=1, `vrs_routes`=2, `opensky_flights`=3, `adsblol`=4, `opensky_states`=5 to seat
+the new `vrs_routes` voter — is pinned by the
 `assert_flight_opinions_rank_map` singular test). `transform_swim`, the dedicated DAG SP3a built
 for this lane, was retired the same release: `transform_marts` already rebuilds `tag:swim` on its
 regular `bronze_states_table` tick, so a separate trigger was redundant (`bronze_swim_table`
@@ -813,13 +816,61 @@ callsign) matches an open, or window-overlapping closed, LADD interval — see
 | `origin_icao` / `origin_name` / `origin_lat` / `origin_lon` | `varchar` / `double` | Snapped origin, iff low-altitude. |
 | `dest_icao` / `dest_name` / `dest_lat` / `dest_lon` | `varchar` / `double` | Snapped destination, iff low-altitude. |
 
+### `dim.dim_vrs_routes` — vradarserver standing-data callsign→route table (SP4)
+
+- **Grain:** one row per `callsign` — `ReplacingMergeTree(ingested_at)`; read with `FINAL`. A
+  callsign dropped from a later pull just lingers (the vote it feeds is advisory, not authoritative).
+- **Source:** the vradarserver "standing data" route list, mirrored by adsb.lol
+  (`vrs-standing-data.adsb.lol/routes.csv`), pulled daily by `ingest_vrs_routes` and copied to
+  Garage (`dims/vrs_routes_raw/`) for provenance before loading. Fail-loud: header drift, a
+  suspiciously short fetch, or a CH write error reds the run rather than leaving a stale dim.
+- **Notes:** created directly by `clickhouse-init`, same as `dim.dim_ladd` — a dbt build gates on
+  its existence, never assumes it (see `silver.stg_vrs_routes` below).
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `callsign` | `varchar` | Filed/scheduled callsign, as published. Dim key. |
+| `code` / `number` / `airline_code` | `varchar` | Carrier code, flight number, IATA airline code — carried through unparsed; not read downstream. |
+| `airport_codes` | `varchar` | `-`-delimited ICAO hop list (`ORIGIN-DEST[-DEST2...]`). |
+| `ingested_at` | `timestamp` | `ReplacingMergeTree` version column (pull time); not a business field. |
+
+### `silver.stg_vrs_routes` — parsed 2-airport routes (reconciler input)
+
+- **Grain:** one row per `callsign_norm` — leading-zero flight-number variants (`SFJ0043` vs.
+  `SFJ43`) collapse to the same key so they can't cast two votes.
+- **Source:** `dim.dim_vrs_routes`, restricted to exactly 2-hop routes (multi-stop cargo lists,
+  ~1%, need position disambiguation this v1 deliberately skips), both endpoints confirmed against
+  `dim_airports` (same rule the curated override uses).
+- **Notes:** deploy-order guarded like `fct_flights_reconciled`'s LADD join — empty until
+  `clickhouse-init` creates `dim.dim_vrs_routes`, self-heals on the next build after.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `callsign` / `callsign_norm` | `varchar` | Raw and zero-strip-normalized callsign. Grain key is the latter. |
+| `origin_icao` / `dest_icao` | `varchar` | First/second hop, both `dim_airports`-confirmed. |
+
+**Vote semantics:** `vrs_routes` never anchors the spine — standing data carries no flight window
+— it only votes, joined at `int_flight_attach` on the anchor's `callsign_norm`, at
+**source_rank 2** (seated between `swim` and `opensky_flights` in the SP4 rank renumber above).
+Endpoints are jet-runway gated exactly like every other opinion (below), and at most one vote pair
+per flight reaches the ballot (`assert_vrs_route_votes_unique`).
+
+**The feasibility gate (SP4):** an airline jet can't be voted onto a known-short or
+unknown-runway-small airport, so `silver.int_jet_airframes` (ICAO designator `L#J` first,
+`body_class` fallback, `C130`/`C30J` excluded as legitimately-short-strip turboprops) and the
+`jet_infeasible_airport` macro (`macros/reconcile_gates.sql`) gate snap candidates, opinions, and
+ballots alike wherever an airline-shaped callsign meets a jet airframe — bizjets and check-flights
+are exempt by construction (canary-pinned in the test suite).
+
 ### `silver.int_flight_opinions` — unified windowed opinions
 
 - **Grain:** one row per `(source, icao24, win_start)` — a `UNION ALL` of the four sources into
   one common schema.
-- **Source:** `silver.int_swim_opinion` (`source_rank` 1, **SP3b**), `gold.fact_flights` (rank 2),
-  `silver.int_flight_chains_adsblol` (rank 3), `silver.int_flight_legs_opensky` (rank 4) — ranked
-  by source authority, most to least direct. The rank↔source bijection is pinned by the
+- **Source:** `silver.int_swim_opinion` (`source_rank` 1, **SP3b**), `gold.fact_flights` (rank 3),
+  `silver.int_flight_chains_adsblol` (rank 4), `silver.int_flight_legs_opensky` (rank 5) — ranked
+  by source authority, most to least direct (rank 2, `vrs_routes`, votes downstream at
+  `int_flight_attach` instead — see [Reconcile](#reconcile--cross-source-consensus-sp1)). The
+  rank↔source bijection is pinned by the
   `assert_flight_opinions_rank_map` singular test, since `fct_flights_reconciled`'s `transform()`
   decodes `best_rank` back into the provenance label — a drifted stamp would silently mislabel
   `origin_source`/`dest_source`.
@@ -831,7 +882,7 @@ callsign) matches an open, or window-overlapping closed, LADD interval — see
 | Column | Type | Meaning |
 |--------|------|---------|
 | `source` | `varchar` | `swim` \| `opensky_flights` \| `adsblol` \| `opensky_states`. |
-| `source_rank` | `UInt8` | Authority rank: 1 = swim, 2 = opensky_flights, 3 = adsblol, 4 = opensky_states. |
+| `source_rank` | `UInt8` | Authority rank: 1 = swim, 3 = opensky_flights, 4 = adsblol, 5 = opensky_states (rank 2, vrs_routes, votes at attach — not in this table). |
 | `icao24` | `varchar` | Airframe. |
 | `win_start` / `win_end` | `timestamp(6) with time zone` | The opinion's time window. |
 | `callsign` | `varchar` | Callsign for that window (nullable). |

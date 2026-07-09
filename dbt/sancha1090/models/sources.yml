@@ -98,3 +98,10 @@ sources:
             description: "List date the interval opened (SCD2 valid-from); part of the RMT dedup key with registration."
           - name: valid_to
             description: "List date the interval closed, or NULL while the airframe is currently listed (open interval)."
+      - name: dim_vrs_routes
+        description: "vradarserver standing-data callsign→route table (SP4), daily pull via ingest_vrs_routes; ReplacingMergeTree(ingested_at) keyed callsign — read with FINAL. No source tests: optional pre-deploy (stg_vrs_routes's deploy-order guard emits empty until clickhouse-init creates it). AirportCodes is a '-'-joined ICAO hop list; parsing/validation lives in stg_vrs_routes."
+        columns:
+          - name: callsign
+            description: "Route key as published (may be zero-padded vs transmitted callsigns; normalize with callsign_norm at match time)."
+          - name: airport_codes
+            description: "ICAO hop list, e.g. RJTT-RJFF; >2 hops = multi-stop (skipped by stg in v1)."

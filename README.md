@@ -295,7 +295,7 @@ from the live region config + ingest schedule and asserts it stays under the
 
 ## Acknowledgements
 
-This project stands on two community networks that choose to keep aviation
+This project stands on three community projects that choose to keep aviation
 data open:
 
 - **[The OpenSky Network](https://opensky-network.org)** — the wide-context
@@ -329,7 +329,16 @@ data open:
   bronze history, so flights don't age out of the mart), since adsb.lol's worldwide
   chains would otherwise inflate this Japan mart ~3x. Windows that fuse a multi-leg
   rotation under a sticky callsign (longer than any real nonstop, or far too slow
-  for their own O/D distance) are rejected before they can anchor or vote. Because that consensus mixes
+  for their own O/D distance) are rejected before they can anchor or vote.
+
+  Endpoints are also **feasibility-gated**: a jet airliner can't be assigned a short- or
+  unknown-runway small field (`dim_airports` carries OurAirports runway lengths), so the snap
+  resolves to the nearest *feasible* airport when one exists, and residual infeasible endpoints
+  are nullified later — while a schedule-derived voter
+  (`dim_vrs_routes`, the community-curated Virtual Radar Server route table) supplies the
+  hub pair where position evidence alone can't.
+
+  Because that consensus mixes
   observation with inference, every route endpoint records how it was derived in
   `origin_source`/`dest_source`, so any attribution can be audited back to its
   basis and no guess is mistaken for a sighting:
@@ -377,6 +386,10 @@ data open:
   airport-snapped from the OpenSky-context feed alone, with no
   adsb.lol or curated blending — for consumers that want that one source's
   opinion on its own.
+- **[Virtual Radar Server standing data](https://github.com/vradarserver/standing-data)** — the
+  community-curated callsign→route table (consumed via the hourly
+  [adsb.lol mirror](https://vrs-standing-data.adsb.lol)) that gives the reconciled mart a route
+  opinion independent of position inference.
 
 If you run an ADS-B receiver, feed these networks.
 

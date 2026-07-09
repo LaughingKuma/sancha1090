@@ -57,6 +57,8 @@ seeds:
         lon: Float64
         # dbt-clickhouse seed CSV inference is unreliable (same trap as lat/lon).
         scheduled_service: Bool
+        # Numeric, needed for the feasibility gate; same inference trap as lat/lon/scheduled_service.
+        runway_length_ft: UInt32
     dim_route_overrides:
       +column_types:
         valid_from: Date
@@ -81,3 +83,4 @@ vars:
   chain_low_fix_gap_min: 45  # low fix + a turnaround-sized gap = it landed; smaller gaps still chain
   reconcile_anchor_max_hours: 16  # no Japan-relevant nonstop exceeds ~14.5h; longer windows are fused rotations
   fused_envelope_speed_kmh: 550   # opensky_flights window vs O/D distance sanity floor
+  jet_min_runway_ft: 4500  # below this a jet airliner cannot operate; shortest scheduled-jet field in scope ~6,500 ft (RJKA)

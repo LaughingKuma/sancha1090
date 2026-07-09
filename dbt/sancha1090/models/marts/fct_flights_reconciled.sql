@@ -14,15 +14,24 @@
 -- tiebreak, single-source flagged, curated override on top; full provenance. Additive -- pure lanes untouched.
 with flight_shape as (
     -- only airliners get the sched tiebreak below; a real military flight may legitimately land at RJCJ.
-    select flight_id, {{ airline_shaped('anchor_callsign') }} as is_airline
-    from {{ ref('int_flight_spine') }}
+    -- SP4: is_jet feeds the ballot gate -- an opinion's own callsign can be NULL (single-ping legs), so
+    -- infeasibility is also enforced per-flight on the anchor identity, post-attach.
+    select sp.flight_id as flight_id,
+           {{ airline_shaped('sp.anchor_callsign') }} as is_airline,
+           (j.icao24 is not null) as is_jet
+    from {{ ref('int_flight_spine') }} sp
+    left join {{ ref('int_jet_airframes') }} j on j.icao24 = lower(sp.icao24)
 ),
 origin_ballot as (
     select a.flight_id as flight_id, a.origin_icao as airport, count() as votes,
            min(a.source_rank) as best_rank, max(coalesce(ap.scheduled_service, false)) as sched
     from {{ ref('int_flight_attach') }} a
     left join {{ ref('dim_airports') }} ap on ap.icao = a.origin_icao
+    left join flight_shape fs on fs.flight_id = a.flight_id
     where a.origin_icao is not null
+      -- SP4 ballot gate: anchor-identity backstop -- a NULL-callsign opinion must not launder an
+      -- infeasible field onto an airline-jet flight (opinion-level gate can't see the anchor).
+      and not {{ jet_infeasible_endpoint('coalesce(fs.is_airline, false)', 'coalesce(fs.is_jet, false)', 'ap.runway_length_ft', 'ap.airport_type') }}
     group by a.flight_id, a.origin_icao
 ),
 origin_annot as (
@@ -56,7 +65,11 @@ dest_ballot as (
            min(a.source_rank) as best_rank, max(coalesce(ap.scheduled_service, false)) as sched
     from {{ ref('int_flight_attach') }} a
     left join {{ ref('dim_airports') }} ap on ap.icao = a.dest_icao
+    left join flight_shape fs on fs.flight_id = a.flight_id
     where a.dest_icao is not null
+      -- SP4 ballot gate: anchor-identity backstop -- a NULL-callsign opinion must not launder an
+      -- infeasible field onto an airline-jet flight (opinion-level gate can't see the anchor).
+      and not {{ jet_infeasible_endpoint('coalesce(fs.is_airline, false)', 'coalesce(fs.is_jet, false)', 'ap.runway_length_ft', 'ap.airport_type') }}
     group by a.flight_id, a.dest_icao
 ),
 dest_annot as (

@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: int_jet_airframes
+    description: "Jet-airliner airframes (lowercase icao24) for the SP4 runway feasibility gate; designator-first, body_class fallback, C130/C30J excluded."
+    columns:
+      - name: icao24
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_vrs_routes
+    description: "Parsed vradarserver standing-data routes: 2-airport hops only, endpoints dim_airports-confirmed, deduped on callsign_norm; guarded empty until dim.dim_vrs_routes exists."
+    columns:
+      - name: callsign_norm
+        tests:
+          - not_null
+          - unique

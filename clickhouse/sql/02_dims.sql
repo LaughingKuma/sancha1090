@@ -32,3 +32,18 @@ CREATE TABLE IF NOT EXISTS dim.ladd_pulls
 )
 ENGINE = ReplacingMergeTree(loaded_at)
 ORDER BY list_date;
+
+-- dim_vrs_routes — vradarserver standing-data callsign→route table (SP4), pulled daily from the adsb.lol
+-- mirror by ingest_vrs_routes. ReplacingMergeTree(ingested_at) keyed on callsign: each load supersedes
+-- per-callsign (read with FINAL); a callsign removed upstream lingers — accepted, the vote is advisory.
+CREATE TABLE IF NOT EXISTS dim.dim_vrs_routes
+(
+    callsign      String,
+    code          String,
+    number        String,
+    airline_code  String,
+    airport_codes String,
+    ingested_at   DateTime DEFAULT now()
+)
+ENGINE = ReplacingMergeTree(ingested_at)
+ORDER BY callsign;
