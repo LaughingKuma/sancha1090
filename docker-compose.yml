@@ -509,6 +509,46 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  swim-consumer:
+    build:
+      context: .
+      dockerfile: swim-consumer/Dockerfile
+    image: sancha1090-swim-consumer:latest
+    depends_on:
+      garage:
+        condition: service_healthy
+      # record_load writes ingestion_manifest in postgres-analytics — wait for it or first writes fail.
+      postgres-analytics:
+        condition: service_healthy
+    environment:
+      SWIM_HOST: ${SWIM_HOST:?SWIM_HOST must be set in .env}
+      SWIM_VPN: ${SWIM_VPN:?SWIM_VPN must be set in .env}
+      SWIM_USER: ${SWIM_USER:?SWIM_USER must be set in .env}
+      SWIM_PASS: ${SWIM_PASS:?SWIM_PASS must be set in .env}
+      SWIM_QUEUE: ${SWIM_QUEUE:?SWIM_QUEUE must be set in .env}
+      SWIM_COMPRESSION: ${SWIM_COMPRESSION:-9}
+      # override if the SCDS broker cert ever stops chaining to the system CA bundle
+      SWIM_TRUSTSTORE: ${SWIM_TRUSTSTORE:-/etc/ssl/certs}
+      S3_ENDPOINT: ${S3_ENDPOINT:-garage:3900}
+      S3_BUCKET: ${S3_BUCKET:-sancha1090}
+      # write_parquet needs the Garage S3 keys + when_required/path-style checksum env (Garage gotcha).
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+      AWS_REQUEST_CHECKSUM_CALCULATION: ${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}
+      AWS_RESPONSE_CHECKSUM_VALIDATION: ${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}
+      ANALYTICS_PG_HOST: ${ANALYTICS_PG_HOST:-postgres-analytics}
+      # mirror postgres-analytics's own defaults so an unset var can't start the consumer with empty creds
+      ANALYTICS_PG_USER: ${ANALYTICS_PG_USER:-analytics}
+      ANALYTICS_PG_PASSWORD: ${ANALYTICS_PG_PASSWORD:?ANALYTICS_PG_PASSWORD must be set in .env}
+      ANALYTICS_PG_DB: ${ANALYTICS_PG_DB:-analytics}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
 volumes:
   # Pin existing names so renaming COMPOSE_PROJECT_NAME doesn't orphan data.
   postgres-airflow-data:

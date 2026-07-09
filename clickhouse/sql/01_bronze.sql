@@ -219,3 +219,38 @@ ENGINE = MergeTree
 PARTITION BY toYYYYMM(as_of_date)
 ORDER BY icao24
 SETTINGS allow_nullable_key = 1;
+
+-- bronze.swim_flightdata — FAA SWIM TFMData fltdMessage (SP3a). Append log: RMT collapses same-partition exact
+-- replays only; latest-amendment selection is a dbt argMax concern, not the engine. _dedup_fp + ORDER BY EXCLUDE
+-- the volatile receive/flush stamps (source_received_at, ingested_at) or a redelivery wouldn't collapse.
+CREATE TABLE IF NOT EXISTS bronze.swim_flightdata
+(
+    gufi Nullable(String), flight_ref Nullable(String), acid Nullable(String), computer_id Nullable(String),
+    msg_type Nullable(String),
+    dep_point Nullable(String), dep_point_kind Nullable(String), dep_point_raw Nullable(String),
+    arr_point Nullable(String), arr_point_kind Nullable(String), arr_point_raw Nullable(String),
+    filed_departure_time Nullable(DateTime64(6,'UTC')), filed_departure_time_raw Nullable(String),
+    filed_arrival_time Nullable(DateTime64(6,'UTC')), filed_arrival_time_raw Nullable(String),
+    msg_timestamp Nullable(DateTime64(6,'UTC')),
+    source_received_at Nullable(DateTime64(6,'UTC')), ingested_at Nullable(DateTime64(6,'UTC')),
+    raw_xml Nullable(String),
+    -- partition on the INTRINSIC message time (replay-stable): a redelivery re-derives the same partition, so
+    -- RMT twins always meet — receive-time would split twins across a month boundary. NULL folds to 1970.
+    swim_date Date MATERIALIZED ifNull(toDate(msg_timestamp), toDate(0)),
+    -- content fingerprint over every column EXCEPT the volatile stamps (source_received_at, ingested_at). A
+    -- HASH of raw_xml is included (not the bulky string) so an amendment differing only in an UNPARSED field
+    -- still gets a distinct fp and survives — parsed fields alone would wrongly collapse it. toString(tuple())
+    -- so a NULL can't poison the hash. The compact _dedup_fp (not raw_xml) is what goes in ORDER BY.
+    _dedup_fp UInt64 MATERIALIZED cityHash64(toString(tuple(gufi, flight_ref, acid, computer_id, msg_type,
+        dep_point, dep_point_kind, dep_point_raw, arr_point, arr_point_kind, arr_point_raw,
+        filed_departure_time, filed_departure_time_raw, filed_arrival_time, filed_arrival_time_raw, msg_timestamp,
+        cityHash64(raw_xml))))
+)
+ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(swim_date)
+-- version = msg_timestamp (@sourceTimeStamp, present on 100% of messages, intrinsic + monotonic → redelivery-safe,
+-- spike-confirmed 2026-07-08). Volatile stamps deliberately absent from ORDER BY: replays differ only in them,
+-- so exact twins share this key and collapse.
+ORDER BY (msg_timestamp, acid, _dedup_fp)
+PRIMARY KEY (msg_timestamp, acid)
+SETTINGS allow_nullable_key = 1, fsync_after_insert = 1, fsync_part_directory = 1;

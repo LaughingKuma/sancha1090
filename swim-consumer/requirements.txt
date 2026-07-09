@@ -1,0 +1,7 @@
+# swim-consumer deps — pinned to the versions confirmed in the built image (reproducible builds).
+solace-pubsubplus==1.11.0   # bundles native libsolclient.so; installs on the CPython 3.10/3.12 slim images
+polars==1.42.1
+pyarrow==24.0.0
+s3fs==2026.6.0
+sqlalchemy==2.0.51
+psycopg2-binary==2.9.12   # repo imports psycopg2 (SQLAlchemy postgresql+psycopg2), not psycopg3

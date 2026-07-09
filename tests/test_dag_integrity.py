@@ -151,6 +151,21 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"fetch_and_land", "load_to_clickhouse"},
     },
+    "tableize_swim": {
+        "schedule": "*/5 * * * *",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"load_pending_to_clickhouse"},
+    },
+    "transform_swim": {
+        "schedule_is_asset_triggered": True,
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"dbt_run_ch", "dbt_test_ch"},
+        "downstream_task_ids": {
+            "dbt_run_ch": {"dbt_test_ch"},
+        },
+    },
 }
 
 

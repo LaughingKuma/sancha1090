@@ -5,6 +5,9 @@ from typing import Any
 
 import polars as pl
 
+# Single source of truth for the SWIM bronze column contract — the drain module owns it, don't re-list it.
+from include.swim_consumer import _BRONZE_COLS as _SWIM_BRONZE_COLS
+
 
 # Column order = the bronze landing contract; the CH loader selects by this list so the
 # byte-mirror table and the per-tick load can't drift.
@@ -68,6 +71,14 @@ def transform_flights_frame(df: pl.DataFrame) -> pl.DataFrame:
         pl.lit(datetime.now(timezone.utc)).alias("committed_at"),
     )
     return df.select(FLIGHTS_COLUMNS)
+
+
+def transform_swim_frame(df: pl.DataFrame) -> pl.DataFrame:
+    # Fail loud on contract drift: a silently-dropped column would insert as all-NULL in bronze.
+    missing = [c for c in _SWIM_BRONZE_COLS if c not in df.columns]
+    if missing:
+        raise ValueError(f"swim frame missing bronze columns: {missing}")
+    return df.select(_SWIM_BRONZE_COLS)
 
 
 def flight_row(f: dict[str, Any], icao: str, direction: str, window_kind: str) -> dict[str, Any]:

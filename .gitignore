@@ -14,3 +14,6 @@ config/garage.toml
 
 # Host-specific compose overrides (e.g. LAN port exposure); loaded via COMPOSE_FILE
 docker-compose.local.yml
+
+# Real SWIM flight-data fixtures — local-only (LADD / public-showcase); not committed
+tests/fixtures/swim/

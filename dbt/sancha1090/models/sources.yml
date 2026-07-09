@@ -72,3 +72,10 @@ sources:
           - name: ts
             tests:
               - not_null
+      - name: swim_flightdata
+        description: "FAA SWIM TFMData filed flight plans (SP3a landing lane); one row per fltdMessage."
+        columns:
+          - name: msg_timestamp
+            description: "@sourceTimeStamp — the amendment version; on every message, used for argMax + ORDER BY."
+            tests:
+              - not_null

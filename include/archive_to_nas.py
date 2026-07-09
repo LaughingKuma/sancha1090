@@ -12,7 +12,8 @@ log = logging.getLogger(__name__)
 
 
 # bronze/states (frozen pre-states_raw history) is distinct from states_raw — the escaped LIKE stops them cross-matching.
-_OPENSKY_PREFIXES = ("bronze/states", "bronze/states_raw", "bronze/flights_raw", "bronze/adsblol_states_raw")
+_OPENSKY_PREFIXES = ("bronze/states", "bronze/states_raw", "bronze/flights_raw", "bronze/adsblol_states_raw",
+                     "bronze/swim_raw")
 
 
 def _read_key(uri: str) -> str:

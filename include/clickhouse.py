@@ -28,6 +28,7 @@ _FLIGHTS_PREFIXES = ("bronze/flights_raw",)
 _ADSBLOL_PREFIXES = ("bronze/adsblol_states_raw",)
 _ADSBLOL_SEGMENTS_PREFIXES = ("bronze/adsblol_flight_segments",)
 _ADSBLOL_PATHS_PREFIXES = ("bronze/adsblol_flight_paths",)
+_SWIM_PREFIXES = ("bronze/swim_raw",)
 # Cap files per INSERT so a pre-backfill drain can't OOM and each batch stays one part (no "too many parts").
 _DEFAULT_BATCH_FILES = 1000
 # adsb rows-per-file is ~40× a states region file, so use a much smaller batch to bound memory.
@@ -151,6 +152,15 @@ def load_flights_pending_to_ch(engine: Optional[sa.Engine] = None, *,
     return _safe("flights load", lambda: _drain_transformed(
         _FLIGHTS_PREFIXES, bt.transform_flights_frame, "opensky_flights",
         batch_files=batch_files, engine=engine))
+
+
+def load_swim_pending_to_ch(engine: Optional[sa.Engine] = None, *,
+                            prefixes: Iterable[str] = _SWIM_PREFIXES,
+                            batch_files: Optional[int] = _DEFAULT_BATCH_FILES) -> dict:
+    from include import bronze_transforms as bt
+
+    return _safe("swim load", lambda: _drain_transformed(
+        prefixes, bt.transform_swim_frame, "swim_flightdata", batch_files=batch_files, engine=engine))
 
 
 def load_adsb_pending_to_ch(engine: Optional[sa.Engine] = None, *,

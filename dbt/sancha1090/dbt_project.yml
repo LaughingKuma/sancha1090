@@ -73,3 +73,4 @@ vars:
   chain_speed_max_kmh: 1100  # above this = not the same continuous flight
   anchor_merge_gap_min: 30  # two opensky_flights summaries for one icao24 this close (compatible callsign) = one physical flight
   flight_max_hours: 8  # an airborne anchor longer than this fuses a rotation; reject it from collapse-prone sources
+  swim_max_flight_hours: 20  # SWIM kept messages carry igtd but no eta; cap the callsign→hex window off departure (covers ~19h ultra-long-haul)

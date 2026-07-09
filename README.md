@@ -21,9 +21,10 @@ table and refresh track; they fuse only at well-defined seams, the sharpest bein
 
 ## Architecture
 
-All three feeds land as Parquet in the Garage S3 zone, load into ClickHouse bronze
-via manifest-driven per-file bookkeeping, and stay on separate refresh tracks
-(partitioned by dbt tag so they never race), fusing only in `gold.fct_flight_legs`.
+The rooftop, OpenSky, and adsb.lol feeds land as Parquet in the Garage S3 zone, load
+into ClickHouse bronze via manifest-driven per-file bookkeeping, and stay on separate
+refresh tracks (partitioned by dbt tag so they never race), fusing only in
+`gold.fct_flight_legs`. (The FAA SWIM lane below lands to the same zone on its own track.)
 Cheap aggregates skip the rebuild cycle entirely — `AggregatingMergeTree` views
 update on insert and serve through merge-aware views — and every served value is
 re-checked hourly against bronze by the `ch_serving_parity` gate:
@@ -31,16 +32,35 @@ re-checked hourly against bronze by the `ch_serving_parity` gate:
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/architecture-dark.svg">
-    <img src="docs/architecture.svg" alt="sancha1090 architecture: rooftop ADS-B antenna, OpenSky context feed and adsb.lol history land in a Garage S3 zone, load into ClickHouse bronze → silver → gold, serve Superset, with a NAS cold archive and an hourly parity gate" width="520">
+    <img src="docs/architecture.svg" alt="sancha1090 architecture: rooftop ADS-B antenna, OpenSky context feed, adsb.lol history, and FAA SWIM filed flight plans land in a Garage S3 zone, load into ClickHouse bronze → silver → gold, serve Superset, with a NAS cold archive and an hourly parity gate" width="520">
   </picture>
 </p>
 
-Provenance lives in Postgres (`public.ingestion_manifest` for the OpenSky and
-adsb.lol lanes, `public.adsb_ingestion_manifest` for the rooftop antenna) — one row
+Provenance lives in Postgres (`public.ingestion_manifest` for the OpenSky, adsb.lol,
+and FAA SWIM lanes, `public.adsb_ingestion_manifest` for the rooftop antenna) — one row
 per landed file, and the ingest path fails loud on anything it doesn't recognize: a
 producer manifest outside its lane's prefix or an unregistered object under the
 ADS-B prefix aborts the run rather than blending sources. See
 [`docs/datalake.md`](docs/datalake.md) for the full lineage, entity map, and per-table schema.
+
+### FAA SWIM — filed flight plans
+
+A fourth, independent lane taps **FAA SWIM** (System Wide Information Management), specifically
+the SWIM Cloud Distribution Service's **TFMData** feed of filed flight plans. An always-on
+`swim-consumer` service holds a persistent subscription, parses each message, and flushes rolling
+Parquet to the same Garage zone (`bronze/swim_raw/`) — the write must land durably before the
+message is acknowledged, so a dropped connection can't silently lose data. A 5-minute
+`tableize_swim` DAG (skipping ticks with nothing new to load) drains it into
+`bronze.swim_flightdata`, and `transform_swim` builds `int_swim_flight` — the latest amendment
+per flight, plus a density-scored callsign→icao24 match against the states feeds, since SWIM
+carries no Mode-S hex of its own — and `int_swim_opinion`, an origin/destination read scoped to
+**US-touching flights**, including the foreign endpoint on international legs that the antenna
+and OpenSky's Japan box never see (e.g. the Hong Kong side of a Hong Kong–San Francisco flight).
+
+This lane currently only lands and normalizes: `int_swim_opinion` is built and tested but not yet
+wired into `gold.fct_flights_reconciled`'s cross-source vote, so nothing derived from it is served
+anywhere yet. It's this pipeline's own read of a public FAA system-wide information feed — not
+FAA-published or FAA-endorsed data.
 
 ## Architecture evolution
 
