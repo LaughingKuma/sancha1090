@@ -51,16 +51,21 @@ the SWIM Cloud Distribution Service's **TFMData** feed of filed flight plans. An
 Parquet to the same Garage zone (`bronze/swim_raw/`) — the write must land durably before the
 message is acknowledged, so a dropped connection can't silently lose data. A 5-minute
 `tableize_swim` DAG (skipping ticks with nothing new to load) drains it into
-`bronze.swim_flightdata`, and `transform_swim` builds `int_swim_flight` — the latest amendment
+`bronze.swim_flightdata`, and `transform_marts` builds `int_swim_flight` — the latest amendment
 per flight, plus a density-scored callsign→icao24 match against the states feeds, since SWIM
 carries no Mode-S hex of its own — and `int_swim_opinion`, an origin/destination read scoped to
 **US-touching flights**, including the foreign endpoint on international legs that the antenna
 and OpenSky's Japan box never see (e.g. the Hong Kong side of a Hong Kong–San Francisco flight).
 
-This lane currently only lands and normalizes: `int_swim_opinion` is built and tested but not yet
-wired into `gold.fct_flights_reconciled`'s cross-source vote, so nothing derived from it is served
-anywhere yet. It's this pipeline's own read of a public FAA system-wide information feed — not
-FAA-published or FAA-endorsed data.
+`int_swim_opinion` now casts a vote in `gold.fct_flights_reconciled`'s cross-source consensus, at
+the top of the source-authority order — though plurality still outvotes authority; rank only
+breaks a tie. A second, independent obligation rides the same feed's identity data: the FAA's
+**LADD** privacy list. Any airframe currently listed is tracked SCD2 in `dim.dim_ladd` (a manual
+monthly pull) and suppressed at display time everywhere the platform serves live or historical
+positions — the livemap's `/aircraft`, `/flights`, and `/track` endpoints all drop a listed
+airframe before it reaches a client, the same way the reconciled mart flags it (`is_ladd`) rather
+than deleting the row. It's this pipeline's own read of a public FAA system-wide information feed
+and a public FAA privacy list — not FAA-published or FAA-endorsed data.
 
 ## Architecture evolution
 
@@ -322,8 +327,14 @@ data open:
   observation with inference, every route endpoint records how it was derived in
   `origin_source`/`dest_source`, so any attribution can be audited back to its
   basis and no guess is mistaken for a sighting:
+  - `swim` — **filed** (the FAA's own system-of-record plan, highest authority): FAA SWIM
+    TFMData's filed origin/destination, scoped to **US-touching flights only** — the one source
+    that can resolve the *foreign* endpoint on an international leg neither the antenna nor
+    OpenSky's Japan box ever sees. Matched to an airframe by density-scored callsign (SWIM
+    carries no Mode-S hex); an ambiguous match is withheld rather than guessed. See
+    "FAA SWIM — filed flight plans" above.
   - `opensky_flights` — **observed** (ground truth): OpenSky's own arrival/departure
-    flight-summary record for this flight — the highest-authority source.
+    flight-summary record for this flight.
   - `opensky_states` — **observed**: a directly seen low-altitude fix at the
     airport, inside the tracked box. Airline-shaped callsigns (`^[A-Z]{3}[0-9]`)
     only snap to scheduled-service airports, so a 787 is never attributed to a
@@ -338,13 +349,14 @@ data open:
     endpoint NULL, each row carrying its evidence string (e.g. a FlightAware
     confirmation).
 
-  Every source with an opinion (OpenSky flight-summaries, the OpenSky-states
-  sessionize+snap, and the adsb.lol chain) casts a vote per endpoint, plurality
-  wins, and an exact tie prefers a scheduled-service airport for airline-shaped
-  callsigns before falling back to the same source-authority order — flagged
-  `tiebreak` either way rather than silently picked. An endpoint only one source
-  voted on is flagged `single` (per endpoint, not per flight — a 3-source flight
-  can still be origin-`single`); the curated seed still overrides on top. Every
+  Every source with an opinion (FAA SWIM's filed plan, OpenSky flight-summaries,
+  the OpenSky-states sessionize+snap, and the adsb.lol chain) casts a vote per
+  endpoint, plurality wins, and an exact tie prefers a scheduled-service airport
+  for airline-shaped callsigns before falling back to the same source-authority
+  order — flagged `tiebreak` either way rather than silently picked. An endpoint
+  only one source voted on is flagged `single` (per endpoint, not per flight — a
+  3-source flight can still be origin-`single`); the curated seed still
+  overrides on top. Every
   flight carries the full vote tally and an agreement label (`unanimous` /
   `majority` / `tiebreak` / `single` / `curated`) per endpoint, so a low-trust
   resolution stays visible instead of blending in — consensus measurably cuts the

@@ -1,6 +1,6 @@
 {{ config(materialized='table', tags=['swim']) }}
 
--- Rankless per-source opinion projection (source_rank is stamped at the SP3b int_flight_opinions UNION, like
+-- Rankless per-source opinion projection (source_rank is stamped at the int_flight_opinions UNION, like
 -- every other source model). Vote-eligible only: a resolved non-ambiguous hex AND at least one usable endpoint.
 select
     'swim' as source,

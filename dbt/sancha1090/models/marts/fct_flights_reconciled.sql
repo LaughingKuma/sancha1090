@@ -1,5 +1,15 @@
 {{ config(materialized='table', tags=['reconcile']) }}
 
+-- Deploy-order guard: dim.dim_ladd is created by clickhouse-init at the operator's deploy, but transform_marts
+-- rebuilds this model from committed code every ~4 min — so gate the LADD join on the table actually existing.
+-- schema/identifier are pinned to the dim_ladd entry in sources.yml (the ladd_src CTE's source() owns the ref
+-- edge); get_relation is execute-only so parse never touches the warehouse (ladd_rel defaults to none there).
+{%- if execute %}
+{%- set ladd_rel = adapter.get_relation(database=none, schema='dim', identifier='dim_ladd') %}
+{%- else %}
+{%- set ladd_rel = none %}
+{%- endif %}
+
 -- Cross-source consensus flight mart: per flight, plurality per endpoint, authority + scheduled-service
 -- tiebreak, single-source flagged, curated override on top; full provenance. Additive -- pure lanes untouched.
 with flight_shape as (
@@ -33,7 +43,7 @@ origin_rank as (
 origin_win as (
     select flight_id,
         airport as origin_icao,
-        transform(best_rank, [1, 2, 3], ['opensky_flights', 'adsblol', 'opensky_states'], 'opensky_states') as origin_src,
+        {{ rank_source_label('best_rank') }} as origin_src,
         multiIf(total_votes = 1, 'single', distinct_airports = 1, 'unanimous', n_top > 1, 'tiebreak', 'majority') as origin_agr
     from origin_rank where rn = 1
 ),
@@ -67,7 +77,7 @@ dest_rank as (
 dest_win as (
     select flight_id,
         airport as dest_icao,
-        transform(best_rank, [1, 2, 3], ['opensky_flights', 'adsblol', 'opensky_states'], 'opensky_states') as dest_src,
+        {{ rank_source_label('best_rank') }} as dest_src,
         multiIf(total_votes = 1, 'single', distinct_airports = 1, 'unanimous', n_top > 1, 'tiebreak', 'majority') as dest_agr
     from dest_rank where rn = 1
 ),
@@ -136,12 +146,40 @@ resolved as (
     -- else adsb.lol's worldwide chains inflate this Japan mart ~3x.
     where sp.anchor_source = 'opensky_flights' or sp.flight_id in (select flight_id from box_observed)
 )
+{%- if ladd_rel is not none %},
+ladd_src as (
+    -- dim_ladd is RMT(_version) → FINAL for current SCD2 state. icao24 is stored lowercase and callsign trim+UPPER;
+    -- re-normalized here so the mart↔dim comparison can't drift from the ingest normalizer.
+    select lower(trimBoth(icao24)) as icao24, upper(trimBoth(callsign)) as callsign, valid_from, valid_to
+    from {{ source('dim', 'dim_ladd') }} final
+),
+ladd_match as (
+    -- D5: identity (hex OR normalized callsign) AND (open interval → all its history, OR a closed interval that
+    -- overlaps [start_time, end_time]). Hex and callsign are two equi-joins so CH keeps a hash join (no OR key).
+    select r.flight_id
+    from resolved r
+    join ladd_src l on l.icao24 = lower(r.icao24)
+    where l.valid_to is null or (l.valid_from <= toDate(r.end_time) and l.valid_to >= toDate(r.start_time))
+    union distinct
+    select r.flight_id
+    from resolved r
+    join ladd_src l on l.callsign = upper(trimBoth(r.callsign))
+    where l.valid_to is null or (l.valid_from <= toDate(r.end_time) and l.valid_to >= toDate(r.start_time))
+)
+{%- endif %}
 select
     r.*,
     oap.name as origin_name, nullIf(oap.iata, '') as origin_iata, nullIf(oap.city, '') as origin_city,
     oap.lat as origin_lat, oap.lon as origin_lon,
     dap.name as dest_name, nullIf(dap.iata, '') as dest_iata, nullIf(dap.city, '') as dest_city,
-    dap.lat as dest_lat, dap.lon as dest_lon
+    dap.lat as dest_lat, dap.lon as dest_lon,
+{%- if ladd_rel is not none %}
+    -- window-aware suppression flag; warehouse keeps the row (flag only), livemap drops it at serve time.
+    toUInt8(r.flight_id in (select flight_id from ladd_match)) as is_ladd
+{%- else %}
+    -- guarded literal until dim.dim_ladd exists (see deploy-order guard above); self-heals on first run after.
+    toUInt8(0) as is_ladd
+{%- endif %}
 from resolved r
 left join {{ ref('dim_airports') }} oap on oap.icao = r.origin_icao
 left join {{ ref('dim_airports') }} dap on dap.icao = r.dest_icao

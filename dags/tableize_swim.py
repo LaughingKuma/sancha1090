@@ -29,7 +29,7 @@ def tableize_swim():
     def load_pending_to_clickhouse() -> dict:
         # Check ok before files: a genuine failure can also report files=0, which must RED not SKIP.
         # Cron-driven (producer is an always-on consumer service, not an asset-emitting DAG); most ticks land
-        # nothing, so skip rather than emit the asset and trigger a no-op transform_swim rebuild.
+        # nothing, so skip rather than emit a meaningless asset event (bronze_swim_table has no consumer DAG).
         from airflow.exceptions import AirflowSkipException
 
         from include.clickhouse import load_swim_pending_to_ch

@@ -19,12 +19,19 @@ def livemap():
 
 
 def test_track_serves_rw_points_passthrough(livemap, monkeypatch):
+    # loaded (empty) suppression + empty belt so the passthrough is exercised, not the None-state fail-close
+    monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)
+    monkeypatch.setattr(livemap, "_mv_ladd_hexes", {})
     monkeypatch.setattr(livemap, "_fetch_track", lambda _icao: [[139.7, 35.6, 1765500000.0, "38000"]])
     j = TestClient(livemap.app).get("/track/abc123").json()
     assert j == {"hex": "abc123", "points": [[139.7, 35.6, 1765500000.0, "38000"]]}
 
 
 def test_track_rw_failure_returns_empty_200(livemap, monkeypatch):
+    # loaded state so this reaches _fetch_track and exercises the RW-down path, not the None-state fail-close
+    monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)
+    monkeypatch.setattr(livemap, "_mv_ladd_hexes", {})
+
     def boom(_icao):
         raise RuntimeError("rw down")
 

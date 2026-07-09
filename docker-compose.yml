@@ -529,6 +529,7 @@ services:
       SWIM_COMPRESSION: ${SWIM_COMPRESSION:-9}
       # override if the SCDS broker cert ever stops chaining to the system CA bundle
       SWIM_TRUSTSTORE: ${SWIM_TRUSTSTORE:-/etc/ssl/certs}
+      SWIM_HEALTH_MAX_AGE_S: ${SWIM_HEALTH_MAX_AGE_S:-600}
       S3_ENDPOINT: ${S3_ENDPOINT:-garage:3900}
       S3_BUCKET: ${S3_BUCKET:-sancha1090}
       # write_parquet needs the Garage S3 keys + when_required/path-style checksum env (Garage gotcha).

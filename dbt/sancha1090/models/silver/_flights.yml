@@ -38,7 +38,7 @@ models:
       - name: end_time
         tests: [not_null]
   - name: int_flight_opinions
-    description: Windowed O/D opinions from all sources in one common schema (source_rank 1=opensky_flights, 2=adsblol, 3=opensky_states); reconciler input.
+    description: Windowed O/D opinions from all sources in one common schema (source_rank 1=swim, 2=opensky_flights, 3=adsblol, 4=opensky_states); reconciler input.
     columns:
       - name: icao24
         tests: [not_null]
@@ -46,7 +46,7 @@ models:
         tests:
           - accepted_values:
               arguments:
-                values: ['opensky_flights', 'adsblol', 'opensky_states']
+                values: ['swim', 'opensky_flights', 'adsblol', 'opensky_states']
   - name: int_flight_spine
     description: One row per authority-ranked flight anchor; flight_id is the reconciliation key. Near-duplicate opensky_flights summaries can double-anchor a physical flight (~13% of the tier); dedup is SP2.
     columns:

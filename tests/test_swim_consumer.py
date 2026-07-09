@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import pytest
 from include import swim_consumer as sc
@@ -100,3 +101,51 @@ def test_unextractable_payload_acked_without_crash():
              record=lambda *_a: None, flush_every=1, flush_seconds=0, max_messages=1)
     assert writes == []
     assert len(r.acked) == 1
+
+
+def test_drain_calls_on_activity_for_every_received_message():
+    # heartbeat must fire on receipt, before any parse/ack decision — even for a message that's dropped, not kept.
+    hits = []
+    r = FakeReceiver([FakeMsg(b"<broken")])
+    sc.drain(r, write=lambda *_a: "s3://b/k", record=lambda *_a: None,
+              flush_every=1, flush_seconds=0, max_messages=1, on_activity=lambda: hits.append(1))
+    assert hits == [1]
+
+
+def test_drain_default_on_activity_is_a_noop():
+    # existing callers (no on_activity) must keep working unchanged.
+    r = FakeReceiver([FakeMsg(b"<broken")])
+    sc.drain(r, write=lambda *_a: "s3://b/k", record=lambda *_a: None,
+              flush_every=1, flush_seconds=0, max_messages=1)
+
+
+class TestIsHealthy:
+    # is_healthy is pure: no threads, no wall clock — every case is a fixed (now, last_activity) pair.
+    NOW = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_fresh_activity_is_healthy(self):
+        assert sc.is_healthy(now=self.NOW, last_activity=self.NOW - timedelta(seconds=5),
+                              thread_alive=True, max_age_s=600) is True
+
+    def test_stale_activity_is_unhealthy(self):
+        assert sc.is_healthy(now=self.NOW, last_activity=self.NOW - timedelta(seconds=601),
+                              thread_alive=True, max_age_s=600) is False
+
+    def test_age_exactly_at_boundary_is_healthy(self):
+        assert sc.is_healthy(now=self.NOW, last_activity=self.NOW - timedelta(seconds=600),
+                              thread_alive=True, max_age_s=600) is True
+
+    def test_dead_thread_is_unhealthy_even_with_fresh_activity(self):
+        assert sc.is_healthy(now=self.NOW, last_activity=self.NOW - timedelta(seconds=1),
+                              thread_alive=False, max_age_s=600) is False
+
+    def test_never_active_is_unhealthy(self):
+        assert sc.is_healthy(now=self.NOW, last_activity=None, thread_alive=True, max_age_s=600) is False
+
+
+def test_liveness_touch_records_the_injected_clock():
+    clock = iter([datetime(2026, 7, 9, 0, 0, 0, tzinfo=timezone.utc)])
+    liveness = sc.Liveness(now=lambda: next(clock))
+    assert liveness.last_activity is None
+    liveness.touch()
+    assert liveness.last_activity == datetime(2026, 7, 9, 0, 0, 0, tzinfo=timezone.utc)

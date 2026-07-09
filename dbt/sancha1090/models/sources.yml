@@ -79,3 +79,22 @@ sources:
             description: "@sourceTimeStamp — the amendment version; on every message, used for argMax + ORDER BY."
             tests:
               - not_null
+
+  - name: dim
+    description: "Operator-loaded dimensions created by clickhouse-init (not dbt-managed): reference lists the marts read."
+    database: dim
+    schema: dim
+    tables:
+      - name: dim_ladd
+        description: "FAA LADD privacy-list SCD2 intervals (SP3b); ReplacingMergeTree(_version) — read with FINAL. An open interval (valid_to NULL) is a currently-listed airframe; a closed interval protects data produced while it was listed. No source tests: they query the relation directly, but dim.dim_ladd is intentionally optional pre-deploy (the mart's deploy-order guard skips it when absent). Row validity/grain is enforced at the single writer (include/ladd.py: SCD2 plan keyed on registration, zero-valid-reg raise, mass-close guard)."
+        columns:
+          - name: registration
+            description: "US N-number (normalized upper, N-prefixed) — the SCD2 identity key."
+          - name: callsign
+            description: "Normalized callsign (trim+upper) when the list carried one, else NULL; a second suppression-match key."
+          - name: icao24
+            description: "Resolved lowercase ICAO 24-bit hex (FAA registry first, N-number algorithm fallback); nullable by design — an unresolved N-number still suppresses by callsign."
+          - name: valid_from
+            description: "List date the interval opened (SCD2 valid-from); part of the RMT dedup key with registration."
+          - name: valid_to
+            description: "List date the interval closed, or NULL while the airframe is currently listed (open interval)."

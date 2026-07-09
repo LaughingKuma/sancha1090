@@ -10,12 +10,12 @@ models:
         tests:
           - accepted_values:
               arguments:
-                values: ['opensky_flights', 'opensky_states', 'adsblol', 'curated']
+                values: ['swim', 'opensky_flights', 'opensky_states', 'adsblol', 'curated']
       - name: dest_source
         tests:
           - accepted_values:
               arguments:
-                values: ['opensky_flights', 'opensky_states', 'adsblol', 'curated']
+                values: ['swim', 'opensky_flights', 'opensky_states', 'adsblol', 'curated']
       - name: origin_agreement
         tests:
           - accepted_values:
@@ -46,3 +46,10 @@ models:
         description: Dest latitude (dim_airports); NULL when dest_icao is NULL.
       - name: dest_lon
         description: Dest longitude (dim_airports); NULL when dest_icao is NULL.
+      - name: is_ladd
+        description: "FAA LADD suppression flag (SP3b): 1 when the airframe's icao24 or normalized callsign matched a dim_ladd interval that was open or overlapped [start_time, end_time]. Flag only — the warehouse keeps the row; livemap drops is_ladd=1 at serve time. 0 until dim.dim_ladd is deployed (guarded literal)."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]

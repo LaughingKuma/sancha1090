@@ -32,22 +32,23 @@ bounds as (
 ),
 swim_callsigns as (select distinct callsign from flat),
 obs as (  -- observed hex sightings by trim+UPPER-normalized callsign (both hex lanes), per the design
-    select upper(trimBoth(callsign)) as cs, icao24 as hex,
+    -- lane tags each arm so scored can dedup RMT un-merged duplicates by (lane, epoch) instead of raw count.
+    select 'os' as lane, upper(trimBoth(callsign)) as cs, icao24 as hex,
            toUnixTimestamp64Micro(snapshot_time)/1e6 as epoch
     from {{ source('bronze', 'opensky_states') }}
     where callsign is not null and trimBoth(callsign) <> '' and icao24 is not null
       and snapshot_time between (select lo from bounds) and (select hi from bounds)
       and upper(trimBoth(callsign)) in (select callsign from swim_callsigns)
     union all
-    select upper(trimBoth(flight)) as cs, hex,
+    select 'adsb' as lane, upper(trimBoth(flight)) as cs, hex,
            capture_ts as epoch     -- adsb_states.capture_ts is already Float64 epoch seconds
     from {{ source('bronze', 'adsb_states') }}
     where flight is not null and trimBoth(flight) <> '' and hex is not null
       and capture_ts between toUnixTimestamp((select lo from bounds)) and toUnixTimestamp((select hi from bounds))
       and upper(trimBoth(flight)) in (select callsign from swim_callsigns)
 ),
-scored as (  -- density = count of matching sightings in the filed window, per candidate hex
-    select f.flight_key, o.hex, count(*) as score
+scored as (  -- density = distinct (lane, epoch) sightings, dedup-immune to RMT un-merged duplicates
+    select f.flight_key, o.hex, uniqExact(o.lane, o.epoch) as score
     from flat f
     join obs o
       on o.cs = f.callsign

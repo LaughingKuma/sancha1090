@@ -34,6 +34,15 @@ CH_PASSWORD = os.environ.get("LIVEMAP_CH_PASSWORD", "")
 CH_DB = os.environ.get("LIVEMAP_CH_DB", "gold_ch")
 CH_QUERY_TIMEOUT_S = int(os.environ.get("LIVEMAP_CH_QUERY_TIMEOUT_S", "4"))
 
+# LADD suppression: the live surfaces only need "listed right now" — the OPEN intervals. The mart's
+# window-aware is_ladd covers history. dim_ladd is RMT(_version) so FINAL for current SCD2 state.
+LADD_SUPPRESS_QUERY = "SELECT icao24, callsign FROM dim.dim_ladd FINAL WHERE valid_to IS NULL"
+LADD_REFRESH_SECONDS = float(os.environ.get("LIVEMAP_LADD_REFRESH_SECONDS", "900"))
+LADD_REFRESH_TICKS = max(1, int(LADD_REFRESH_SECONDS / POLL_SECONDS))
+# Last-good suppression sets on disk: a restart mid-CH-cold-start reseeds from this instead of failing open
+# (None). The container FS survives restarts, so the fail-open window collapses to first-ever boot/recreate.
+LADD_CACHE_PATH = os.environ.get("LIVEMAP_LADD_CACHE_PATH", "/tmp/ladd_suppress_cache.json")
+
 # Real antenna is a secret (home rooftop) — from .env; default is the public Carrot Tower landmark.
 FEEDER_LAT = float(os.environ.get("LIVEMAP_FEEDER_LAT", "35.6434"))
 FEEDER_LON = float(os.environ.get("LIVEMAP_FEEDER_LON", "139.6692"))
@@ -41,7 +50,7 @@ FEEDER_LON = float(os.environ.get("LIVEMAP_FEEDER_LON", "139.6692"))
 # recv rides the payload end-to-end (the P2 multi-receiver seam); rendered uniformly today.
 QUERY = """
     SELECT capture_ts, hex, flight, lat, lon, alt_baro, gs, track,
-           typecode, aircraft_desc, registration, body_class, is_military, is_helicopter,
+           typecode, aircraft_desc, registration, body_class, is_military, is_helicopter, is_ladd,
            airline_name, reg_country, recv, own_op, year, category,
            squawk, position_source,
            baro_rate, geom_rate, rssi, nav_altitude_mcp, nav_modes
@@ -64,7 +73,7 @@ FLIGHTS_QUERY = f"""
            coalesce(origin_iata, origin_icao) AS o_code, coalesce(origin_city, origin_name) AS o_name,
            coalesce(dest_iata,   dest_icao)   AS d_code, coalesce(dest_city,   dest_name)   AS d_name, callsign
     FROM {CH_DB}.fct_flights_reconciled
-    WHERE icao24 = {{hex:String}} AND (origin_icao IS NOT NULL OR dest_icao IS NOT NULL)
+    WHERE icao24 = {{hex:String}} AND is_ladd = 0 AND (origin_icao IS NOT NULL OR dest_icao IS NOT NULL)
     ORDER BY ts DESC LIMIT 10
 """
 
@@ -90,6 +99,46 @@ _routes: dict = {}
 # (server_ts, [[hex, lon, lat, capture_ts, alt_baro], ...]) per successful poll; in-process
 # is fine now — a restart refills the full wake window in ~2 min
 _track_buf: collections.deque = collections.deque(maxlen=max(1, int(HISTORY_BUFFER_S / POLL_SECONDS)))
+# LADD open-interval identities (hex + normalized callsign) refreshed from CH every ~15 min; suppressed on the
+# live surfaces. _EMPTY_SUPPRESS is the sentinel for a real, loaded, currently-empty list.
+_EMPTY_SUPPRESS: dict = {"hex": frozenset(), "callsign": frozenset()}
+
+
+def _write_ladd_cache(suppress, path) -> None:
+    # Atomic last-good write (temp + os.replace) so a crash mid-write never leaves a half-JSON the boot seed trusts.
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump({"hex": sorted(suppress["hex"]), "callsign": sorted(suppress["callsign"])}, fh)
+    os.replace(tmp, path)
+
+
+def _read_ladd_cache(path):
+    # Boot seed from the last-good sets so a CH-cold-start restart resumes dim filtering instead of failing open.
+    # Conservative-stale is the right direction (the list mostly grows); missing/corrupt -> None, a never-loaded
+    # cold start exactly as before the cache existed.
+    try:
+        with open(path) as fh:
+            d = json.load(fh)
+        return {"hex": frozenset(d["hex"]), "callsign": frozenset(d["callsign"])}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _cache_ladd_suppress(suppress) -> None:
+    # Best-effort: a read-only/full FS must never break the live refresh — the in-memory set stays authoritative.
+    try:
+        _write_ladd_cache(suppress, LADD_CACHE_PATH)
+    except Exception as exc:
+        print(f"livemap ladd suppress cache write skipped: {exc}", flush=True)
+
+
+# None = never loaded (fails /track closed, logs once); empty frozensets = a real, loaded, currently-empty list.
+# Boot-seeded from the last-good disk cache so a restart during a CH cold start resumes dim filtering, not None.
+_ladd_suppress: dict | None = _read_ladd_cache(LADD_CACHE_PATH)
+_ladd_none_warned: bool = False
+# Hexes _fetch dropped for the MV's is_ladd bit, keyed to the time last seen. mv_track_positions carries no
+# dbFlags, so /track fails closed on a hex still in this TTL'd set (retained for HISTORY_BUFFER_S).
+_mv_ladd_hexes: dict = {}
 # /flights is on-click + rarely changing (the reconciled mart is batch) — cache per hex.
 _flights_cache: dict = {}
 FLIGHTS_CACHE_TTL_S = float(os.environ.get("LIVEMAP_FLIGHTS_CACHE_TTL_S", "120"))
@@ -116,7 +165,14 @@ def _rw_rows(sql, params=None, cursor_factory=None):
 
 
 def _fetch() -> dict:
+    global _ladd_none_warned
+    now = time.time()
     rows = _rw_rows(QUERY, cursor_factory=psycopg2.extras.RealDictCursor)
+    suppress = _ladd_suppress
+    if suppress is None and not _ladd_none_warned:
+        # Visible-once window: /aircraft leans on the MV is_ladd belt below; /track fails closed until loaded.
+        print("livemap ladd suppress: not loaded yet -> /aircraft on MV belt, /track fail-closed", flush=True)
+        _ladd_none_warned = True
     aircraft = []
     for r in rows:
         a = dict(r)
@@ -124,6 +180,17 @@ def _fetch() -> dict:
         a["capture_ts"] = ct.timestamp() if ct is not None else None
         flight = (a["flight"] or "").strip() or None
         a["flight"] = flight
+        # LADD: drop currently-listed airframes before they reach any client (belt to the mart's flag).
+        # pop so the flag never rides the payload; .get/.pop tolerate a partial row (test doubles).
+        mv_is_ladd = a.pop("is_ladd", None)
+        hex_ = a.get("hex")
+        if mv_is_ladd:
+            # record the belt-suppressed hex so /track (dbFlags-blind) can also fail closed for it
+            h = (hex_ or "").strip().lower()
+            if h:
+                _mv_ladd_hexes[h] = now
+        if _is_ladd_suppressed(hex_, flight, mv_is_ladd=mv_is_ladd, suppress=suppress):
+            continue
         a["route"] = _routes.get(flight)
         # jsonb arrives as JSON text over pgwire — coerce to a list (or None); never raise
         nm = a.get("nav_modes")
@@ -134,7 +201,10 @@ def _fetch() -> dict:
                 nm = None
         a["nav_modes"] = nm if isinstance(nm, list) else None
         aircraft.append(a)
-    return {"server_ts": time.time(), "aircraft": aircraft}
+    # drop belt entries not re-seen within the TTL so /track stops suppressing a hex that has gone quiet
+    for h in [h for h, ts in _mv_ladd_hexes.items() if now - ts > HISTORY_BUFFER_S]:
+        del _mv_ladd_hexes[h]
+    return {"server_ts": now, "aircraft": aircraft}
 
 
 def _fetch_outline() -> list:
@@ -200,11 +270,87 @@ def _fetch_flights(hex_: str) -> list:
     return out
 
 
+def _is_ladd_suppressed(hex_, callsign, mv_is_ladd, suppress) -> bool:
+    # Pure: True if the row is LADD-listed by the MV's db_flags bit OR by an open-interval hex/callsign identity.
+    # suppress None = the dim set never loaded; only the MV belt applies here (callers fail /track closed).
+    if mv_is_ladd:
+        return True
+    if suppress is None:
+        return False
+    h = (hex_ or "").strip().lower()
+    if h and h in suppress["hex"]:
+        return True
+    c = (callsign or "").strip().upper()
+    return bool(c and c in suppress["callsign"])
+
+
+def _should_refresh_ladd(state, tick) -> bool:
+    # None = never loaded: retry every poll tick until the first success closes the fail-open window (a host
+    # reboot boots livemap before CH is healthy). Once loaded (even empty) revert to the ~15-min cadence.
+    return state is None or tick % LADD_REFRESH_TICKS == 0
+
+
+def _track_belt_suppressed(hex_, now, mv_ladd_hexes) -> bool:
+    # Pure: /track can't see the MV is_ladd bit (mv_track_positions carries no dbFlags), so honor the live belt
+    # _fetch maintains — a hex dropped for mv_is_ladd within the last HISTORY_BUFFER_S.
+    ts = mv_ladd_hexes.get((hex_ or "").strip().lower())
+    return ts is not None and (now - ts) <= HISTORY_BUFFER_S
+
+
+def _is_unknown_table_error(exc) -> bool:
+    # clickhouse-connect sets code/name on DatabaseError; code 60 / UNKNOWN_TABLE = a missing relation. Prefer the
+    # structured code, then the symbolic name, then fall back to the server text (Code: 60 / UNKNOWN_TABLE, and
+    # the pre-structured "doesn't exist" wording so an older/plain error still resolves).
+    code = getattr(exc, "code", None)
+    if code is not None and str(code) == "60":
+        return True
+    if str(getattr(exc, "name", "") or "").upper() == "UNKNOWN_TABLE":
+        return True
+    s = str(exc).lower()
+    return "code: 60" in s or "unknown_table" in s or "unknown table" in s or "doesn't exist" in s
+
+
+def _ladd_missing_table(exc) -> bool:
+    # Pre-deploy, dim.dim_ladd doesn't exist yet — expected cold-start, not an outage. Scope the UNKNOWN_TABLE
+    # signal to dim_ladd so any *other* missing relation still surfaces as a real error.
+    return "dim_ladd" in str(exc).lower() and _is_unknown_table_error(exc)
+
+
+def _fetch_ladd_suppress() -> dict:
+    client = _ch_client()
+    try:
+        res = client.query(LADD_SUPPRESS_QUERY)
+    finally:
+        client.close()
+    hexes = {i.strip().lower() for i, _ in res.result_rows if i}
+    calls = {c.strip().upper() for _, c in res.result_rows if c}
+    return {"hex": frozenset(hexes), "callsign": frozenset(calls)}
+
+
+def _refresh_ladd_suppress(current):
+    # Graduated fail-closed: a real refresh error keeps the current state (None stays None -> the surfaces fail
+    # closed; a loaded set stays as-is). A MISSING dim_ladd is the pre-deploy state — a *successful* empty load,
+    # so None -> empty and live filtering resumes normal (belt-only) behavior.
+    try:
+        fresh = _fetch_ladd_suppress()
+    except Exception as exc:
+        if _ladd_missing_table(exc):
+            print(f"livemap ladd suppress: dim_ladd absent (pre-deploy) -> empty load: {exc}", flush=True)
+            return _EMPTY_SUPPRESS
+        print(f"livemap ladd suppress refresh kept current: {type(exc).__name__}: {exc}", flush=True)
+        return current
+    _cache_ladd_suppress(fresh)   # persist last-good so a cold-start restart reseeds instead of failing open
+    return fresh
+
+
 async def _poller() -> None:
-    global _snapshot, _outline, _routes
+    global _snapshot, _outline, _routes, _ladd_suppress
     n = 0
     while True:
         try:
+            # refresh the suppression set before _fetch so even the first snapshot is already filtered
+            if _should_refresh_ladd(_ladd_suppress, n):
+                _ladd_suppress = await asyncio.to_thread(_refresh_ladd_suppress, _ladd_suppress)
             # psycopg2 is sync; offload so the ~1s query never blocks the event loop
             _snapshot = await asyncio.to_thread(_fetch)
             _track_buf.append((
@@ -241,6 +387,14 @@ async def range_outline() -> JSONResponse:
 
 @app.get("/track/{icao}")
 async def track(icao: str) -> JSONResponse:
+    # None state = suppression never loaded → fail closed for ALL hexes (this surface has no MV belt of its own).
+    if _ladd_suppress is None:
+        return JSONResponse({"hex": icao, "points": []})
+    # LADD: a currently-listed hex returns empty — indistinguishable from "no track", so no privacy oracle.
+    # Honor the dim identity set AND the live MV belt (mv_track_positions carries no dbFlags bit).
+    if _is_ladd_suppressed(icao, None, mv_is_ladd=False, suppress=_ladd_suppress) \
+            or _track_belt_suppressed(icao, time.time(), _mv_ladd_hexes):
+        return JSONResponse({"hex": icao, "points": []})
     # psycopg2 is sync; offload like the poller. Clicks are rare — a per-click query is cheap.
     try:
         points = await asyncio.to_thread(_fetch_track, icao)

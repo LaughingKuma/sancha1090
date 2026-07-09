@@ -157,13 +157,14 @@ EXPECTED_DAGS = {
         "max_active_runs": 1,
         "task_ids": {"load_pending_to_clickhouse"},
     },
-    "transform_swim": {
-        "schedule_is_asset_triggered": True,
+    "ingest_ladd": {
+        "schedule": "0 18 * * 1",
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"dbt_run_ch", "dbt_test_ch"},
+        "task_ids": {"load_ladd_pulls", "check_ladd_freshness"},
+        # Linear gate: the SCD2 load runs, then the freshness guardrail checks the newest pull's age.
         "downstream_task_ids": {
-            "dbt_run_ch": {"dbt_test_ch"},
+            "load_ladd_pulls": {"check_ladd_freshness"},
         },
     },
 }

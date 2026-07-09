@@ -24,7 +24,10 @@ the v5.1 flights lane (`bronze.opensky_flights`, `silver.dim_aircraft_registry`,
 (`bronze.adsblol_states`, `silver.stg_states_adsblol`, `gold.agg_hourly_traffic_adsblol`,
 `gold.agg_hourly_traffic_opensky_settled`) — see the dbt sources and models for those. The
 newer SP1/SP2 reconcile lane, which reads outputs of both, **is** documented — see
-[Reconcile — cross-source consensus](#reconcile--cross-source-consensus-sp1). SP2 made
+[Reconcile — cross-source consensus](#reconcile--cross-source-consensus-sp1). **SP3b** added a
+fourth reconcile input, FAA SWIM (`bronze.swim_flightdata`), plus its LADD privacy-list companion
+(`dim.dim_ladd`) — both are reconcile-lane concerns and documented there too, not treated as a
+fifth undocumented lane. SP2 made
 `gold.fct_flights_reconciled` the canonical O/D source: `gold.agg_route_traffic` (documented in
 [Gold](#gold) below), `gold.agg_operator_traffic`, `gold.longest_flights`, and
 `gold.agg_airport_daily` were all rebuilt on it (`tag:reconcile`, built by `transform_marts`),
@@ -656,19 +659,21 @@ These predate v3.5 and are built by `transform_marts` alongside the newer marts.
 
 ## Reconcile — cross-source consensus (SP1)
 
-An additive layer (`tag:reconcile`) over the flights and adsb.lol lanes above: it reads
-`gold.fact_flights`, `silver.int_flight_chains_adsblol`, and its own OpenSky-states opinion
-(`silver.int_flight_legs_opensky`), and votes them into one consensus flight per
-airframe-window instead of picking a single best source. `fact_flights` stays untouched and
-remains an input; **SP2** rewired `gold.fct_flight_legs` the other way around — it is now a
-thin snap-only pass-through built *on top of* this lane's `int_flight_legs_opensky`, not an
-independent input the reconciler reads.
+An additive layer (`tag:reconcile`) over the flights, adsb.lol, and FAA SWIM lanes above: it
+reads `silver.int_swim_opinion`, `gold.fact_flights`, `silver.int_flight_chains_adsblol`, and its
+own OpenSky-states opinion (`silver.int_flight_legs_opensky`), and votes them into one consensus
+flight per airframe-window instead of picking a single best source. `fact_flights` stays
+untouched and remains an input; **SP2** rewired `gold.fct_flight_legs` the other way around — it
+is now a thin snap-only pass-through built *on top of* this lane's `int_flight_legs_opensky`, not
+an independent input the reconciler reads.
 
-```
-gold.fact_flights ─────────────────┐
-silver.int_flight_legs_opensky ────┼──▶ int_flight_opinions ──▶ int_flight_spine ──▶ int_flight_attach ──▶ gold.fct_flights_reconciled
-silver.int_flight_chains_adsblol ──┘                                                                              ▲
-                                                        silver.dim_route_overrides (curated override) ────────────┘
+```text
+silver.int_swim_opinion (rank 1) ───────────┐
+gold.fact_flights (rank 2) ──────────────────┤
+silver.int_flight_chains_adsblol (rank 3) ───┼──▶ int_flight_opinions ──▶ int_flight_spine ──▶ int_flight_attach ──▶ gold.fct_flights_reconciled
+silver.int_flight_legs_opensky (rank 4) ─────┘                                                                              ▲    ▲
+                                                        silver.dim_route_overrides (curated override) ─────────────────────┘    │
+                                                                      dim.dim_ladd (is_ladd suppression flag, SP3b) ────────────┘
 ```
 
 **SP2** rebuilt the O/D aggregates on `fct_flights_reconciled` (all `tag:reconcile`, built by
@@ -678,6 +683,113 @@ livemap `/flights` per-airframe drill-down — all single-source reads of the re
 replacing earlier per-consumer UNIONs of `fact_flights`/`fct_flight_legs`/adsb.lol chains.
 `silver.int_flight_legs_opensky` also feeds `gold.fct_flight_legs` directly (see
 [Gold](#gold)) — a thin snap-only pass-through, no longer an independent reconciler input.
+
+**SP3b** added FAA SWIM as a 4th ranked vote source and the FAA LADD privacy list as an
+orthogonal display-suppression flag. `silver.int_swim_opinion` votes at **source_rank 1** — the
+highest authority, though plurality still outvotes rank; rank only breaks a tie (the renumbered
+map — `swim`=1, `opensky_flights`=2, `adsblol`=3, `opensky_states`=4 — is pinned by the
+`assert_flight_opinions_rank_map` singular test). `transform_swim`, the dedicated DAG SP3a built
+for this lane, was retired the same release: `transform_marts` already rebuilds `tag:swim` on its
+regular `bronze_states_table` tick, so a separate trigger was redundant (`bronze_swim_table`
+stays a consumerless asset — see [Refresh model](#refresh-model)). `dim.dim_ladd` is unrelated to
+the vote: it flags `is_ladd = 1` on any resolved flight whose airframe (hex or normalized
+callsign) matches an open, or window-overlapping closed, LADD interval — see
+[`dim.dim_ladd`](#dimdim_ladd--faa-ladd-privacy-list-scd2) below.
+
+### `bronze.swim_flightdata` — FAA SWIM TFMData filed flight plans
+
+- **Grain:** one row per received `fltdMessage` amendment — an append log, not deduped to latest
+  here (that's a silver concern). `ReplacingMergeTree()` only collapses exact-twin redeliveries;
+  two genuinely different amendments of the same flight both survive.
+- **Source:** FAA SWIM Cloud Distribution Service, TFMData feed, consumed by an always-on
+  `swim-consumer` service holding a persistent Solace queue subscription. Each message is flushed
+  to durable Parquet in Garage (`bronze/swim_raw/`) *before* it's acknowledged, so a dropped
+  connection can't silently lose a message.
+- **Built by:** `tableize_swim` (5-min cron, skip-on-empty) loads the landed Parquet. Partitioned
+  by `toYYYYMM(swim_date)`, a MATERIALIZED column derived from the intrinsic `msg_timestamp` (not
+  receive time) so a redelivery always lands in the same partition as its twin and can collapse.
+- **Notes:** only flight-plan-class message types are kept (`KEEP_MSGTYPES` in
+  `include/swim_parser.py`) — the position-report firehose (`trackInformation`, ~84% of raw
+  volume) is dropped at parse time since it carries the same O/D as the flight-plan messages that
+  are kept. `_dedup_fp` is a MATERIALIZED content fingerprint over every column except the two
+  volatile receive-time stamps (plus a hash of `raw_xml` itself, not the bulky string) — it's
+  part of `ORDER BY`, not a separate uniqueness constraint.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `gufi` | `varchar` | Globally Unique Flight Identifier, when the message carries one. |
+| `flight_ref` | `varchar` | FAA-internal flight reference (`flightRef` attribute). |
+| `acid` | `varchar` | Aircraft ID / callsign as filed. |
+| `computer_id` | `varchar` | `facilityIdentifier/idNumber`, joined `"FAC/NUM"`; NULL if either half is missing (never a partial `"FAC/None"`). |
+| `msg_type` | `varchar` | One of the kept flight-plan-class types (e.g. `flightPlanInformation`, `FlightModify`). |
+| `dep_point` | `varchar` | Departure ICAO, when the message's `depArpt` attribute or a nested `airport` element resolves one; NULL otherwise. |
+| `dep_point_kind` | `varchar` | `airport` \| `latlon` \| `fixradial` \| `fix` \| `unknown` — what kind of point the filed departure actually is. |
+| `dep_point_raw` | `varchar` | The unparsed departure point text (fix name, lat/long string, …) when it isn't an ICAO airport. |
+| `arr_point` / `arr_point_kind` / `arr_point_raw` | `varchar` | Same three, for the arrival endpoint. |
+| `filed_departure_time` | `timestamp(6) with time zone` | Parsed IGTD (initial gate time of departure). |
+| `filed_departure_time_raw` | `varchar` | The raw IGTD string, kept for reparse/audit. |
+| `filed_arrival_time` | `timestamp(6) with time zone` | Parsed ETA (falls back to `timeOfArrival` if `eta` is absent). |
+| `filed_arrival_time_raw` | `varchar` | The raw ETA string. |
+| `msg_timestamp` | `timestamp(6) with time zone` | `@sourceTimeStamp` — the message's intrinsic amendment version. Present on 100% of messages, monotonic, redelivery-safe; drives both the bronze dedup `ORDER BY` and the latest-amendment `argMax` in silver. |
+| `source_received_at` | `timestamp(6) with time zone` | When `swim-consumer` received the message. Volatile — excluded from `_dedup_fp`. |
+| `ingested_at` | `timestamp(6) with time zone` | When the row was flushed to Parquet. Volatile — excluded from `_dedup_fp`. |
+| `raw_xml` | `varchar` | The verbatim `fltdMessage` XML element. Ground truth for any field not promoted to a typed column. |
+
+### `silver.int_swim_flight` — SWIM latest-amendment flight + hex resolution
+
+- **Grain:** one row per `flight_key` — `coalesce(gufi, flight_ref, acid|computer_id|filed-departure-date)`. Unique, not-null.
+- **Source:** `bronze.swim_flightdata`, collapsed to the latest amendment per flight
+  (`argMax(..., tuple(msg_timestamp, _dedup_fp))`), then matched to an airframe by **density** of
+  observed callsign-matched snapshots from both states feeds (`bronze.opensky_states` +
+  `bronze.adsb_states`) inside the filed window, padded by the callsign-backfill window.
+- **Notes:** SWIM carries no Mode-S hex of its own, so `icao24` is inferred, not read — the
+  candidate hex with the most matching sightings wins, but only if it leads the runner-up by more
+  than one sighting; a tie or a 1-sighting lead is withheld (`hex_ambiguous`) rather than guessed.
+  The observation scan is pre-pruned to the union of SWIM windows and SWIM callsigns so it never
+  full-scans either states feed.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `flight_key` | `varchar` | `coalesce(gufi, flight_ref, acid\|computer_id\|filed-departure-date)`. Unique, not-null. |
+| `icao24` | `varchar` | Resolved airframe hex, or NULL if unmatched/ambiguous. |
+| `win_start` / `win_end` | `timestamp(6) with time zone` | Filed departure / filed arrival time (`win_end` capped to `win_start + swim_max_flight_hours` when no ETA was filed). |
+| `callsign` | `varchar` | Filed `acid`, trimmed and upper-cased. |
+| `origin_icao` / `dest_icao` | `varchar` | Filed departure/arrival ICAO, iff that endpoint resolved as an airport. |
+| `dep_point_kind` / `arr_point_kind` | `varchar` | Endpoint kind, carried through for `int_swim_diagnostics`. |
+| `hex_score` | `UInt64` | Distinct `(lane, epoch)` sightings backing the winning hex (0 if unmatched). |
+| `hex_ambiguous` | `UInt8` | 1 if the top two candidate hexes were within 1 sighting of each other — withheld, not resolved. |
+
+### `silver.int_swim_diagnostics` — SWIM visibility (not a vote input)
+
+- **Grain:** one row, whole-lane counts.
+- **Purpose:** how often filed endpoints are actually airports (vs. a fix/lat-long) and how often
+  the callsign→hex match resolves or stays ambiguous — visibility ahead of the SP3b snap/vote
+  decisions; not itself read by the vote.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `flights` | `UInt64` | Total flights in `int_swim_flight`. |
+| `hex_resolved` | `UInt64` | Flights with a non-NULL `icao24`. |
+| `hex_ambiguous` | `UInt64` | Flights withheld as ambiguous. |
+| `dep_airport` / `dep_non_airport` / `dep_kind_unknown` | `UInt64` | Departure endpoint-kind breakdown (`dep_point_kind IS NULL` counted separately so it doesn't silently vanish from either bucket under three-valued logic). |
+| `arr_airport` / `arr_non_airport` / `arr_kind_unknown` | `UInt64` | Same, for the arrival endpoint. |
+
+### `silver.int_swim_opinion` — SWIM's O/D opinion (reconciler input)
+
+- **Grain:** one row per `flight_key`, restricted to vote-eligible rows: a resolved,
+  non-ambiguous hex AND at least one non-NULL endpoint.
+- **Source:** a rankless projection of `int_swim_flight` — `source_rank` is stamped once, at the
+  `int_flight_opinions` UNION, exactly like every other source.
+- **Notes:** the only reconcile input that can resolve a *foreign* endpoint on a US-touching
+  international leg — the antenna and OpenSky's Japan box never see the far side.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `source` | `varchar` | Always `'swim'`. |
+| `icao24` | `varchar` | Resolved airframe hex. Not-null (the eligibility filter). |
+| `win_start` / `win_end` | `timestamp(6) with time zone` | Filed departure/arrival window. |
+| `callsign` | `varchar` | Filed callsign. |
+| `origin_icao` / `dest_icao` | `varchar` | This source's O/D opinion; at least one is non-NULL (the eligibility filter), either may be. |
 
 ### `silver.int_flight_legs_opensky` — OpenSky-states O/D opinion
 
@@ -703,18 +815,23 @@ replacing earlier per-consumer UNIONs of `fact_flights`/`fct_flight_legs`/adsb.l
 
 ### `silver.int_flight_opinions` — unified windowed opinions
 
-- **Grain:** one row per `(source, icao24, win_start)` — a `UNION ALL` of the three sources into
+- **Grain:** one row per `(source, icao24, win_start)` — a `UNION ALL` of the four sources into
   one common schema.
-- **Source:** `gold.fact_flights` (`source_rank` 1), `silver.int_flight_chains_adsblol` (rank 2),
-  `silver.int_flight_legs_opensky` (rank 3) — ranked by source authority, most to least direct.
+- **Source:** `silver.int_swim_opinion` (`source_rank` 1, **SP3b**), `gold.fact_flights` (rank 2),
+  `silver.int_flight_chains_adsblol` (rank 3), `silver.int_flight_legs_opensky` (rank 4) — ranked
+  by source authority, most to least direct. The rank↔source bijection is pinned by the
+  `assert_flight_opinions_rank_map` singular test, since `fct_flights_reconciled`'s `transform()`
+  decodes `best_rank` back into the provenance label — a drifted stamp would silently mislabel
+  `origin_source`/`dest_source`.
 - **Notes:** the curated seed (`dim_route_overrides`) is deliberately **not** unioned in here — it
   is windowless (a callsign + validity range, not a flight instance) and is applied later as an
-  override in `fct_flights_reconciled`, not as a vote.
+  override in `fct_flights_reconciled`, not as a vote. Rank only breaks an exact tie between
+  sources at the same vote count — plurality wins first regardless of rank.
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `source` | `varchar` | `opensky_flights` \| `adsblol` \| `opensky_states`. |
-| `source_rank` | `UInt8` | Authority rank: 1 = opensky_flights, 2 = adsblol, 3 = opensky_states. |
+| `source` | `varchar` | `swim` \| `opensky_flights` \| `adsblol` \| `opensky_states`. |
+| `source_rank` | `UInt8` | Authority rank: 1 = swim, 2 = opensky_flights, 3 = adsblol, 4 = opensky_states. |
 | `icao24` | `varchar` | Airframe. |
 | `win_start` / `win_end` | `timestamp(6) with time zone` | The opinion's time window. |
 | `callsign` | `varchar` | Callsign for that window (nullable). |
@@ -800,7 +917,14 @@ replacing earlier per-consumer UNIONs of `fact_flights`/`fct_flight_legs`/adsb.l
   military RJCA, 1-1), the result stays flagged `single`/`tiebreak` rather than silently guessed —
   a visible residual, not a regression. Japan-intl flights (foreign endpoint outside the box)
   resolve only their Japan-side endpoint — `origin_name`/`dest_name` fill ~77%/~79% of rows, NULL
-  exactly where that endpoint's ICAO is unresolved, not a defect.
+  exactly where that endpoint's ICAO is unresolved, not a defect. **SP3b** added `swim` as a 4th
+  vote source (rank 1 — the only source that can resolve the *foreign* endpoint on a US-touching
+  international leg) and the `is_ladd` column: a window-aware suppression flag, not a data
+  deletion — the row stays in the warehouse either way; only the livemap's serve-time surfaces
+  (`/aircraft`, `/flights`, `/track`) drop a listed airframe. The join is deploy-order guarded
+  (`{% if ladd_rel is not none %}` on `dim.dim_ladd`'s existence) so a fresh `clickhouse-init`
+  doesn't have to race the next `transform_marts` build — `is_ladd` reads a guarded `0` literal
+  until then and self-heals on the first build after.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -815,12 +939,52 @@ replacing earlier per-consumer UNIONs of `fact_flights`/`fct_flight_legs`/adsb.l
 | `origin_iata` / `dest_iata` | `varchar` | IATA code (`dim_airports`, `''` normalized to NULL); NULL if the endpoint ICAO is NULL or has no IATA (SP2). |
 | `origin_city` / `dest_city` | `varchar` | City served (`dim_airports`); NULL when the endpoint ICAO is NULL (SP2). |
 | `origin_lat` / `origin_lon` / `dest_lat` / `dest_lon` | `double` | Endpoint coordinates (`dim_airports`); NULL when the endpoint ICAO is NULL (SP2). |
-| `origin_source` / `dest_source` | `varchar` | `opensky_flights` \| `opensky_states` \| `adsblol` \| `curated` — which source backs the winner. |
+| `origin_source` / `dest_source` | `varchar` | `swim` \| `opensky_flights` \| `opensky_states` \| `adsblol` \| `curated` — which source backs the winner. |
 | `origin_agreement` / `dest_agreement` | `varchar` | `unanimous` \| `majority` \| `tiebreak` \| `single` \| `curated`. |
 | `origin_votes` / `dest_votes` | `Map(String, UInt64)` | Airport → vote count, for audit. |
 | `registration` / `typecode` | `varchar` | Airframe attrs from `dim_aircraft`. |
 | `airline_name` / `airline_country` | `varchar` | Operating airline (callsign prefix → `dim_airlines`). |
 | `reg_country` | `varchar` | Registration country (hex-block lookup). |
+| `is_ladd` | `UInt8` | 1 when the airframe (hex or normalized callsign) matched an open or window-overlapping `dim.dim_ladd` interval (**SP3b**). Flag only — livemap drops `is_ladd = 1` at serve time; the warehouse keeps the row. |
+
+### `dim.dim_ladd` — FAA LADD privacy-list SCD2
+
+- **Grain:** one open-or-closed interval per `(registration, valid_from)` —
+  `ReplacingMergeTree(_version)`; read with `FINAL` for current state.
+- **Source:** a manual monthly IndustryLADD CSV upload to Garage
+  (`dims/ladd_raw/IndustryLADD-YYYY-MM-DD.csv`), pulled weekly by `ingest_ladd`. Each
+  registration resolves to a hex via the FAA registry (`ReleasableAircraft.zip`, best-effort
+  download) falling back to the deterministic N-number↔hex algorithm (`include/ladd.py`) for
+  anything the registry download misses or fails to fetch.
+- **Notes:** an **open** interval (`valid_to IS NULL`) is the currently-listed state — the only
+  thing the live suppression surfaces (livemap) check. A **closed** interval (a registration that
+  dropped off a later list) still protects any historical row that fell inside its window —
+  `fct_flights_reconciled.is_ladd` checks both. `icao24` may be NULL (an unresolved
+  registration); a callsign match still suppresses in that case. Created directly by
+  `clickhouse-init` (not dbt-managed) — a dbt build gates on its existence, never assumes it.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `registration` | `varchar` | N-number (or other tail), normalized upper-case. Part of the SCD2 key. |
+| `callsign` | `varchar` | Filed callsign for the registration, if the list carries one. |
+| `icao24` | `varchar` | Resolved hex (registry-authoritative, else algorithmic); NULL if unresolved. |
+| `valid_from` | `date` | The list date this registration first appeared on. |
+| `valid_to` | `date` | The list date it dropped off; NULL while still listed (open interval). |
+| `_version` | `timestamp` | `ReplacingMergeTree` version column (insert time); not a business field. |
+
+### `dim.ladd_pulls` — processed LADD list ledger
+
+- **Grain:** one row per list date actually loaded — `ReplacingMergeTree(loaded_at)`; read with
+  `FINAL`.
+- **Purpose:** idempotency (a same-date re-run's unseen-file gate reads this) and the freshness
+  guard `ingest_ladd` runs after every load — SKIP if `dim.dim_ladd` has never been loaded, FAIL
+  if the newest pull is older than the SLA (40 days).
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `list_date` | `date` | The IndustryLADD list's own date (parsed from the filename). Grain key. |
+| `object_uri` | `varchar` | The Garage object this pull was loaded from. |
+| `loaded_at` | `timestamp` | When this pull was processed. |
 
 ---
 
@@ -866,3 +1030,11 @@ replacing earlier per-consumer UNIONs of `fact_flights`/`fct_flight_legs`/adsb.l
   from the OpenSky feed (`callsign_source = 'opensky_backfill'`); at a flight-leg turnaround inside
   the ±10-min window the nearest OpenSky snapshot can carry the adjacent leg's callsign. Rare;
   `callsign_source` lets consumers isolate or exclude backfilled rows.
+- **SWIM resolves only US-touching flights, by inferred identity.** `int_swim_opinion` covers
+  filed flight plans touching the US only, and matches a filed callsign to an airframe hex by
+  sighting density, not a direct identifier — an ambiguous match (within 1 sighting of the
+  runner-up) is withheld rather than guessed, so SWIM's vote share is smaller than its raw
+  message volume would suggest.
+- **LADD suppression is display-time only, not data deletion.** `is_ladd` / the livemap
+  suppression hide a currently- or formerly-listed airframe from what's served; the row itself
+  stays in the warehouse with the flag set, auditable, never dropped at ingest.

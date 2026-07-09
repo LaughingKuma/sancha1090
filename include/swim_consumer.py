@@ -1,4 +1,5 @@
 import logging
+import threading
 import xml.etree.ElementTree as ET
 import polars as pl
 from datetime import datetime, timezone
@@ -52,12 +53,13 @@ def flush_batch(rows, *, write, record, now):
     return uri
 
 def drain(receiver, *, write, record, flush_every=500, flush_seconds=10,
-          now=lambda: datetime.now(timezone.utc), max_messages=None):
+          now=lambda: datetime.now(timezone.utc), max_messages=None, on_activity=lambda: None):
     buffer, pending, seen = [], [], 0
     last_flush = now()
     while max_messages is None or seen < max_messages:
         msg = receiver.receive_message(timeout=int(flush_seconds * 1000) or 1000)
         if msg is not None:
+            on_activity()   # liveness heartbeat only — observational, never touches the ack/flush decisions below
             if handle_message(_payload(msg), buffer, now=now):
                 pending.append(msg)        # parsed → ACK only after the durable flush
             else:
@@ -83,3 +85,25 @@ def _payload(msg):
         return s.encode("utf-8", "replace")
     b = msg.get_payload_as_bytes()
     return bytes(b) if b is not None else None
+
+class Liveness:
+    # Thread-safe last-activity clock shared between the drain thread (touch) and the /healthz handler (read).
+    def __init__(self, now=lambda: datetime.now(timezone.utc)):
+        self._now = now
+        self._lock = threading.Lock()
+        self._last_activity = None
+
+    def touch(self):
+        with self._lock:
+            self._last_activity = self._now()
+
+    @property
+    def last_activity(self):
+        with self._lock:
+            return self._last_activity
+
+def is_healthy(*, now, last_activity, thread_alive, max_age_s):
+    # Pure decision, no threads/clocks: a dead receiver thread or a feed gone silent past max_age_s is a wedge.
+    if not thread_alive or last_activity is None:
+        return False
+    return (now - last_activity).total_seconds() <= max_age_s
