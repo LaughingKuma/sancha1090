@@ -104,13 +104,12 @@ n_src as (
 box_observed as (
     -- the Japan box actually saw this flight (an in-box bronze fix in-window); reads bronze, not
     -- fact_state_snapshots, whose 30-day window would age adsblol/states-anchored flights out of the
-    -- mart. Box literals mirror include/regions.py (same as stg_states). EXISTS-semantics: dups fine.
+    -- mart. Box is the japan_box_* vars (same as stg_states). EXISTS-semantics: dups fine.
     select distinct sp.flight_id as flight_id
     from {{ ref('int_flight_spine') }} sp
     join {{ source('bronze', 'opensky_states') }} s on s.icao24 = sp.icao24
     where s.snapshot_time between sp.flight_start and sp.flight_end
-      and s.latitude between 20 and 50
-      and s.longitude between 122 and 165
+      and {{ in_japan_box('s.latitude', 's.longitude') }}
 ),
 curated as (
     -- Windowless human override; latest valid_from wins if windows overlap.

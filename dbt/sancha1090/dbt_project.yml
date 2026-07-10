@@ -84,3 +84,11 @@ vars:
   reconcile_anchor_max_hours: 16  # no Japan-relevant nonstop exceeds ~14.5h; longer windows are fused rotations
   fused_envelope_speed_kmh: 550   # opensky_flights window vs O/D distance sanity floor
   jet_min_runway_ft: 4500  # below this a jet airliner cannot operate; shortest scheduled-jet field in scope ~6,500 ft (RJKA)
+  # Observation box, mirrors include/regions.py 'japan' (kept in sync by hand). Single source of
+  # truth for the stg_states geo-filter, the mart's box_observed guard, and the Finding-2
+  # schedule-vote scope gate: a vrs/swim O/D with no in-box endpoint is observable only as a
+  # transit, so its vote is unfalsifiable and must not be cast.
+  japan_box_lamin: 20
+  japan_box_lomin: 122
+  japan_box_lamax: 50
+  japan_box_lomax: 165

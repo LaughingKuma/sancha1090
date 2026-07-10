@@ -2,13 +2,12 @@
 -- 30-day filter mirrors retention — without it the mart rebuild would scan all bronze history.
 -- Japan scope (v5.0): filter geographically, NOT by region label — the pre-v5.0
 -- 'east_asia' box already covered Japan, so a region='japan' filter would drop
--- recent Japan history. Box mirrors include/regions.py (kept in sync by hand).
+-- recent Japan history. Box is the japan_box_* vars (mirrors include/regions.py).
 with src as (
     select *
     from {{ source('bronze', 'opensky_states') }}
     where snapshot_time >= now('UTC') - INTERVAL 30 DAY
-      and latitude  between 20 and 50
-      and longitude between 122 and 165
+      and {{ in_japan_box('latitude', 'longitude') }}
 ),
 typed as (
     select

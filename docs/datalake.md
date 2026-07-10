@@ -780,11 +780,14 @@ callsign) matches an open, or window-overlapping closed, LADD interval — see
 ### `silver.int_swim_opinion` — SWIM's O/D opinion (reconciler input)
 
 - **Grain:** one row per `flight_key`, restricted to vote-eligible rows: a resolved,
-  non-ambiguous hex AND at least one non-NULL endpoint.
+  non-ambiguous hex AND at least one non-NULL endpoint AND at least one endpoint inside the
+  observation box (`japan_box_*` vars; an endpoint unknown to `dim_airports` counts as out-of-box
+  — the gate fails closed).
 - **Source:** a rankless projection of `int_swim_flight` — `source_rank` is stamped once, at the
   `int_flight_opinions` UNION, exactly like every other source.
 - **Notes:** the only reconcile input that can resolve a *foreign* endpoint on a US-touching
-  international leg — the antenna and OpenSky's Japan box never see the far side.
+  international leg — the antenna and OpenSky's Japan box never see the far side. A filed plan
+  with both endpoints outside the box is a pure overflight here and never votes.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -840,7 +843,9 @@ callsign) matches an open, or window-overlapping closed, LADD interval — see
   `SFJ43`) collapse to the same key so they can't cast two votes.
 - **Source:** `dim.dim_vrs_routes`, restricted to exactly 2-hop routes (multi-stop cargo lists,
   ~1%, need position disambiguation this v1 deliberately skips), both endpoints confirmed against
-  `dim_airports` (same rule the curated override uses).
+  `dim_airports` (same rule the curated override uses), and at least one endpoint inside the
+  observation box (`japan_box_*` vars) — a both-ends-out-of-box schedule is observable here only
+  as a transit and must not vote.
 - **Notes:** deploy-order guarded like `fct_flights_reconciled`'s LADD join — empty until
   `clickhouse-init` creates `dim.dim_vrs_routes`, self-heals on the next build after.
 

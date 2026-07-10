@@ -10,7 +10,7 @@ models:
   - name: int_swim_diagnostics
     description: "SWIM endpoint-kind distribution + hex match/ambiguity rates (visibility, not a vote input)."
   - name: int_swim_opinion
-    description: "Rankless SWIM O/D opinion projection (source_rank stamped at the int_flight_opinions UNION); vote-eligible rows only (resolved non-ambiguous hex AND ≥1 non-null endpoint)."
+    description: "Rankless SWIM O/D opinion projection (source_rank stamped at the int_flight_opinions UNION); vote-eligible rows only (resolved non-ambiguous hex AND ≥1 non-null endpoint) AND ≥1 endpoint inside the observation box (Finding-2 overflight scope gate)."
     columns:
       - name: source
         tests:

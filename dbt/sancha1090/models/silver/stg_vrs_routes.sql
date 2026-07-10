@@ -16,6 +16,7 @@
 -- Two-airport routes only (v1): multi-stop hop lists (~1%, cargo) need position disambiguation we
 -- deliberately skip. Both endpoints must exist in dim_airports (same rule as curated overrides).
 -- Dedup on callsign_norm: SFJ43 and SFJ0043 both in the dim must not become two votes.
+-- Box-touching routes only (Finding 2): an out-of-box O/D could stamp any brief overflight transit.
 with parsed as (
     select
         upper(trimBoth(callsign)) as callsign,
@@ -33,6 +34,9 @@ from (
     join {{ ref('dim_airports') }} oa on oa.icao = p.hops[1]
     join {{ ref('dim_airports') }} da on da.icao = p.hops[2]
     where length(p.hops) = 2
+      -- Finding 2 scope gate: no box endpoint = transit-only observability; the schedule O/D
+      -- would stamp any brief overflight fragment, so it never votes.
+      and ({{ in_japan_box('oa.lat', 'oa.lon') }} or {{ in_japan_box('da.lat', 'da.lon') }})
 ) where rn = 1
 {%- else %}
 -- guarded empty until clickhouse-init creates dim.dim_vrs_routes; self-heals on the next build after.

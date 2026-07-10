@@ -55,17 +55,21 @@ message is acknowledged, so a dropped connection can't silently lose data. A 5-m
 per flight, plus a density-scored callsign→icao24 match against the states feeds, since SWIM
 carries no Mode-S hex of its own — and `int_swim_opinion`, an origin/destination read scoped to
 **US-touching flights**, including the foreign endpoint on international legs that the antenna
-and OpenSky's Japan box never see (e.g. the Hong Kong side of a Hong Kong–San Francisco flight).
+and OpenSky's Japan box never see (e.g. the San Francisco side of a Tokyo–San Francisco flight).
 
 `int_swim_opinion` now casts a vote in `gold.fct_flights_reconciled`'s cross-source consensus, at
 the top of the source-authority order — though plurality still outvotes authority; rank only
-breaks a tie. A second, independent obligation rides the same feed's identity data: the FAA's
-**LADD** privacy list. Any airframe currently listed is tracked SCD2 in `dim.dim_ladd` (a manual
-monthly pull) and suppressed at display time everywhere the platform serves live or historical
-positions — the livemap's `/aircraft`, `/flights`, and `/track` endpoints all drop a listed
-airframe before it reaches a client, the same way the reconciled mart flags it (`is_ladd`) rather
-than deleting the row. It's this pipeline's own read of a public FAA system-wide information feed
-and a public FAA privacy list — not FAA-published or FAA-endorsed data.
+breaks a tie. That vote is scoped further: it fires only for filed plans with at least one
+endpoint inside the observation box (20–50°N, 122–165°E), so a pure overflight — both endpoints
+outside the box — stays unresolved instead of picking up a filed-plan stamp no
+in-box source can corroborate. A second, independent obligation rides the same feed's identity
+data: the FAA's **LADD** privacy list. Any airframe currently listed is tracked SCD2 in
+`dim.dim_ladd` (a manual monthly pull) and suppressed at display time everywhere the platform
+serves live or historical positions — the livemap's `/aircraft`, `/flights`, and `/track`
+endpoints all drop a listed airframe before it reaches a client, the same way the reconciled mart
+flags it (`is_ladd`) rather than deleting the row. It's this pipeline's own read of a public FAA
+system-wide information feed and a public FAA privacy list — not FAA-published or FAA-endorsed
+data.
 
 ## Architecture evolution
 
@@ -339,7 +343,11 @@ data open:
   resolves to the nearest *feasible* airport when one exists, and residual infeasible endpoints
   are nullified later — while a schedule-derived voter
   (`dim_vrs_routes`, the community-curated Virtual Radar Server route table) supplies the
-  hub pair where position evidence alone can't.
+  hub pair where position evidence alone can't. That schedule vote is scoped the same way as
+  SWIM's: it only fires for routes with at least one endpoint inside the observation box
+  (20–50°N, 122–165°E), so a pure overflight — both endpoints outside the box — is left
+  unresolved instead of being stamped with a schedule O/D neither the antenna nor OpenSky ever
+  observed.
 
   Because that consensus mixes
   observation with inference, every route endpoint records how it was derived in
