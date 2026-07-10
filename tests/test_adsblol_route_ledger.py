@@ -41,6 +41,25 @@ def test_missing_retries_once_after_cooldown_then_permanent():
     assert ledger.filter_unattempted([("a61c53", "2026-06-25")], eng) == []
 
 
+def test_delete_attempts_reenables_refetch():
+    eng = _engine()
+    ledger.record_attempts([("a61c53", "2026-06-25", "landed"),
+                            ("ffff01", "2026-06-25", "landed"),
+                            ("a61c53", "2026-06-26", "landed")], eng)
+    # Clear only the two 2026-06-25 pairs; the 2026-06-26 row must survive.
+    n = ledger.delete_attempts([("a61c53", "2026-06-25"), ("ffff01", "2026-06-25")], eng)
+    assert n == 2
+    assert ledger.filter_unattempted(
+        [("a61c53", "2026-06-25"), ("ffff01", "2026-06-25")], eng) == \
+        [("a61c53", "2026-06-25"), ("ffff01", "2026-06-25")]
+    assert ledger.filter_unattempted([("a61c53", "2026-06-26")], eng) == []
+
+
+def test_delete_attempts_empty_is_noop():
+    eng = _engine()
+    assert ledger.delete_attempts([], eng) == 0
+
+
 def test_record_attempts_upserts_and_counts():
     eng = _engine()
     assert ledger.record_attempts([("a61c53", "2026-06-25", "missing")], eng) == 1

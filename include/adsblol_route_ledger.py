@@ -72,6 +72,24 @@ def filter_unattempted(pairs: list[tuple[str, str]], engine: Optional[sa.Engine]
     return keep
 
 
+def delete_attempts(pairs: list[tuple[str, str]], engine: Optional[sa.Engine] = None) -> int:
+    # Backfill re-segment: drop 'landed' ledger rows so filter_unattempted lets the pair refetch.
+    if not pairs:
+        return 0
+    eng = _prepare(engine)
+    by_day: dict[str, list[str]] = {}
+    for icao24, day in pairs:
+        by_day.setdefault(day, []).append(icao24)
+    stmt = sa.text(
+        f"DELETE FROM {_TABLE} WHERE trace_day = :day AND icao24 IN :hexes"
+    ).bindparams(sa.bindparam("hexes", expanding=True))
+    deleted = 0
+    with eng.begin() as conn:
+        for day, hexes in by_day.items():
+            deleted += conn.execute(stmt, {"day": day, "hexes": hexes}).rowcount or 0
+    return deleted
+
+
 def record_attempts(rows: list[tuple[str, str, str]], engine: Optional[sa.Engine] = None) -> int:
     if not rows:
         return 0

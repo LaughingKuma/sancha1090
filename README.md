@@ -311,7 +311,10 @@ data open:
   that only clips the antenna's ring actually came from and is headed — by walking
   each aircraft's global trace into airport-to-airport segments
   (`bronze.adsblol_flight_segments`, plus capture-only full paths in
-  `bronze.adsblol_flight_paths`). Because a trace breaks wherever crowdsourced
+  `bronze.adsblol_flight_paths`) — the walk also breaks at missed landings,
+  starting a new segment whenever a sub-1,000 ft fix sits beside a
+  turnaround-sized gap even without a captured ground fix, so an out-and-back
+  rotation doesn't fuse into one same-airport segment. Because a trace breaks wherever crowdsourced
   coverage drops out, those segments are then chained back into whole flights
   (`silver.int_flight_chains_adsblol`) — including across UTC trace-day boundaries —
   whenever the implied great-circle groundspeed across the gap is cruise-plausible

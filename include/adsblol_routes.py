@@ -3,15 +3,16 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import threading
 import time
-import urllib.error
-import urllib.request
 import zlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import polars as pl
+import requests
 
 from include import manifest
 from include import adsblol_route_ledger as ledger
@@ -23,29 +24,45 @@ from include.s3_helpers import write_parquet
 GAP_SPLIT_S = 5400
 _MIN_FIXES = 2
 
+# Mirrors dbt chain_low_fix_alt_m (300 m) / chain_low_fix_gap_min (45 min): a boundary fix this
+# low is landing/departing; with a turnaround-sized gap the aircraft landed inside it.
+LOW_FIX_ALT_FT = 984.0
+LOW_FIX_GAP_S = 2700
+
 TRACE_URL = "https://globe.adsb.lol/globe_history/{y}/{m:02d}/{d:02d}/traces/{shard}/trace_full_{hexid}.json"
 USER_AGENT = "sancha1090-routes"
 
 
-def fetch_trace(day: date, hexid: str, *, opener=urllib.request.urlopen,
+_SESSION: Optional[requests.Session] = None
+
+
+def _default_session() -> requests.Session:
+    # Lazily-built shared session for standalone fetch_trace calls; run_daily passes its own.
+    global _SESSION
+    if _SESSION is None:
+        _SESSION = requests.Session()
+    return _SESSION
+
+
+def fetch_trace(day: date, hexid: str, *, session: Optional[requests.Session] = None,
                 timeout: int = 30) -> Optional[dict[str, Any]]:
     url = TRACE_URL.format(y=day.year, m=day.month, d=day.day, shard=hexid[-2:], hexid=hexid)
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    sess = session or _default_session()
     last: Optional[Exception] = None
     for attempt in range(3):
         try:
-            with opener(req, timeout=timeout) as resp:
-                data = resp.read()
-            # Served gzip regardless of the bare .json name (same as the tarball members).
+            resp = sess.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+            # 404 = the aircraft has no trace that day — a fact, not an error.
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            data = resp.content
+            # adsb.lol serves gzip CONTENT under the bare .json name (requests only auto-decodes
+            # Content-Encoding), so decompress the body bytes ourselves on the magic byte.
             if data[:2] == b"\x1f\x8b":
                 data = gzip.decompress(data)
             return json.loads(data)
-        except urllib.error.HTTPError as exc:
-            # 404 = the aircraft has no trace that day — a fact, not an error.
-            if exc.code == 404:
-                return None
-            last = exc
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError,
+        except (requests.RequestException, json.JSONDecodeError,
                 gzip.BadGzipFile, zlib.error, EOFError) as exc:
             last = exc
         time.sleep(2 ** attempt)
@@ -71,6 +88,17 @@ RAW_SEGMENTS_SCHEMA = {
 }
 
 
+def _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft):
+    # One source for both walk loops (segments + paths) so their grouping can never drift.
+    if t - prev_t > GAP_SPLIT_S:
+        return True
+    if on_ground and prev_on_ground is False:
+        return True
+    lo = min(prev_alt_ft if prev_alt_ft is not None else 99999.0,
+             alt_ft if alt_ft is not None else 99999.0)
+    return t - prev_t >= LOW_FIX_GAP_S and lo < LOW_FIX_ALT_FT
+
+
 def trace_segments(trace_doc: dict[str, Any], day: date) -> list[dict[str, Any]]:
     preamble = _trace_preamble(trace_doc)
     if preamble is None:
@@ -81,6 +109,7 @@ def trace_segments(trace_doc: dict[str, Any], day: date) -> list[dict[str, Any]]
     cur: Optional[dict[str, Any]] = None
     prev_t: Optional[float] = None
     prev_on_ground: Optional[bool] = None
+    prev_alt_ft: Optional[float] = None
 
     for point in points:
         t = base + float(point[0])
@@ -98,12 +127,9 @@ def trace_segments(trace_doc: dict[str, Any], day: date) -> list[dict[str, Any]]
         flight = (extra.get("flight") or "").strip() if isinstance(extra, dict) else ""
 
         # Same session breaks as fct_flight_legs: long gap, or ground contact after air
-        # (the landing's ground fix opens the next segment, at the arrival airport).
-        if (
-            cur is None
-            or t - prev_t > GAP_SPLIT_S
-            or (on_ground and prev_on_ground is False)
-        ):
+        # (the landing's ground fix opens the next segment, at the arrival airport). The
+        # low-fix arm catches landings whose ground fix never appears in the trace.
+        if cur is None or _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft):
             if cur is not None:
                 segs.append(cur)
             cur = {"first": (t, lat, lon, alt_ft, on_ground), "callsigns": {}, "n": 0, "air": 0}
@@ -112,7 +138,7 @@ def trace_segments(trace_doc: dict[str, Any], day: date) -> list[dict[str, Any]]
         cur["air"] += 0 if on_ground else 1
         if flight:
             cur["callsigns"][flight] = cur["callsigns"].get(flight, 0) + 1
-        prev_t, prev_on_ground = t, on_ground
+        prev_t, prev_on_ground, prev_alt_ft = t, on_ground, alt_ft
 
     if cur is not None:
         segs.append(cur)
@@ -173,6 +199,7 @@ def trace_paths(trace_doc: dict[str, Any], day: date,
     group_start: Optional[int] = None
     prev_t: Optional[float] = None
     prev_on_ground: Optional[bool] = None
+    prev_alt_ft: Optional[float] = None
     for point in points:
         t = base + float(point[0])
         flags = point[6] if len(point) > 6 and isinstance(point[6], int) else 0
@@ -183,14 +210,11 @@ def trace_paths(trace_doc: dict[str, Any], day: date,
             continue
         alt_raw = point[3] if len(point) > 3 else None
         on_ground = alt_raw == "ground"
+        alt_ft = 0.0 if on_ground else _num(alt_raw)
 
-        if (
-            group_start is None
-            or t - prev_t > GAP_SPLIT_S
-            or (on_ground and prev_on_ground is False)
-        ):
+        if group_start is None or _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft):
             group_start = int(t)
-        prev_t, prev_on_ground = t, on_ground
+        prev_t, prev_on_ground, prev_alt_ft = t, on_ground, alt_ft
 
         if group_start not in keep_starts:
             continue
@@ -199,7 +223,7 @@ def trace_paths(trace_doc: dict[str, Any], day: date,
             "seg_start": group_start,
             "ts": int(t),
             "lat": lat, "lon": lon,
-            "alt_ft": 0.0 if on_ground else _num(alt_raw),
+            "alt_ft": alt_ft,
             "on_ground": on_ground,
             "gs_kt": _num(point[4]) if len(point) > 4 else None,
             "track_deg": _num(point[5]) if len(point) > 5 else None,
@@ -247,38 +271,114 @@ def route_targets(day: date, *, client=None) -> list[str]:
     return sorted({r[0] for r in rows if r[0]})
 
 
-def run_daily(day: date, *, engine=None, fetch=None, spacing_s: float = FETCH_SPACING_S) -> dict:
-    fetch = fetch or fetch_trace
-    hexes = route_targets(day)
-    # D-1 alongside D: a flight spanning UTC midnight has its departure in the prior day's trace.
-    pairs = [(h, d.isoformat()) for h in hexes for d in (day, day - timedelta(days=1))]
-    pairs = ledger.filter_unattempted(pairs, engine)
+def _fetch_pair(fetch, session, hexid: str, iso_day: str, spacing_s: float):
+    # One pair's whole unit of work (fetch + politeness sleep + segmentation), returning its rows
+    # and attempt outcome so the caller aggregates on a single thread — workers never touch shared
+    # state. spacing_s is paid inside every branch so the effective rate is ~workers/spacing.
+    d = date.fromisoformat(iso_day)
+    try:
+        doc = fetch(d, hexid, session=session)
+    except RuntimeError:
+        # One persistently-failing pair must not discard the rest of the run's fetches.
+        time.sleep(spacing_s)
+        return [], [], (hexid, iso_day, "error")
+    if doc is None:
+        time.sleep(spacing_s)
+        return [], [], (hexid, iso_day, "missing")
+    segs = trace_segments(doc, d)
+    paths = trace_paths(doc, d, segs)
+    time.sleep(spacing_s)
+    return segs, paths, (hexid, iso_day, "landed")
 
+
+def _run_serial(pairs, fetch, spacing_s, progress, total):
     rows: list[dict[str, Any]] = []
     path_rows: list[dict[str, Any]] = []
     attempts: list[tuple[str, str, str]] = []
-    for hexid, iso_day in pairs:
-        d = date.fromisoformat(iso_day)
-        try:
-            doc = fetch(d, hexid)
-        except RuntimeError:
-            # One persistently-failing pair must not discard the rest of the day's fetches.
-            attempts.append((hexid, iso_day, "error"))
-            time.sleep(spacing_s)
-            continue
-        if doc is None:
-            attempts.append((hexid, iso_day, "missing"))
-        else:
-            segs = trace_segments(doc, d)
+    # One session per run reuses the TLS connection across every fetch (the bulk of per-pair cost).
+    session = requests.Session()
+    done = 0
+    try:
+        for hexid, iso_day in pairs:
+            segs, paths, attempt = _fetch_pair(fetch, session, hexid, iso_day, spacing_s)
             rows.extend(segs)
-            path_rows.extend(trace_paths(doc, d, segs))
-            attempts.append((hexid, iso_day, "landed"))
-        time.sleep(spacing_s)
+            path_rows.extend(paths)
+            attempts.append(attempt)
+            done += 1
+            if progress is not None:
+                progress(done, total)
+    finally:
+        session.close()
+    return rows, path_rows, attempts
+
+
+def _run_concurrent(pairs, fetch, spacing_s, workers, progress, total):
+    rows: list[dict[str, Any]] = []
+    path_rows: list[dict[str, Any]] = []
+    attempts: list[tuple[str, str, str]] = []
+    # Sessions aren't thread-safe, so each worker thread lazily builds and reuses its own (still
+    # keep-alive within the thread); all are tracked for close at the end.
+    tls = threading.local()
+    sessions: list[requests.Session] = []
+    sessions_lock = threading.Lock()
+
+    def worker(pair):
+        sess = getattr(tls, "session", None)
+        if sess is None:
+            sess = requests.Session()
+            tls.session = sess
+            with sessions_lock:
+                sessions.append(sess)
+        return _fetch_pair(fetch, sess, pair[0], pair[1], spacing_s)
+
+    done = 0
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            # Aggregate on the main thread as futures complete — the only writer of the shared lists.
+            for fut in as_completed([ex.submit(worker, p) for p in pairs]):
+                segs, paths, attempt = fut.result()
+                rows.extend(segs)
+                path_rows.extend(paths)
+                attempts.append(attempt)
+                done += 1
+                if progress is not None:
+                    progress(done, total)
+    finally:
+        for s in sessions:
+            s.close()
+    return rows, path_rows, attempts
+
+
+def run_daily(day: date, targets: Optional[list[str]] = None, *, engine=None, fetch=None,
+              spacing_s: float = FETCH_SPACING_S, progress=None, workers: int = 1) -> dict:
+    fetch = fetch or fetch_trace
+    # None keeps the scheduled route_targets(day) selection; a list is the backfill's re-segment
+    # target set, still flowing through filter_unattempted + record_attempts below.
+    hexes = targets if targets is not None else route_targets(day)
+    # Scheduled path also fetches D-1 (midnight-spanning departures live in the prior day's trace);
+    # explicit targets re-segment self-contained trace-days, so D-1 there is pure double-fetch.
+    days = (day,) if targets is not None else (day, day - timedelta(days=1))
+    pairs = [(h, d.isoformat()) for h in hexes for d in days]
+    pairs = ledger.filter_unattempted(pairs, engine)
+
+    total = len(pairs)
+    # workers=1 = the scheduled DAG's byte-identical serial loop; >1 = the backfill's concurrent lane.
+    if workers > 1:
+        rows, path_rows, attempts = _run_concurrent(pairs, fetch, spacing_s, workers, progress, total)
+    else:
+        rows, path_rows, attempts = _run_serial(pairs, fetch, spacing_s, progress, total)
 
     df = segments_frame(rows)
     pdf = paths_frame(path_rows)
+    # Outcome tally lets the backfill print a per-day landed/missing/errors line.
     result = {"targets": len(hexes), "fetched": len(pairs),
-              "rows": df.height, "path_rows": pdf.height, "uri": None}
+              "rows": df.height, "path_rows": pdf.height, "uri": None,
+              "landed": sum(1 for _, _, o in attempts if o == "landed"),
+              "missing": sum(1 for _, _, o in attempts if o == "missing"),
+              "errors": sum(1 for _, _, o in attempts if o == "error"),
+              # Landed hexes only: the backfill deletes their superseded bronze rows (a re-walk that
+              # drops a landing's leading ground cluster gets a new seg_start the RMT won't replace).
+              "landed_hexes": sorted({h for h, _, o in attempts if o == "landed"})}
     # One stamp per run: a same-day rerun lands additively (record_load keeps ch_loaded_at on a
     # same-key rewrite, so overwriting part-000 never re-drained); the RMT dedups overlaps.
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
