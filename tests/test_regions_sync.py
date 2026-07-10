@@ -4,8 +4,11 @@ The box is duplicated by necessity in two places that can't import include/:
 - scripts/vps_collector.py — shipped as a single-file cloud-init payload.
 - the dbt layer (japan_box_* vars in dbt_project.yml rendered via the in_japan_box macro, +
   assert_states_within_japan_box.sql which still hardcodes it) — SQL, no Python import.
+- include/ch_incremental_mvs.py and include/ch_served_value.py — each holds a hand-synced
+  `_GEO` SQL-string copy of the box (can import include/, but the string itself can't).
 These tests pin every copy to the canonical REGIONS so the scope can't silently
-diverge between ingestion, the VPS collector, and the mart staging filter.
+diverge between ingestion, the VPS collector, the mart staging filter, and the two
+ClickHouse `_GEO` fragments.
 """
 
 from __future__ import annotations
@@ -75,3 +78,25 @@ def test_dbt_japan_box_macro_wiring():
         "dbt/sancha1090/models/silver/int_swim_opinion.sql",
     ):
         assert "in_japan_box(" in (REPO / rel).read_text(), f"{rel}: no longer calls in_japan_box"
+
+
+def test_ch_incremental_mvs_geo_matches_canonical():
+    """A hand-synced SQL string copy; fail if it drifts from the canonical REGIONS box."""
+    from include.ch_incremental_mvs import _GEO
+
+    box = _japan_box()
+    lat = re.compile(rf"latitude\s+BETWEEN\s+{box['lamin']:g}\s+AND\s+{box['lamax']:g}")
+    lon = re.compile(rf"longitude\s+BETWEEN\s+{box['lomin']:g}\s+AND\s+{box['lomax']:g}")
+    assert lat.search(_GEO), f"ch_incremental_mvs._GEO latitude bound != canonical {box['lamin']:g}..{box['lamax']:g}"
+    assert lon.search(_GEO), f"ch_incremental_mvs._GEO longitude bound != canonical {box['lomin']:g}..{box['lomax']:g}"
+
+
+def test_ch_served_value_geo_matches_canonical():
+    """Its own pytest pins the literal string only, so tie it to canonical REGIONS here."""
+    from include.ch_served_value import _GEO
+
+    box = _japan_box()
+    lat = re.compile(rf"latitude\s+BETWEEN\s+{box['lamin']:g}\s+AND\s+{box['lamax']:g}")
+    lon = re.compile(rf"longitude\s+BETWEEN\s+{box['lomin']:g}\s+AND\s+{box['lomax']:g}")
+    assert lat.search(_GEO), f"ch_served_value._GEO latitude bound != canonical {box['lamin']:g}..{box['lamax']:g}"
+    assert lon.search(_GEO), f"ch_served_value._GEO longitude bound != canonical {box['lomin']:g}..{box['lomax']:g}"

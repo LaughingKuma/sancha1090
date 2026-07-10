@@ -25,16 +25,16 @@ _DBT_CH = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target
 )
 def transform_marts():
 
-    # tag:adsb/flights are built by their own lanes; tag:ch_mv = the P4 aggregates served by self-maintaining
-    # MVs (include/ch_incremental_mvs.py), excluded from the scheduled rebuild + its tests.
+    # tag:adsb/flights are built by their own lanes; the P4 aggregates are served by self-maintaining MVs
+    # (include/ch_incremental_mvs.py, applied by ensure_ch_mvs below), not dbt models.
     dbt_run_ch = BashOperator(
         task_id="dbt_run_ch",
-        bash_command=_DBT_CH.format(cmd="run --exclude tag:adsb tag:flights tag:ch_mv"),
+        bash_command=_DBT_CH.format(cmd="run --exclude tag:adsb tag:flights"),
     )
     # dbt test (same selection as the run) gates the canonical build — a data-quality failure reds the run.
     dbt_test_ch = BashOperator(
         task_id="dbt_test_ch",
-        bash_command=_DBT_CH.format(cmd="test --exclude tag:adsb tag:flights tag:ch_mv"),
+        bash_command=_DBT_CH.format(cmd="test --exclude tag:adsb tag:flights"),
     )
 
     @task(task_id="ensure_ch_mvs")

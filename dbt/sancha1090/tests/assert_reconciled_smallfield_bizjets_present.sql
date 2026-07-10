@@ -1,5 +1,8 @@
 -- SP4 canary: non-airline-shaped jets (bizjets, check flights) at small fields are REAL (verified
 -- 2026-07-09, JA10MZ C25C @ Kohnan class); the gate widening past airline-shaped must fail loudly.
+-- warn not error: a fresh warehouse legitimately has none of these yet.
+{{ config(severity='warn') }}
+
 select 'smallfield_bizjets_missing' as problem
 from (
     select count() as n

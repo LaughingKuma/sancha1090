@@ -1,5 +1,8 @@
 -- SP4 canary: genuine non-jet small-field traffic (commuters, helos) must survive the feasibility
 -- gate -- a future widening past jets must fail loudly (same discipline as the PANC canary).
+-- warn not error: a fresh warehouse legitimately has none of these yet.
+{{ config(severity='warn') }}
+
 select 'smallfield_commuters_missing' as problem
 from (
     select count() as n

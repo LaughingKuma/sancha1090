@@ -387,12 +387,10 @@ services:
     environment:
       # Reuse the existing Garage S3 creds — no new secret. The named collection reads the two
       # key vars via from_env (clickhouse/config.d/named_collection_garage.xml) so they never
-      # appear inline in SQL. ENDPOINT/BUCKET are passed through for the P2 s3()->INSERT load
-      # and the P8 endpoint swap; the named collection's url is literal for now.
-      CH_S3_ENDPOINT: ${S3_ENDPOINT:-garage:3900}
+      # appear inline in SQL. Its endpoint/bucket URL is literal there, not S3_ENDPOINT/S3_BUCKET
+      # (those cover producers only), so no ENDPOINT/BUCKET passthrough is needed here.
       CH_S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
       CH_S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
-      CH_S3_BUCKET: ${S3_BUCKET:-sancha1090}
       # P5: the read-only superset_ro user's password, read by clickhouse/users.d/superset_ro.xml via from_env.
       CH_SUPERSET_PASSWORD: ${CH_SUPERSET_PASSWORD:?CH_SUPERSET_PASSWORD must be set in .env}
     ulimits:
@@ -460,7 +458,7 @@ services:
     # First-boot CH marts bootstrap (idempotent, same steps as scripts/ch_setup_marts.sh minus the optional
     # heavy adsblol backfill): seed the dims (silver_ch + dim.dim_hex_country) -> reload the range_hashed dict
     # -> load bronze.aircraft_db, so the first transform_* tick has its seed/registry/dict deps. The optional
-    # adsb.lol history backfill (agg_hourly_traffic_adsblol) stays a manual step — see the README.
+    # adsb.lol history backfill (folds into the agg_hourly_traffic MV) stays a manual step — see the README.
     # dim_airports seed is split off with a scoped --full-refresh: a recreate over an existing CH volume
     # still holding the old 7-column table fails NO_SUCH_COLUMN_IN_TABLE on a plain seed.
     entrypoint: ["/bin/bash", "-c"]

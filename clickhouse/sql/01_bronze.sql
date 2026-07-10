@@ -188,8 +188,8 @@ PARTITION BY toYYYYMM(trace_day)
 ORDER BY (trace_day, icao24, seg_start)
 SETTINGS allow_nullable_key = 1, fsync_after_insert = 1, fsync_part_directory = 1;
 
--- bronze.adsblol_flight_paths — full path points of the kept segments; capture-only
--- (no consumer yet): retrofitting later would re-stream the whole ~125 GB tarball backlog.
+-- bronze.adsblol_flight_paths — full path points of the kept segments; read by
+-- scripts/backfill_adsblol_resegment.py's gap/altitude scan to find re-segmentation targets.
 CREATE TABLE IF NOT EXISTS bronze.adsblol_flight_paths
 (
     icao24 Nullable(String), seg_start Nullable(DateTime64(6,'UTC')),

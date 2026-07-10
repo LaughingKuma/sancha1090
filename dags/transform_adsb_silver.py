@@ -27,15 +27,15 @@ _DBT_CH = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target
 def transform_adsb_silver():
 
     # +tag:adsb pulls in dim_aircraft_registry (the one cross-lane ancestor dim_aircraft depends on);
-    # tag:ch_mv = the P4 ADS-B aggregates served by self-maintaining MVs, excluded from the rebuild + tests.
+    # the P4 ADS-B aggregates are served by self-maintaining MVs (include/ch_incremental_mvs.py), not dbt models.
     dbt_run_ch = BashOperator(
         task_id="dbt_run_ch",
-        bash_command=_DBT_CH.format(cmd="run --select +tag:adsb --exclude tag:ch_mv"),
+        bash_command=_DBT_CH.format(cmd="run --select +tag:adsb"),
     )
     # dbt test (same selection) is the all_success leaf — a run or data-quality failure reds the run.
     dbt_test_ch = BashOperator(
         task_id="dbt_test_ch",
-        bash_command=_DBT_CH.format(cmd="test --select +tag:adsb --exclude tag:ch_mv"),
+        bash_command=_DBT_CH.format(cmd="test --select +tag:adsb"),
     )
 
     dbt_run_ch >> dbt_test_ch

@@ -8,7 +8,7 @@ import pendulum
 from airflow.sdk import dag, task
 
 from include.assets import raw_states_landed
-from include.ingest_summary import raise_if_all_landings_failed
+from include.ingest_summary import raise_if_all_fetches_raised
 from include.regions import REGIONS
 
 
@@ -108,18 +108,20 @@ def ingest_states():
         we want the summary, not skipped."""
         results = list(results)
 
+        succeeded = sum(1 for r in results if r is not None)
         total_rows = sum(r["rows"] for r in results if r is not None)
         with_data = sum(1 for r in results if r is not None and r.get("uri"))
         summary = {
             "total_rows": total_rows,
             "regions_with_data": with_data,
+            "regions_succeeded": succeeded,
             "regions_attempted": len(results),
             "per_region": results,
         }
         print(f"Ingestion summary: {summary}")
-        # all_done let us build the summary even on partial failure; red the run when EVERY region failed so a
-        # total ingest outage (e.g. the manifest DB unreachable) can't hide behind this task's success.
-        raise_if_all_landings_failed(summary, entity="regions", label="ingest_states")
+        # all_done let us build the summary even on partial failure; red only when EVERY fetch raised (not a
+        # legitimately empty region) so a total outage (e.g. the manifest DB unreachable) can't hide.
+        raise_if_all_fetches_raised(summary, entity="regions", label="ingest_states")
         return summary
 
     results = fetch_region.expand(region=REGIONS)

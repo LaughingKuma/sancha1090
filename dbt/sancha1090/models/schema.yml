@@ -51,14 +51,6 @@ models:
         tests:
           - not_null
 
-  - name: agg_hourly_traffic
-    description: "Hourly aggregations of aircraft activity; powers the time-series chart"
-    columns:
-      - name: snapshot_hour
-        tests:
-          - not_null
-          - unique
-
   - name: stg_states_adsblol
     description: "Backfilled pre-pipeline states (adsb.lol, ODbL); one row per (icao24, snapshot_time)"
     columns:
@@ -68,10 +60,6 @@ models:
       - name: snapshot_time
         tests:
           - not_null
-
-  # agg_hourly_traffic_adsblol + agg_hourly_traffic_opensky_settled are tag:ch_mv segments folded into the
-  # self-maintaining agg_hourly_traffic_acc MV — they aren't standalone served relations on ClickHouse, so
-  # their snapshot_hour not_null/unique coverage lives on the served agg_hourly_traffic view above.
 
   - name: agg_airport_daily
     description: "Daily arrivals/departures at JP airports (JST days), from fct_flights_reconciled's consensus endpoints"

@@ -21,8 +21,8 @@ This document is the column-level reference for the **states/ADS-B core** of the
 two feeds above and the models built from them. Two newer lanes are **not yet documented here**:
 the v5.1 flights lane (`bronze.opensky_flights`, `silver.dim_aircraft_registry`,
 `gold.fact_flights`) and the v5.2 adsb.lol history lane
-(`bronze.adsblol_states`, `silver.stg_states_adsblol`, `gold.agg_hourly_traffic_adsblol`,
-`gold.agg_hourly_traffic_opensky_settled`) — see the dbt sources and models for those. The
+(`bronze.adsblol_states`, `silver.stg_states_adsblol`, whose hourly history is folded straight
+into the self-maintaining `gold.agg_hourly_traffic` MV) — see the dbt sources and models for those. The
 newer SP1/SP2 reconcile lane, which reads outputs of both, **is** documented — see
 [Reconcile — cross-source consensus](#reconcile--cross-source-consensus-sp1). **SP3b** added a
 fourth reconcile input, FAA SWIM (`bronze.swim_flightdata`), plus its LADD privacy-list companion
@@ -136,8 +136,8 @@ otherwise untagged. (The flights and adsb.lol history lanes, not documented here
 | `silver.fact_state_snapshots` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
 | `gold.anomalies` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
 | `gold.agg_country_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
-| `gold.agg_hourly_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
-| `gold.agg_airline_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
+| `gold.agg_hourly_traffic` | `ensure_ch_mvs` (in `transform_marts`) | continuous MV + `bronze_states_table` re-ensure | — (self-maintaining `*_acc` MV, `include/ch_incremental_mvs.py`) |
+| `gold.agg_airline_traffic` | `ensure_ch_mvs` (in `transform_marts`) | continuous MV + `bronze_states_table` re-ensure | — (self-maintaining `*_acc` MV, `include/ch_incremental_mvs.py`) |
 | `gold.fct_flight_legs` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
 | `gold.agg_route_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
 | `silver.dim_aircraft` | `transform_adsb_silver` | `adsb_bronze_table` (rooftop) | `--select tag:adsb` |
@@ -145,11 +145,16 @@ otherwise untagged. (The flights and adsb.lol history lanes, not documented here
 | `silver.int_adsb_callsign_from_opensky` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
 | `silver.dim_airlines` / `dim_hex_country` / `dim_route_overrides` (seeds) | `clickhouse-marts-init` / `scripts/ch_setup_marts.sh` (`dbt seed`) | deploy/bootstrap | `--select tag:adsb dim_route_overrides --exclude dim_airports` |
 | `silver.dim_airports` (seed) | `clickhouse-marts-init` / `scripts/ch_setup_marts.sh` (`dbt seed`) | deploy/bootstrap | `--full-refresh --select dim_airports` |
-| `gold.agg_country_traffic_adsb` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
-| `gold.agg_airline_traffic_adsb` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
+| `gold.agg_country_traffic_adsb` | `ensure_ch_mvs` (in `transform_marts`) | continuous MV + `bronze_states_table` re-ensure | — (self-maintaining `*_acc` MV, `include/ch_incremental_mvs.py`) |
+| `gold.agg_airline_traffic_adsb` | `ensure_ch_mvs` (in `transform_marts`) | continuous MV + `bronze_states_table` re-ensure | — (self-maintaining `*_acc` MV, `include/ch_incremental_mvs.py`) |
 
 `dim_airports` is split because it is the schema-changed 9-column seed; the other seeds are
 schema-stable and take a plain `dbt seed`.
+
+The four `agg_*` rows above are **not dbt models** — they are served by the self-maintaining
+ClickHouse `*_acc` `AggregatingMergeTree` MVs in `include/ch_incremental_mvs.py`, which fire
+continuously on each bronze insert; the `ensure_ch_mvs` task in `transform_marts` only idempotently
+(re)creates the MV + serving view on the `bronze_states_table` tick.
 
 > **Bootstrap note.** `fct_flight_legs` is untagged (so it refreshes on the OpenSky context feed) but
 > reads `tag:adsb` relations (the dim seeds, `dim_aircraft`, `fct_adsb_state`). On a fresh
@@ -578,8 +583,9 @@ source moved to the reconciled consensus mart — see its entry below and
 
 ### `gold.agg_country_traffic_adsb` — rooftop by registration country
 
-- **Grain:** one row per `reg_country`. **Built on the rooftop DAG** (`tag:adsb`), so it stays in
-  sync with the rooftop feed, not the OpenSky context feed.
+- **Grain:** one row per `reg_country`. **Served by a self-maintaining `*_acc` MV** on the rooftop
+  `bronze.adsb_states` feed (`include/ch_incremental_mvs.py`), so it stays in sync with the rooftop
+  feed, not the OpenSky context feed.
 - **Purpose:** the deliberate rooftop-feed mirror of the OpenSky context `agg_country_traffic`.
 - **Notes:** coverage is the antenna footprint (Tokyo area), so Japan dominates.
 
@@ -592,8 +598,9 @@ source moved to the reconciled consensus mart — see its entry below and
 
 ### `gold.agg_airline_traffic_adsb` — rooftop by operating airline
 
-- **Grain:** one row per `(airline_name, airline_country)`. **Built on the rooftop DAG**
-  (`tag:adsb`), the deliberate rooftop-feed mirror of the OpenSky-context `agg_airline_traffic`.
+- **Grain:** one row per `(airline_name, airline_country)`. **Served by a self-maintaining `*_acc`
+  MV** on the rooftop `bronze.adsb_states` feed (`include/ch_incremental_mvs.py`), the deliberate
+  rooftop-feed mirror of the OpenSky-context `agg_airline_traffic`.
 - **Purpose:** *which airlines this antenna actually receives* — a different view from the
   wide-area context leaderboard, since coverage is the antenna footprint (Tokyo area).
 - **Notes:** attribution depends on the OpenSky callsign backfill in `fct_adsb_state`;
@@ -610,7 +617,8 @@ source moved to the reconciled consensus mart — see its entry below and
 
 ### Legacy OpenSky-context marts
 
-These predate v3.5 and are built by `transform_marts` alongside the newer marts.
+These predate v3.5. `agg_country_traffic` and `anomalies` are dbt models built by `transform_marts`;
+`agg_hourly_traffic` is served by a self-maintaining `*_acc` MV (`include/ch_incremental_mvs.py`).
 
 #### `gold.agg_country_traffic` — country leaderboard (latest snapshot)
 

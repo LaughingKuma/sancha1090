@@ -9,7 +9,7 @@ from airflow.sdk import dag, task
 
 from include.airports_jp import AIRPORTS_JP
 from include.assets import raw_flights_landed
-from include.ingest_summary import raise_if_all_landings_failed
+from include.ingest_summary import raise_if_all_fetches_raised
 
 
 @dag(
@@ -105,18 +105,20 @@ def ingest_flights():
         we want the summary, not skipped."""
         results = list(results)
 
+        succeeded = sum(1 for r in results if r is not None)
         total_rows = sum(r["rows"] for r in results if r is not None)
         with_data = sum(1 for r in results if r is not None and r.get("uri"))
         summary = {
             "total_rows": total_rows,
             "airports_with_data": with_data,
+            "airports_succeeded": succeeded,
             "airports_attempted": len(results),
             "per_airport": results,
         }
         print(f"Flights ingestion summary: {summary}")
-        # all_done let us build the summary even on partial failure; red the run when EVERY airport failed so a
-        # total ingest outage (e.g. the manifest DB unreachable) can't hide behind this task's success.
-        raise_if_all_landings_failed(summary, entity="airports", label="ingest_flights")
+        # all_done let us build the summary even on partial failure; red only when EVERY fetch raised (not a
+        # legitimately empty airport) so a total outage (e.g. the manifest DB unreachable) can't hide.
+        raise_if_all_fetches_raised(summary, entity="airports", label="ingest_flights")
         return summary
 
     results = fetch_airport.expand(airport=AIRPORTS_JP)

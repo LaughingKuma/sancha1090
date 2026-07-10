@@ -99,6 +99,22 @@ def _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft):
     return t - prev_t >= LOW_FIX_GAP_S and lo < LOW_FIX_ALT_FT
 
 
+def _parse_point(point, base):
+    # One source for both walk loops (segments + paths) so their per-point parse/reject can never drift.
+    t = base + float(point[0])
+    flags = point[6] if len(point) > 6 and isinstance(point[6], int) else 0
+    # flags&1 = repeated last-known fix: identity fill, not a position.
+    if flags & 1:
+        return None
+    lat, lon = _num(point[1]), _num(point[2])
+    if lat is None or lon is None:
+        return None
+    alt_raw = point[3] if len(point) > 3 else None
+    on_ground = alt_raw == "ground"
+    alt_ft = 0.0 if on_ground else _num(alt_raw)
+    return t, lat, lon, alt_ft, on_ground
+
+
 def trace_segments(trace_doc: dict[str, Any], day: date) -> list[dict[str, Any]]:
     preamble = _trace_preamble(trace_doc)
     if preamble is None:
@@ -112,17 +128,10 @@ def trace_segments(trace_doc: dict[str, Any], day: date) -> list[dict[str, Any]]
     prev_alt_ft: Optional[float] = None
 
     for point in points:
-        t = base + float(point[0])
-        flags = point[6] if len(point) > 6 and isinstance(point[6], int) else 0
-        # flags&1 = repeated last-known fix: identity fill, not a position.
-        if flags & 1:
+        parsed = _parse_point(point, base)
+        if parsed is None:
             continue
-        lat, lon = _num(point[1]), _num(point[2])
-        if lat is None or lon is None:
-            continue
-        alt_raw = point[3] if len(point) > 3 else None
-        on_ground = alt_raw == "ground"
-        alt_ft = 0.0 if on_ground else _num(alt_raw)
+        t, lat, lon, alt_ft, on_ground = parsed
         extra = point[8] if len(point) > 8 else None
         flight = (extra.get("flight") or "").strip() if isinstance(extra, dict) else ""
 
@@ -201,16 +210,10 @@ def trace_paths(trace_doc: dict[str, Any], day: date,
     prev_on_ground: Optional[bool] = None
     prev_alt_ft: Optional[float] = None
     for point in points:
-        t = base + float(point[0])
-        flags = point[6] if len(point) > 6 and isinstance(point[6], int) else 0
-        if flags & 1:
+        parsed = _parse_point(point, base)
+        if parsed is None:
             continue
-        lat, lon = _num(point[1]), _num(point[2])
-        if lat is None or lon is None:
-            continue
-        alt_raw = point[3] if len(point) > 3 else None
-        on_ground = alt_raw == "ground"
-        alt_ft = 0.0 if on_ground else _num(alt_raw)
+        t, lat, lon, alt_ft, on_ground = parsed
 
         if group_start is None or _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft):
             group_start = int(t)
