@@ -1,5 +1,9 @@
 {{ config(materialized='table', tags=['reconcile']) }}
 
+-- dim_airports is ref'd only inside the deploy-guard branch below, so parse-time inference (guard
+-- false) misses it and the post-deploy build errors; pin the edge explicitly.
+-- depends_on: {{ ref('dim_airports') }}
+
 -- Deploy-order guard: dim.dim_vrs_routes is created by clickhouse-init at the operator's deploy, but
 -- transform_marts rebuilds from committed code every ~4 min -- emit empty until the table exists.
 {%- if execute %}
