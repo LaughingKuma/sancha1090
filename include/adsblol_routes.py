@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 import os
 import threading
 import time
@@ -28,6 +29,16 @@ _MIN_FIXES = 2
 # low is landing/departing; with a turnaround-sized gap the aircraft landed inside it.
 LOW_FIX_ALT_FT = 984.0
 LOW_FIX_GAP_S = 2700
+
+# A turnaround-sized silence; below it a low ~20-min gap is holding/go-around, not a landing
+# (the v6.18 trade, pinned by test_low_fix_short_gap_does_not_split).
+SLOW_GAP_S = 1800
+# Implied great-circle speed across the gap below this = the aircraft stopped inside it; kept
+# <= dbt chain_speed_min_kmh (300) so the chain layer independently refuses to re-fuse these.
+SLOW_GAP_SPEED_KMH = 100
+# Mirrors dbt legs_cruise_alt_m (3000 m, the snap/overflight ceiling): a real landing descends
+# through it, so cruise-level coverage voids (both fixes high) must not split.
+SLOW_GAP_CEIL_FT = 9843.0
 
 TRACE_URL = "https://globe.adsb.lol/globe_history/{y}/{m:02d}/{d:02d}/traces/{shard}/trace_full_{hexid}.json"
 USER_AGENT = "sancha1090-routes"
@@ -88,15 +99,36 @@ RAW_SEGMENTS_SCHEMA = {
 }
 
 
-def _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft):
+def _haversine_km(lat1, lon1, lat2, lon2):
+    # Great-circle distance for the slow-gap arm's implied cross-gap speed; R in km.
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * 6371.0 * math.asin(math.sqrt(a))
+
+
+def _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft,
+               prev_lat, prev_lon, lat, lon):
     # One source for both walk loops (segments + paths) so their grouping can never drift.
-    if t - prev_t > GAP_SPLIT_S:
+    gap = t - prev_t
+    if gap > GAP_SPLIT_S:
         return True
     if on_ground and prev_on_ground is False:
         return True
     lo = min(prev_alt_ft if prev_alt_ft is not None else 99999.0,
              alt_ft if alt_ft is not None else 99999.0)
-    return t - prev_t >= LOW_FIX_GAP_S and lo < LOW_FIX_ALT_FT
+    if gap >= LOW_FIX_GAP_S and lo < LOW_FIX_ALT_FT:
+        return True
+    # Slow-gap landing: a turnaround-sized silence, below the cruise ceiling, that the aircraft
+    # crossed too slowly to have stayed airborne -> it landed inside the gap even when no
+    # ground/low fix bookends it. Both guards must hold, or a cruise-level or fast crossing splits.
+    # Paths persist whole-second ts, so this arm evaluates on that integer grid — AFFECTED_SQL is
+    # formula-identical (SQL-selected iff Python-splits) so the backfill's dry-run converges to zero.
+    # Also fragments parked stretches at 30-min silences; all-ground pieces then drop at the keep-filter.
+    gap_i = int(t) - int(prev_t)
+    return (gap_i >= SLOW_GAP_S and lo < SLOW_GAP_CEIL_FT
+            and _haversine_km(prev_lat, prev_lon, lat, lon) / (gap_i / 3600.0) < SLOW_GAP_SPEED_KMH)
 
 
 def _parse_point(point, base):
@@ -126,6 +158,8 @@ def trace_segments(trace_doc: dict[str, Any], day: date) -> list[dict[str, Any]]
     prev_t: Optional[float] = None
     prev_on_ground: Optional[bool] = None
     prev_alt_ft: Optional[float] = None
+    prev_lat: Optional[float] = None
+    prev_lon: Optional[float] = None
 
     for point in points:
         parsed = _parse_point(point, base)
@@ -137,8 +171,9 @@ def trace_segments(trace_doc: dict[str, Any], day: date) -> list[dict[str, Any]]
 
         # Same session breaks as fct_flight_legs: long gap, or ground contact after air
         # (the landing's ground fix opens the next segment, at the arrival airport). The
-        # low-fix arm catches landings whose ground fix never appears in the trace.
-        if cur is None or _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft):
+        # low-fix and slow-gap arms catch landings whose ground fix never appears in the trace.
+        if cur is None or _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft,
+                                     prev_lat, prev_lon, lat, lon):
             if cur is not None:
                 segs.append(cur)
             cur = {"first": (t, lat, lon, alt_ft, on_ground), "callsigns": {}, "n": 0, "air": 0}
@@ -147,7 +182,7 @@ def trace_segments(trace_doc: dict[str, Any], day: date) -> list[dict[str, Any]]
         cur["air"] += 0 if on_ground else 1
         if flight:
             cur["callsigns"][flight] = cur["callsigns"].get(flight, 0) + 1
-        prev_t, prev_on_ground, prev_alt_ft = t, on_ground, alt_ft
+        prev_t, prev_on_ground, prev_alt_ft, prev_lat, prev_lon = t, on_ground, alt_ft, lat, lon
 
     if cur is not None:
         segs.append(cur)
@@ -209,15 +244,18 @@ def trace_paths(trace_doc: dict[str, Any], day: date,
     prev_t: Optional[float] = None
     prev_on_ground: Optional[bool] = None
     prev_alt_ft: Optional[float] = None
+    prev_lat: Optional[float] = None
+    prev_lon: Optional[float] = None
     for point in points:
         parsed = _parse_point(point, base)
         if parsed is None:
             continue
         t, lat, lon, alt_ft, on_ground = parsed
 
-        if group_start is None or _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft):
+        if group_start is None or _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft,
+                                             prev_lat, prev_lon, lat, lon):
             group_start = int(t)
-        prev_t, prev_on_ground, prev_alt_ft = t, on_ground, alt_ft
+        prev_t, prev_on_ground, prev_alt_ft, prev_lat, prev_lon = t, on_ground, alt_ft, lat, lon
 
         if group_start not in keep_starts:
             continue

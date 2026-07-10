@@ -18,6 +18,8 @@ table and refresh track; they fuse only at well-defined seams, the sharpest bein
 
 > **Data model:** the full column-level schema, lineage, and entity map for every
 > bronze/silver/gold table live in **[`docs/datalake.md`](docs/datalake.md)**.
+> The measurements and trade-offs behind non-obvious pipeline decisions are recorded
+> as engineering notes in **[`docs/notes/`](docs/notes/)**.
 
 ## Architecture
 
@@ -279,7 +281,7 @@ sancha1090/
 ├── risingwave/sql/                  # Live MV DDL (source/dims/enriched views)
 ├── livemap/                         # FastAPI + maplibre/deck.gl live aircraft map
 ├── superset/                        # Superset image + seeded dashboard assets
-├── docs/                            # Data-model reference (datalake.md)
+├── docs/                            # Data-model reference (datalake.md) + engineering notes (notes/)
 ├── scripts/                         # Operational helpers
 └── tests/                           # pytest suite (300+ tests)
 ```
@@ -315,9 +317,10 @@ data open:
   that only clips the antenna's ring actually came from and is headed — by walking
   each aircraft's global trace into airport-to-airport segments
   (`bronze.adsblol_flight_segments`, plus capture-only full paths in
-  `bronze.adsblol_flight_paths`) — the walk also breaks at missed landings,
-  starting a new segment whenever a sub-1,000 ft fix sits beside a
-  turnaround-sized gap even without a captured ground fix, so an out-and-back
+  `bronze.adsblol_flight_paths`) — the walk also breaks at missed landings even
+  without a captured ground fix: a sub-1,000 ft fix beside a turnaround-sized gap,
+  or a below-cruise gap of 30+ minutes crossed at under 100 km/h implied
+  groundspeed (the aircraft must have stopped inside it), so an out-and-back
   rotation doesn't fuse into one same-airport segment. Because a trace breaks wherever crowdsourced
   coverage drops out, those segments are then chained back into whole flights
   (`silver.int_flight_chains_adsblol`) — including across UTC trace-day boundaries —

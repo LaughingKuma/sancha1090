@@ -499,3 +499,149 @@ def test_trace_paths_lockstep_on_low_fix_split():
     assert {p["seg_start"] for p in pts} == {s["seg_start"] for s in segs}
     for s in segs:
         assert sum(1 for p in pts if p["seg_start"] == s["seg_start"]) == s["num_fixes"]
+
+
+def test_slow_gap_splits_hidden_landing():
+    # No ground/low fix bookends the turnaround: a 35-min silence (>= SLOW_GAP_S, < LOW_FIX_GAP_S)
+    # then a climb fix ~5 km away -> implied ~8.5 km/h means the aircraft landed inside the gap.
+    out1 = [0.0, 34.00, 136.00, 6500, 200, 180, 0, -700, None, "adsb_icao", 6500, 0, 0, 0]
+    out2 = [60.0, 34.00, 136.00, 6000, 180, 180, 0, -600, None, "adsb_icao", 6000, 0, 0, 0]
+    back1 = [60.0 + 35 * 60, 34.045, 136.00, 7000, 160, 0, 0, 700, None, "adsb_icao", 7000, 0, 0, 0]
+    back2 = [60.0 + 35 * 60 + 60, 34.10, 136.00, 8000, 200, 0, 0, 600, None, "adsb_icao", 8000, 0, 0, 0]
+    segs = routes.trace_segments(_synthetic([out1, out2, back1, back2]), DAY)
+    assert len(segs) == 2
+    assert segs[0]["last_alt_ft"] == 6000
+    assert segs[1]["first_alt_ft"] == 7000
+
+
+def test_slow_gap_at_cruise_does_not_split():
+    # Same 35-min slow gap but both boundary fixes at cruise = coverage void, NOT a landing:
+    # the cruise ceiling (SLOW_GAP_CEIL_FT) must veto even though the implied speed is slow.
+    a = [0.0, 34.0, 136.0, 33000, 450, 180, 0, 0, None, "adsb_icao", 33000, 0, 0, 0]
+    b = [35 * 60.0, 34.18, 136.0, 34000, 450, 180, 0, 0, None, "adsb_icao", 34000, 0, 0, 0]
+    segs = routes.trace_segments(_synthetic([a, b]), DAY)
+    assert len(segs) == 1
+
+
+def test_slow_gap_fast_crossing_does_not_split():
+    # 35-min gap, low fixes, but ~200 km apart -> implied ~343 km/h: a real flight crossing a
+    # coverage hole, not a stop. The speed gate must veto.
+    a = [0.0, 34.0, 136.0, 5000, 300, 180, 0, 0, None, "adsb_icao", 5000, 0, 0, 0]
+    b = [35 * 60.0, 35.8, 136.0, 6000, 300, 180, 0, 0, None, "adsb_icao", 6000, 0, 0, 0]
+    segs = routes.trace_segments(_synthetic([a, b]), DAY)
+    assert len(segs) == 1
+
+
+def test_slow_gap_below_floor_does_not_split():
+    # A 25-min gap (< SLOW_GAP_S), low and near = holding / go-around, not a landing: the floor
+    # preserves the v6.18 trade even when the geometry is otherwise slow-gap-shaped.
+    a = [0.0, 34.0, 136.0, 1500, 150, 180, 0, -500, None, "adsb_icao", 1500, 0, 0, 0]
+    b = [25 * 60.0, 34.045, 136.0, 1600, 160, 0, 0, 500, None, "adsb_icao", 1600, 0, 0, 0]
+    segs = routes.trace_segments(_synthetic([a, b]), DAY)
+    assert len(segs) == 1
+
+
+def test_slow_gap_none_altitude_fails_open():
+    # Both altitudes None across a slow, near gap: coalesce to 99999 -> above the cruise ceiling,
+    # so the arm fails open and does NOT split (mirrors the SQL coalesce).
+    a = [0.0, 34.0, 136.0, "", 150, 180, 0, 0, None, "adsb_icao", None, 0, 0, 0]
+    b = [35 * 60.0, 34.045, 136.0, "", 160, 0, 0, 0, None, "adsb_icao", None, 0, 0, 0]
+    segs = routes.trace_segments(_synthetic([a, b]), DAY)
+    assert len(segs) == 1
+
+
+def test_trace_paths_lockstep_on_slow_gap_split():
+    # Both loops must agree on the slow-gap boundary: every fix bins to a surviving segment.
+    out1 = [0.0, 34.00, 136.00, 6500, 200, 180, 0, -700, None, "adsb_icao", 6500, 0, 0, 0]
+    out2 = [60.0, 34.00, 136.00, 6000, 180, 180, 0, -600, None, "adsb_icao", 6000, 0, 0, 0]
+    back1 = [60.0 + 35 * 60, 34.045, 136.00, 7000, 160, 0, 0, 700, None, "adsb_icao", 7000, 0, 0, 0]
+    back2 = [60.0 + 35 * 60 + 60, 34.10, 136.00, 8000, 200, 0, 0, 600, None, "adsb_icao", 8000, 0, 0, 0]
+    doc = _synthetic([out1, out2, back1, back2])
+    segs = routes.trace_segments(doc, DAY)
+    pts = routes.trace_paths(doc, DAY, segs)
+    assert {p["seg_start"] for p in pts} == {s["seg_start"] for s in segs}
+    for s in segs:
+        assert sum(1 for p in pts if p["seg_start"] == s["seg_start"]) == s["num_fixes"]
+
+
+def test_slow_gap_persisted_grid_fires_on_truncated_1800():
+    # Raw wall-clock gap 1799.49 s (< SLOW_GAP_S) but the persisted whole-second ts differ by exactly
+    # 1800: the arm evaluates on that integer grid (matching AFFECTED_SQL), so it splits.
+    a1 = [90.0, 34.00, 136.00, 6000, 200, 180, 0, -600, None, "adsb_icao", 6000, 0, 0, 0]
+    a2 = [100.99, 34.00, 136.00, 6000, 180, 180, 0, -600, None, "adsb_icao", 6000, 0, 0, 0]
+    b1 = [1900.48, 34.001, 136.00, 7000, 160, 0, 0, 700, None, "adsb_icao", 7000, 0, 0, 0]
+    b2 = [1960.0, 34.01, 136.00, 8000, 200, 0, 0, 600, None, "adsb_icao", 8000, 0, 0, 0]
+    # int(base+100.99)=base+100, int(base+1900.48)=base+1900 -> integer diff 1800 fires the arm.
+    segs = routes.trace_segments(_synthetic([a1, a2, b1, b2]), DAY)
+    assert len(segs) == 2
+
+
+def test_slow_gap_persisted_grid_below_1800_does_not_split():
+    # Persisted ts differ by 1799 even though wall-clock is ~1799.4 s: sub-threshold on the integer
+    # grid, so the arm holds and it stays one segment.
+    a = [100.50, 34.00, 136.00, 6000, 200, 180, 0, -600, None, "adsb_icao", 6000, 0, 0, 0]
+    b = [1899.90, 34.001, 136.00, 7000, 160, 0, 0, 700, None, "adsb_icao", 7000, 0, 0, 0]
+    # int(base+100.50)=base+100, int(base+1899.90)=base+1899 -> integer diff 1799 (< SLOW_GAP_S).
+    segs = routes.trace_segments(_synthetic([a, b]), DAY)
+    assert len(segs) == 1
+
+
+def test_slow_gap_asymmetric_altitude_splits():
+    # One boundary alt above the cruise ceiling, one below: the arm keys off the LOWER alt (min), so
+    # a descent that bottoms out low still splits. A min->max regression would keep it fused.
+    a1 = [0.0, 34.00, 136.00, 5000, 200, 180, 0, -600, None, "adsb_icao", 5000, 0, 0, 0]
+    a2 = [60.0, 34.00, 136.00, 5000, 180, 180, 0, -600, None, "adsb_icao", 5000, 0, 0, 0]
+    b1 = [60.0 + 2100, 34.001, 136.00, 20000, 160, 0, 0, 700, None, "adsb_icao", 20000, 0, 0, 0]
+    b2 = [60.0 + 2100 + 60, 34.01, 136.00, 21000, 200, 0, 0, 600, None, "adsb_icao", 21000, 0, 0, 0]
+    segs = routes.trace_segments(_synthetic([a1, a2, b1, b2]), DAY)
+    assert len(segs) == 2
+
+
+def test_slow_gap_one_null_altitude_splits():
+    # One boundary altitude missing (coalesces to 99999) but the other is low: min() still sees the
+    # low side, so a single None must not veto the split.
+    a1 = [0.0, 34.00, 136.00, 5000, 200, 180, 0, -600, None, "adsb_icao", 5000, 0, 0, 0]
+    a2 = [60.0, 34.00, 136.00, 5000, 180, 180, 0, -600, None, "adsb_icao", 5000, 0, 0, 0]
+    b1 = [60.0 + 2100, 34.001, 136.00, "", 160, 0, 0, 700, None, "adsb_icao", None, 0, 0, 0]
+    b2 = [60.0 + 2100 + 60, 34.01, 136.00, "", 200, 0, 0, 600, None, "adsb_icao", None, 0, 0, 0]
+    segs = routes.trace_segments(_synthetic([a1, a2, b1, b2]), DAY)
+    assert len(segs) == 2
+
+
+def test_slow_gap_ceiling_boundary_exact():
+    # Both boundary alts exactly at the cruise ceiling: the guard is strict (<), so 9843.0 does not
+    # count as below and the coverage void stays one segment.
+    a = [0.0, 34.00, 136.00, 9843.0, 200, 180, 0, 0, None, "adsb_icao", 9843, 0, 0, 0]
+    b = [2100.0, 34.001, 136.00, 9843.0, 180, 180, 0, 0, None, "adsb_icao", 9843, 0, 0, 0]
+    segs = routes.trace_segments(_synthetic([a, b]), DAY)
+    assert len(segs) == 1
+
+
+def test_slow_gap_speed_line_boundary():
+    # Straddle the 100 km/h line over an 1800 s gap (deltas checked against _haversine_km at write
+    # time): 0.4485 deg ~ 99.7 km/h splits (stopped); 0.4520 deg ~ 100.5 km/h does not (flying).
+    slow = [[0.0, 34.00, 136.00, 5000, 200, 180, 0, 0, None, "adsb_icao", 5000, 0, 0, 0],
+            [60.0, 34.00, 136.00, 5000, 200, 180, 0, 0, None, "adsb_icao", 5000, 0, 0, 0],
+            [1860.0, 34.00 + 0.4485, 136.00, 6000, 200, 180, 0, 0, None, "adsb_icao", 6000, 0, 0, 0],
+            [1920.0, 34.00 + 0.4485, 136.00, 6000, 200, 180, 0, 0, None, "adsb_icao", 6000, 0, 0, 0]]
+    fast = [[0.0, 34.00, 136.00, 5000, 200, 180, 0, 0, None, "adsb_icao", 5000, 0, 0, 0],
+            [60.0, 34.00, 136.00, 5000, 200, 180, 0, 0, None, "adsb_icao", 5000, 0, 0, 0],
+            [1860.0, 34.00 + 0.4520, 136.00, 6000, 200, 180, 0, 0, None, "adsb_icao", 6000, 0, 0, 0],
+            [1920.0, 34.00 + 0.4520, 136.00, 6000, 200, 180, 0, 0, None, "adsb_icao", 6000, 0, 0, 0]]
+    assert len(routes.trace_segments(_synthetic(slow), DAY)) == 2
+    assert len(routes.trace_segments(_synthetic(fast), DAY)) == 1
+
+
+def test_slow_gap_both_ground_splits_parked_cluster():
+    # A >= 30-min ground silence also fragments a parked stretch: all-ground pieces drop at the
+    # keep-filter, so only the segment that opens on the ground fix and lifts off survives.
+    g0 = [0.0, 34.000, 136.000, "ground", 5, 90, 0, 0, None, "adsb_icao", 0, 0, 0, 0]
+    g1 = [60.0, 34.000, 136.000, "ground", 5, 90, 0, 0, None, "adsb_icao", 0, 0, 0, 0]
+    g2 = [2160.0, 34.001, 136.000, "ground", 5, 90, 0, 0, None, "adsb_icao", 0, 0, 0, 0]
+    a1 = [2220.0, 34.002, 136.000, 1500, 120, 0, 0, 800, None, "adsb_icao", 1500, 0, 0, 0]
+    a2 = [2280.0, 34.010, 136.000, 2500, 150, 0, 0, 700, None, "adsb_icao", 2500, 0, 0, 0]
+    segs = routes.trace_segments(_synthetic([g0, g1, g2, a1, a2]), DAY)
+    assert len(segs) == 1
+    assert segs[0]["seg_start"] == 1782345600 + 2160  # opens on the post-gap ground fix
+    assert segs[0]["first_on_ground"] is True
+    assert segs[0]["num_fixes"] == 3

@@ -1,32 +1,41 @@
 from __future__ import annotations
 
-# Re-fetch trace-days the OLD segmenter fused at a missed landing (low boundary fix + turnaround
-# gap in one seg_start); ledger rows are cleared first so the 'landed' pairs refetch and re-segment.
+# Re-fetch trace-days the segmenter's new slow-gap arm would now split (turnaround-sized silence,
+# below the cruise ceiling, implied cross-gap speed too slow to have stayed airborne).
 import argparse
 from collections import defaultdict
 from datetime import date, datetime, timezone
 
 from include import adsblol_route_ledger as ledger
-from include.adsblol_routes import LOW_FIX_ALT_FT, LOW_FIX_GAP_S, run_daily
+from include.adsblol_routes import SLOW_GAP_CEIL_FT, SLOW_GAP_S, SLOW_GAP_SPEED_KMH, run_daily
 from include.clickhouse import (
     ch_client,
     load_adsblol_paths_pending_to_ch,
     load_adsblol_segments_pending_to_ch,
 )
 
-# Interpolates the Task 1 constants directly (feet, epoch seconds) — never hardcode copies.
+# Interpolates the Task 1 constants directly (feet, epoch seconds, km/h) — never hardcode copies.
+# The speed expression mirrors _haversine_km term-for-term (R=6371.0, division form) so a pair is
+# SQL-selected iff the Python arm splits it — the dry-run converges to zero. The gap>=SLOW_GAP_S
+# conjunct keeps the divisor >= 1800 s, so the float division never blows up (CH won't raise anyway).
 AFFECTED_SQL = f"""
 WITH gaps AS (
   SELECT icao24, trace_day, seg_start,
     ts, lagInFrame(ts, 1) OVER (PARTITION BY icao24, trace_day, seg_start ORDER BY ts) AS prev_ts,
-    alt_ft, lagInFrame(alt_ft, 1) OVER (PARTITION BY icao24, trace_day, seg_start ORDER BY ts) AS prev_alt_ft
+    alt_ft, lagInFrame(alt_ft, 1) OVER (PARTITION BY icao24, trace_day, seg_start ORDER BY ts) AS prev_alt_ft,
+    lat, lagInFrame(lat, 1) OVER (PARTITION BY icao24, trace_day, seg_start ORDER BY ts) AS prev_lat,
+    lon, lagInFrame(lon, 1) OVER (PARTITION BY icao24, trace_day, seg_start ORDER BY ts) AS prev_lon
   FROM bronze.adsblol_flight_paths FINAL
 )
 SELECT DISTINCT icao24, trace_day
 FROM gaps
 WHERE prev_ts IS NOT NULL
-  AND ts - prev_ts >= {LOW_FIX_GAP_S}
-  AND least(coalesce(prev_alt_ft, 99999.), coalesce(alt_ft, 99999.)) < {LOW_FIX_ALT_FT}
+  AND ts - prev_ts >= {SLOW_GAP_S}
+  AND least(coalesce(prev_alt_ft, 99999.), coalesce(alt_ft, 99999.)) < {SLOW_GAP_CEIL_FT}
+  AND 2 * 6371.0 * asin(sqrt(
+        pow(sin(radians(lat - prev_lat) / 2), 2)
+        + cos(radians(prev_lat)) * cos(radians(lat)) * pow(sin(radians(lon - prev_lon) / 2), 2)
+      )) / ((ts - prev_ts) / 3600.) < {SLOW_GAP_SPEED_KMH}
 ORDER BY trace_day, icao24
 """
 

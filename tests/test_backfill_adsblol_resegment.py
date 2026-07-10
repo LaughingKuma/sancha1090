@@ -1,15 +1,28 @@
 from __future__ import annotations
 
 import scripts.backfill_adsblol_resegment as bar
-from include.adsblol_routes import LOW_FIX_ALT_FT, LOW_FIX_GAP_S
+from include.adsblol_routes import SLOW_GAP_CEIL_FT, SLOW_GAP_S, SLOW_GAP_SPEED_KMH
 
 
 def test_affected_sql_interpolates_task1_constants():
     sql = bar.AFFECTED_SQL
-    assert str(LOW_FIX_GAP_S) in sql        # 2700 epoch-second turnaround gap
-    assert str(LOW_FIX_ALT_FT) in sql       # 984.0 ft low-fix threshold (CH alt_ft is feet)
+    assert str(SLOW_GAP_S) in sql           # 1800 epoch-second turnaround-sized gap
+    assert str(SLOW_GAP_CEIL_FT) in sql     # 9843.0 ft cruise ceiling (CH alt_ft is feet)
+    assert str(SLOW_GAP_SPEED_KMH) in sql   # 100 km/h implied cross-gap speed guard
     assert "adsblol_flight_paths FINAL" in sql
     assert "lagInFrame" in sql
+    assert "2700" not in sql
+    assert "984.0" not in sql
+    # Expression-level parity with the Python _seg_break slow-gap arm on the persisted integer grid.
+    assert f"ts - prev_ts >= {SLOW_GAP_S}" in sql
+    assert f"least(coalesce(prev_alt_ft, 99999.), coalesce(alt_ft, 99999.)) < {SLOW_GAP_CEIL_FT}" in sql
+    # Speed selection is _haversine_km term-for-term (R=6371.0, division form), NOT greatCircleDistance:
+    # SQL must never select a pair the arm won't split, or the backfill's dry-run can't converge.
+    assert "asin(sqrt(" in sql
+    assert "6371.0" in sql
+    assert "/ ((ts - prev_ts) / 3600.)" in sql
+    assert f"3600.) < {SLOW_GAP_SPEED_KMH}" in sql
+    assert "greatCircleDistance" not in sql
 
 
 class _FakeSummary:
