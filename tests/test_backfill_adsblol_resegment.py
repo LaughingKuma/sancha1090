@@ -25,26 +25,35 @@ def test_affected_sql_interpolates_task1_constants():
     assert "greatCircleDistance" not in sql
 
 
-class _FakeSummary:
-    def __init__(self, written_rows):
-        self.written_rows = written_rows
+class _FakeQueryResult:
+    def __init__(self, result_rows):
+        self.result_rows = result_rows
 
 
 class _FakeCHClient:
     # Records each lightweight DELETE (table, bound params) so tests can assert the supersede-cleanup.
-    def __init__(self, sink, written_rows=0):
+    def __init__(self, sink, stale_rows=None, cleared=3):
         self._sink = sink
-        self._written = written_rows
+        self._stale = stale_rows or []
+        self._cleared = cleared
+        self.queries = []
 
     def command(self, sql, parameters=None):
         self._sink.append((sql.split()[2], parameters))  # "DELETE FROM <table> WHERE ..."
-        return _FakeSummary(self._written)
+        return None
+
+    def query(self, sql, **_kw):
+        self.queries.append(sql)
+        if "count()" in sql:
+            return _FakeQueryResult([[self._cleared]])
+        return _FakeQueryResult(list(self._stale))  # same canned rows regardless of {table}
 
     def close(self):
         pass
 
 
-def _stub_flow(monkeypatch, pairs, *, drain_ok=True, run_daily_result=None, written_rows=0):
+def _stub_flow(monkeypatch, pairs, *, drain_ok=True, run_daily_result=None, cleared=3,
+               stale_rows=None):
     monkeypatch.setattr(bar, "affected_pairs", lambda: pairs)
     events = []
     deleted = []
@@ -79,7 +88,8 @@ def _stub_flow(monkeypatch, pairs, *, drain_ok=True, run_daily_result=None, writ
     monkeypatch.setattr(bar, "load_adsblol_segments_pending_to_ch", fake_load("seg"))
     monkeypatch.setattr(bar, "load_adsblol_paths_pending_to_ch", fake_load("path"))
     ch_deletes = []
-    monkeypatch.setattr(bar, "ch_client", lambda: _FakeCHClient(ch_deletes, written_rows))
+    monkeypatch.setattr(bar, "ch_client",
+                        lambda: _FakeCHClient(ch_deletes, stale_rows=stale_rows, cleared=cleared))
     return deleted, fetched, loaded, events, ch_deletes
 
 
@@ -205,12 +215,14 @@ def test_execute_returns_nonzero_when_drain_reports_not_ok(monkeypatch):
                         lambda *_a, **_k: {"ch_loaded": 0, "files": 0, "ok": False})
     monkeypatch.setattr(bar, "load_adsblol_paths_pending_to_ch",
                         lambda *_a, **_k: {"ch_loaded": 1, "files": 1, "ok": True})
-    # Drain not-ok must skip the client entirely — a call here would fail the test.
-    monkeypatch.setattr(bar, "ch_client",
-                        lambda: (_ for _ in ()).throw(AssertionError("ch_client called on not-ok drain")))
+    # The start-of-run stale sweep legitimately opens a client; a not-ok drain must still skip the
+    # supersede DELETEs it gates.
+    ch_deletes = []
+    monkeypatch.setattr(bar, "ch_client", lambda: _FakeCHClient(ch_deletes))
 
     rc = bar.run(execute=True, sleep=0.0)
     assert rc == 1
+    assert ch_deletes == []
 
 
 def _landed_all_but(missing_hex):
@@ -226,7 +238,7 @@ def test_execute_deletes_superseded_rows_after_loaders_landed_only(monkeypatch, 
     # bbb222's trace is missing that day, so only aaa111 (landed) gets its old bronze rows deleted.
     _d, _f, _l, events, ch_deletes = _stub_flow(
         monkeypatch, [("aaa111", "2026-06-25"), ("bbb222", "2026-06-25")],
-        run_daily_result=_landed_all_but("bbb222"), written_rows=3)
+        run_daily_result=_landed_all_but("bbb222"), cleared=3)
     rc = bar.run(execute=True, sleep=0.0, accept_missing=True)  # accept so the missing hex alone keeps rc=0
     assert rc == 0
     # Deletes fire after both loaders, one per bronze table, landed hex only, run_start bound.
@@ -268,3 +280,110 @@ def test_errors_fail_run_even_with_accept_missing(monkeypatch):
 def test_accept_missing_arg_defaults_false():
     assert bar._parse_args([]).accept_missing is False
     assert bar._parse_args(["--accept-missing"]).accept_missing is True
+
+
+def test_stale_hexdays_sql_shape():
+    sql = bar._STALE_HEXDAYS_SQL
+    assert "{table}" in sql
+    assert "FINAL" in sql
+    assert "uniqExact(ingested_at) > 1" in sql
+    assert "GROUP BY trace_day, icao24" in sql
+
+
+def test_sweep_stale_dry_run_mutates_nothing(capsys):
+    from datetime import date, datetime
+
+    mx = datetime(2026, 7, 10, 2, 43, 0)
+    fake = _FakeCHClient([], stale_rows=[(date(2026, 6, 4), "7800ff", mx),
+                                          (date(2026, 6, 4), "abc123", mx)])
+    bar.sweep_stale(client=fake, execute=False)
+    assert fake._sink == []
+    out = capsys.readouterr().out
+    assert "2026-06-04" in out
+    assert "2 hex-days" in out
+    assert "dry-run" in out
+
+
+def test_sweep_stale_execute_groups_by_day_and_batch(capsys):
+    from datetime import date, datetime
+
+    t1 = datetime(2026, 7, 10, 2, 43, 0)
+    t2 = datetime(2026, 7, 10, 3, 15, 0)
+    stale = [(date(2026, 6, 4), "7800ff", t1), (date(2026, 6, 4), "abc123", t1),
+             (date(2026, 6, 4), "ffff01", t2)]
+    ch_deletes = []
+    fake = _FakeCHClient(ch_deletes, stale_rows=stale)
+
+    bar.sweep_stale(client=fake, execute=True)
+
+    assert len(ch_deletes) == 4  # 2 groups x 2 tables
+    assert [t for t, _p in ch_deletes] == [
+        "bronze.adsblol_flight_segments", "bronze.adsblol_flight_segments",
+        "bronze.adsblol_flight_paths", "bronze.adsblol_flight_paths",
+    ]
+    t1_params = [p for _t, p in ch_deletes if p["mx"] == t1]
+    assert len(t1_params) == 2
+    assert all(p == {"day": "2026-06-04", "hexes": ["7800ff", "abc123"], "mx": t1} for p in t1_params)
+    t2_params = [p for _t, p in ch_deletes if p["mx"] == t2]
+    assert len(t2_params) == 2
+    assert all(p["hexes"] == ["ffff01"] for p in t2_params)
+    # Per-delete pre-count (lightweight DELETE reports written_rows=0), not a running total.
+    assert "cleared_rows=3" in capsys.readouterr().out
+
+
+def test_run_execute_sweeps_before_affected_pairs(monkeypatch):
+    from datetime import date, datetime
+
+    mx = datetime(2026, 7, 10, 2, 43, 0)
+    _deleted, _fetched, _loaded, _events, ch_deletes = _stub_flow(
+        monkeypatch, [("a61c53", "2026-06-25")],
+        stale_rows=[(date(2026, 6, 4), "7800ff", mx)])
+
+    stubbed_affected_pairs = bar.affected_pairs
+    snapshot = {}
+
+    def wrapped():
+        snapshot["at_call"] = len(ch_deletes)
+        return stubbed_affected_pairs()
+
+    monkeypatch.setattr(bar, "affected_pairs", wrapped)
+
+    rc = bar.run(execute=True, sleep=0.0)
+    assert rc == 0
+    # Both tables swept (1 stale hex-day each) before affected_pairs() runs.
+    assert snapshot["at_call"] == 2
+    assert "mx" in ch_deletes[0][1] and "mx" in ch_deletes[1][1]
+    assert "run_start" in ch_deletes[2][1] and "run_start" in ch_deletes[3][1]
+
+
+def test_run_execute_with_days_limit_keeps_sweep_report_only(monkeypatch, capsys):
+    from datetime import date, datetime
+
+    mx = datetime(2026, 7, 10, 2, 43, 0)
+    _deleted, _fetched, _loaded, _events, ch_deletes = _stub_flow(
+        monkeypatch, [("a61c53", "2026-06-25")],
+        stale_rows=[(date(2026, 6, 4), "7800ff", mx)])
+
+    rc = bar.run(execute=True, sleep=0.0, days_limit=1)
+    assert rc == 0
+    # A pilot run (--days) must never mutate beyond its window; only the post-drain, run_start-bound
+    # deletes for the piloted day are allowed through.
+    assert all("mx" not in p for _t, p in ch_deletes)
+    assert "report-only under --days" in capsys.readouterr().out
+
+
+def test_sweep_stale_flag_dispatch(monkeypatch):
+    assert bar._parse_args([]).sweep_stale is False
+    assert bar._parse_args(["--sweep-stale"]).sweep_stale is True
+
+    calls = []
+    monkeypatch.setattr(bar, "sweep_stale", lambda *, execute: calls.append(execute) or None)
+
+    def _no_run(*_a, **_k):
+        raise AssertionError("run() must not be called when --sweep-stale is set")
+    monkeypatch.setattr(bar, "run", _no_run)
+
+    assert bar.main(["--sweep-stale"]) == 0
+    assert calls == [False]
+    assert bar.main(["--sweep-stale", "--execute"]) == 0
+    assert calls == [False, True]

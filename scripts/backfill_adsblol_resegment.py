@@ -66,20 +66,77 @@ def _progress(day):
 
 _SUPERSEDED_TABLES = ("bronze.adsblol_flight_segments", "bronze.adsblol_flight_paths")
 
+# FINAL is load-bearing: identical-key re-inserts (the RMT collapses them later) must not flag a
+# hex-day; only re-keyed leftovers from an interrupted run should.
+_STALE_HEXDAYS_SQL = """
+SELECT trace_day, icao24, max(ingested_at) AS mx
+FROM {table} FINAL
+GROUP BY trace_day, icao24
+HAVING uniqExact(ingested_at) > 1
+ORDER BY trace_day, icao24
+"""
+
+
+def sweep_stale(client=None, *, execute: bool = False):
+    # Paths RMT-replace in place (AFFECTED_SQL goes quiet), so a crash before delete leaves
+    # re-keyed rows behind forever; batch-mixed hex-days under FINAL are that exact signature.
+    c = client or ch_client()
+    try:
+        found_any = False
+        deleted = None
+        for table in _SUPERSEDED_TABLES:
+            rows = c.query(_STALE_HEXDAYS_SQL.format(table=table)).result_rows
+            by_day_mx: dict[tuple[str, object], list[str]] = defaultdict(list)
+            for r in rows:
+                day = r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0])
+                by_day_mx[(day, r[2])].append(r[1])
+            for (day, mx), hexes in sorted(by_day_mx.items(), key=lambda kv: kv[0][0]):
+                found_any = True
+                hexes = sorted(hexes)
+                if not execute:
+                    print(f"stale sweep (dry-run) {table} {day}: {len(hexes)} hex-days", flush=True)
+                    continue
+                # mx is this hex-day's newest landed batch, by definition of the signature — only
+                # rows strictly older than it are the pre-run leftovers, never the replacement.
+                params = {"day": day, "hexes": hexes, "mx": mx}
+                # Lightweight DELETE always reports written_rows=0, so count the same predicate
+                # up front and use that instead.
+                cleared = c.query(
+                    f"SELECT count() FROM {table} WHERE trace_day = %(day)s "
+                    f"AND icao24 IN %(hexes)s AND ingested_at < %(mx)s",
+                    parameters=params).result_rows[0][0]
+                c.command(
+                    f"DELETE FROM {table} WHERE trace_day = %(day)s AND icao24 IN %(hexes)s "
+                    f"AND ingested_at < %(mx)s",
+                    parameters=params)
+                deleted = (deleted or 0) + int(cleared)
+                print(f"stale sweep {table} {day}: {len(hexes)} hex-days cleared_rows={cleared}",
+                      flush=True)
+        if not found_any:
+            print("stale sweep: clean", flush=True)
+        return deleted
+    finally:
+        if client is None:
+            c.close()
+
 
 def _clear_superseded(client, day: str, hexes: list[str], run_start: str):
     # Both bronze tables are RMT ORDER BY (…, seg_start/ts); a corrected segment that drops a
     # landing's leading ground cluster gets a NEW seg_start, so the RMT never replaces the old fused
     # row. Delete the pre-run rows explicitly (this run's landed hexes, stamped before run_start).
-    cleared = None
+    cleared = 0
     for table in _SUPERSEDED_TABLES:
-        summary = client.command(
+        params = {"day": day, "hexes": hexes, "run_start": run_start}
+        # pre-count: lightweight DELETE reports written_rows=0 (see sweep_stale)
+        count = client.query(
+            f"SELECT count() FROM {table} WHERE trace_day = %(day)s AND icao24 IN %(hexes)s "
+            f"AND ingested_at < %(run_start)s",
+            parameters=params).result_rows[0][0]
+        client.command(
             f"DELETE FROM {table} WHERE trace_day = %(day)s AND icao24 IN %(hexes)s "
             f"AND ingested_at < %(run_start)s",
-            parameters={"day": day, "hexes": hexes, "run_start": run_start})
-        written = getattr(summary, "written_rows", None)
-        if written is not None:
-            cleared = (cleared or 0) + int(written)
+            parameters=params)
+        cleared += int(count)
     return cleared
 
 
@@ -87,6 +144,12 @@ def run(*, execute: bool = False, sleep: float = 0.2, days_limit=None, workers: 
         accept_missing: bool = False) -> int:
     # One stamp before any work: the delete lower-bounds on it so freshly re-segmented rows survive.
     run_start = datetime.now(timezone.utc).isoformat()
+    # Repair leftovers from an interrupted run first; report-only under --days so a pilot
+    # run never deletes beyond its window (explicit --sweep-stale stays global by intent).
+    sweep_execute = execute and days_limit is None
+    sweep_stale(execute=sweep_execute)
+    if execute and not sweep_execute:
+        print("stale sweep: report-only under --days; run --sweep-stale to clear.", flush=True)
     by_day: dict[str, list[str]] = defaultdict(list)
     for icao24, day in affected_pairs():
         by_day[day].append(icao24)
@@ -128,9 +191,8 @@ def run(*, execute: bool = False, sleep: float = 0.2, days_limit=None, workers: 
     # so a failed drain must still flip the exit code — same ok-gate the DAG's load task uses.
     drain_ok = bool(segs.get("ok") and paths.get("ok"))
 
-    # Drain first, delete after: a crash before the delete leaves old+new coexisting, but the old
-    # fused row keeps the pair in affected_pairs so a rerun re-lands and deletes — converges. Never
-    # delete when the replacement data didn't verifiably land.
+    # Drain first, delete after — never delete when the replacement didn't verifiably land. A crash
+    # here isn't re-selected later (paths self-heal in place); the start-of-run sweep converges it.
     if drain_ok:
         client = ch_client()
         try:
@@ -139,10 +201,7 @@ def run(*, execute: bool = False, sleep: float = 0.2, days_limit=None, workers: 
                 if not hexes:
                     continue
                 cleared_old = _clear_superseded(client, d, hexes, run_start)
-                if cleared_old is None:
-                    print(f"  {d}: cleared superseded rows (count unavailable)", flush=True)
-                else:
-                    print(f"  {d}: cleared_old={cleared_old}", flush=True)
+                print(f"  {d}: cleared_old={cleared_old}", flush=True)
         finally:
             client.close()
 
@@ -186,11 +245,17 @@ def _parse_args(argv=None) -> argparse.Namespace:
                    help="Concurrent fetch workers, 1..8 (default 5; 1 = serial).")
     p.add_argument("--accept-missing", action="store_true",
                    help="Don't fail the run on missing traces (old rows still retained for them).")
+    p.add_argument("--sweep-stale", action="store_true",
+                   help="Only sweep re-keyed superseded bronze rows left by an interrupted run, "
+                        "then exit.")
     return p.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = _parse_args(argv)
+    if args.sweep_stale:
+        sweep_stale(execute=args.execute)
+        return 0
     return run(execute=args.execute, sleep=args.sleep, days_limit=args.days, workers=args.workers,
                accept_missing=args.accept_missing)
 

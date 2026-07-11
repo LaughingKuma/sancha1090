@@ -15,7 +15,7 @@ only at well-defined seams, the sharpest being `gold.fct_flight_legs`.
 
 > Data model: the full column-level schema, lineage, and entity map for every
 > bronze/silver/gold table live in [`docs/datalake.md`](docs/datalake.md).
-
+> 
 ## Architecture
 
 The rooftop, OpenSky, and adsb.lol feeds land as Parquet in the Garage S3 zone and load
