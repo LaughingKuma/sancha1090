@@ -2,7 +2,7 @@ version: 2
 
 models:
   - name: int_swim_flight
-    description: "SWIM latest-amendment flight per flight_key, with density-scored callsign→icao24 (NULL when unresolved/ambiguous). Diagnostic kinds + hex_score/hex_ambiguous carried for int_swim_diagnostics."
+    description: "SWIM latest-amendment flight per flight_key, with density-scored callsign→icao24 (NULL when unresolved/ambiguous) and bare FAA LID origin/dest normalized to ICAO via dim_airports.iata. Diagnostic kinds + hex_score/hex_ambiguous carried for int_swim_diagnostics."
     columns:
       - name: flight_key
         description: "coalesce(gufi, flight_ref, acid|computer_id|filed-departure-date) — one row each"
