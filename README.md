@@ -14,9 +14,7 @@ existed. Each source keeps its own bronze table and its own refresh track, and t
 only at well-defined seams, the sharpest being `gold.fct_flight_legs`.
 
 > Data model: the full column-level schema, lineage, and entity map for every
-> bronze/silver/gold table live in [`docs/datalake.md`](docs/datalake.md). The
-> measurements and trade-offs behind non-obvious pipeline decisions are recorded as
-> engineering notes in [`docs/notes/`](docs/notes/).
+> bronze/silver/gold table live in [`docs/datalake.md`](docs/datalake.md).
 
 ## Architecture
 
