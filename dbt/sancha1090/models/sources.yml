@@ -104,4 +104,4 @@ sources:
           - name: callsign
             description: "Route key as published (may be zero-padded vs transmitted callsigns; normalize with callsign_norm at match time)."
           - name: airport_codes
-            description: "ICAO hop list, e.g. RJTT-RJFF; >2 hops = multi-stop (skipped by stg in v1)."
+            description: "ICAO hop list, e.g. RJTT-RJFF or RJAA-RCTP-VHHH; staging explodes every adjacent pair into a candidate schedule leg."

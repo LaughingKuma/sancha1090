@@ -845,28 +845,34 @@ callsign) matches an open, or window-overlapping closed, LADD interval — see
 | `airport_codes` | `varchar` | `-`-delimited ICAO hop list (`ORIGIN-DEST[-DEST2...]`). |
 | `ingested_at` | `timestamp` | `ReplacingMergeTree` version column (pull time); not a business field. |
 
-### `silver.stg_vrs_routes` — parsed 2-airport routes (reconciler input)
+### `silver.stg_vrs_routes` — parsed adjacent schedule legs (reconciler input)
 
-- **Grain:** one row per `callsign_norm` — leading-zero flight-number variants (`SFJ0043` vs.
-  `SFJ43`) collapse to the same key so they can't cast two votes.
-- **Source:** `dim.dim_vrs_routes`, restricted to exactly 2-hop routes (multi-stop cargo lists,
-  ~1%, need position disambiguation this v1 deliberately skips), both endpoints confirmed against
-  `dim_airports` (same rule the curated override uses), and at least one endpoint inside the
-  observation box (`japan_box_*` vars) — a both-ends-out-of-box schedule is observable here only
-  as a transit and must not vote.
+- **Grain:** one row per (`callsign_norm`, `origin_icao`, `dest_icao`) box-gated leg. Leading-zero
+  flight-number variants (`SFJ0043` vs. `SFJ43`) collapse to the same key; after gating, the
+  alphabetically first surviving callsign supplies all retained legs so variants never mix routes.
+- **Source:** `dim.dim_vrs_routes`, with every hop list exploded into adjacent pairs. Both endpoints
+  must be distinct and confirmed against `dim_airports` (same rule the curated override uses), and
+  at least one endpoint must be inside the observation box (`japan_box_*` vars) — a
+  both-ends-out-of-box leg is observable here only as a transit and must not vote. Repeated identical
+  pairs within a route are deduplicated without turning a multi-stop route into a first→last shortcut.
 - **Notes:** deploy-order guarded like `fct_flights_reconciled`'s LADD join — empty until
   `clickhouse-init` creates `dim.dim_vrs_routes`, self-heals on the next build after.
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `callsign` / `callsign_norm` | `varchar` | Raw and zero-strip-normalized callsign. Grain key is the latter. |
-| `origin_icao` / `dest_icao` | `varchar` | First/second hop, both `dim_airports`-confirmed. |
+| `callsign` / `callsign_norm` | `varchar` | Picked raw callsign and zero-strip-normalized match key. |
+| `leg_idx` | `UInt32` | One-based position of this adjacent pair in the picked raw hop list. |
+| `origin_icao` / `dest_icao` | `varchar` | Adjacent schedule endpoints, both `dim_airports`-confirmed; part of the grain with `callsign_norm`. |
+| `n_box_legs` | `UInt64` | Number of distinct box-gated legs surviving for this `callsign_norm`. |
 
 **Vote semantics:** `vrs_routes` never anchors the spine — standing data carries no flight window
 — it only votes, joined at `int_flight_attach` on the anchor's `callsign_norm`, at
 **source_rank 2** (seated between `swim` and `opensky_flights` in the SP4 rank renumber above).
-Endpoints are jet-runway gated exactly like every other opinion (below), and at most one vote pair
-per flight reaches the ballot (`assert_vrs_route_votes_unique`).
+One surviving box leg votes unconditionally. Where two or more survive, a leg votes only when it is
+the sole candidate position-aligned with the flight's already-attached observed endpoints; zero or
+multiple supported candidates abstain. Endpoints are jet-runway gated exactly like every other
+opinion (below), and at most one vote pair per flight reaches the ballot
+(`assert_vrs_route_votes_unique`).
 
 **The feasibility gate (SP4):** an airline jet can't be voted onto a known-short or
 unknown-runway-small airport, so `silver.int_jet_airframes` (ICAO designator `L#J` first,

@@ -350,7 +350,11 @@ data open:
   SWIM's: it only fires for routes with at least one endpoint inside the observation box
   (20–50°N, 122–165°E), so a pure overflight — both endpoints outside the box — is left
   unresolved instead of being stamped with a schedule O/D neither the antenna nor OpenSky ever
-  observed.
+  observed. Multi-stop schedules are exploded into adjacent legs before that gate fires, so a
+  tag flight with a layover (e.g. Tokyo–Taipei–Hong Kong) can contribute an applicable adjacent
+  leg instead of being skipped entirely — a single surviving leg votes unconditionally, while
+  several surviving legs vote only the one the flight's own observed endpoints corroborate,
+  abstaining rather than guessing when none do or more than one does.
 
   Because that consensus mixes
   observation with inference, every route endpoint records how it was derived in
