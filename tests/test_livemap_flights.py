@@ -26,13 +26,15 @@ def test_flights_query_reads_reconciled(livemap):
     assert "LIMIT 10" in q
     assert "{hex:String}" in q           # parameterized, never interpolated
     assert "coalesce(origin_iata, origin_icao)" in q  # ICAO-only airports still surface a code, not null
+    assert "toString(flight_id)" in q    # cityHash64 UInt64 → decimal string (JS Number can't hold it)
 
 
 def test_fetch_flights_shapes_rows(livemap, monkeypatch):
     ts = datetime.datetime(2026, 6, 29, 8, 55, 59)  # naive, matching CH driver output
+    fid = "12345678901234567890"  # cityHash64 > 2**63 — must survive as a string, never a JS-lossy number
 
     class FakeRes:
-        result_rows = [("reconciled", ts, "RJTT", "Tokyo Haneda", None, None, "ANA265 ")]
+        result_rows = [("reconciled", ts, "RJTT", "Tokyo Haneda", None, None, "ANA265 ", fid)]
 
     class FakeClient:
         def query(self, _sql, parameters=None):
@@ -50,10 +52,14 @@ def test_fetch_flights_shapes_rows(livemap, monkeypatch):
         "origin": {"code": "RJTT", "name": "Tokyo Haneda"},
         "dest": {"code": None, "name": None},
         "callsign": "ANA265",
+        "flight_id": fid,
     }]
+    assert isinstance(out[0]["flight_id"], str)   # serialized as a string, never coerced to int
 
 
 def test_flights_passthrough(livemap, monkeypatch):
+    # loaded (empty) suppression so passthrough is exercised, not the None-state fail-close
+    monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)
     monkeypatch.setattr(livemap, "_flights_cache", {})
     row = {"src": "opensky", "ts": 1.0,
            "origin": {"code": "HND", "name": "Tokyo"},
@@ -64,6 +70,8 @@ def test_flights_passthrough(livemap, monkeypatch):
 
 
 def test_flights_ch_failure_returns_empty_200(livemap, monkeypatch):
+    # loaded state so this reaches _fetch_flights and exercises the CH-down path, not the None-state fail-close
+    monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)
     monkeypatch.setattr(livemap, "_flights_cache", {})
 
     def boom(_h):
@@ -76,6 +84,8 @@ def test_flights_ch_failure_returns_empty_200(livemap, monkeypatch):
 
 
 def test_flights_cached_after_first_call(livemap, monkeypatch):
+    # loaded state so the request reaches the fetch/cache path, not the None-state fail-close
+    monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)
     monkeypatch.setattr(livemap, "_flights_cache", {})
     calls = {"n": 0}
 
@@ -104,6 +114,7 @@ def test_flights_query_runs_against_live_ch(livemap, ch_cur):
 
 
 def test_flights_cache_bounded(livemap, monkeypatch):
+    monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)
     monkeypatch.setattr(livemap, "_flights_cache", {})
     monkeypatch.setattr(livemap, "FLIGHTS_CACHE_MAX", 3)
     monkeypatch.setattr(livemap, "_fetch_flights", lambda _h: [])
@@ -115,6 +126,7 @@ def test_flights_cache_bounded(livemap, monkeypatch):
 
 
 def test_flights_zero_cap_disables_cache_but_serves_rows(livemap, monkeypatch):
+    monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)
     monkeypatch.setattr(livemap, "_flights_cache", {})
     monkeypatch.setattr(livemap, "FLIGHTS_CACHE_MAX", 0)
     row = {"src": "opensky", "ts": 1.0, "origin": {"code": "HND", "name": None},
@@ -123,3 +135,48 @@ def test_flights_zero_cap_disables_cache_but_serves_rows(livemap, monkeypatch):
     j = TestClient(livemap.app).get("/flights/abc123").json()
     assert j["flights"] == [row]          # eviction must never clobber a successful fetch
     assert livemap._flights_cache == {}   # cap 0 = cache disabled, loop still terminates
+
+
+def test_flights_none_state_fails_closed(livemap, monkeypatch):
+    # suppression never loaded → fail closed for every hex (mirrors /track), never reaching CH
+    monkeypatch.setattr(livemap, "_ladd_suppress", None)
+    monkeypatch.setattr(livemap, "_flights_cache", {})
+
+    def boom(_h):
+        raise AssertionError("None-state /flights must not reach CH")
+
+    monkeypatch.setattr(livemap, "_fetch_flights", boom)
+    r = TestClient(livemap.app).get("/flights/ABC123")
+    assert r.status_code == 200
+    assert r.json() == {"hex": "ABC123", "flights": []}
+
+
+def test_flights_listed_hex_empty_even_when_cache_warm(livemap, monkeypatch):
+    # a newly-listed hex yields empty even if the CH cache already holds its history — the live gate runs
+    # before the cache read, and empty is indistinguishable from no-history (no privacy oracle).
+    row = {"src": "reconciled", "ts": 1.0, "origin": {"code": "HND", "name": "Tokyo"},
+           "dest": {"code": "HKG", "name": "Hong Kong"}, "callsign": "ANA1", "flight_id": "1"}
+    monkeypatch.setattr(livemap, "_flights_cache", {"abc123": (float("inf"), [row])})
+    monkeypatch.setattr(livemap, "_ladd_suppress", {"hex": frozenset({"abc123"}), "callsign": frozenset()})
+    monkeypatch.setattr(
+        livemap, "_fetch_flights",
+        lambda _h: (_ for _ in ()).throw(AssertionError("a listed hex must not reach CH")),
+    )
+    r = TestClient(livemap.app).get("/flights/ABC123")
+    assert r.status_code == 200
+    assert r.json() == {"hex": "ABC123", "flights": []}
+
+
+def test_flights_listed_callsign_row_dropped_hex_clean(livemap, monkeypatch):
+    # per-row callsign belt: the requested hex isn't listed, but one returned flight broadcast a currently-listed
+    # callsign — drop only that row (trim+upper before match), keep the clean sibling.
+    monkeypatch.setattr(livemap, "_flights_cache", {})
+    monkeypatch.setattr(livemap, "_ladd_suppress",
+                        {"hex": frozenset(), "callsign": frozenset({"SECRET1"})})
+    listed = {"src": "reconciled", "ts": 2.0, "origin": {"code": "HND", "name": "Tokyo"},
+              "dest": {"code": "HKG", "name": "Hong Kong"}, "callsign": "SECRET1 ", "flight_id": "2"}
+    clean = {"src": "reconciled", "ts": 1.0, "origin": {"code": "HND", "name": "Tokyo"},
+             "dest": {"code": "ITM", "name": "Osaka"}, "callsign": "ANA1", "flight_id": "1"}
+    monkeypatch.setattr(livemap, "_fetch_flights", lambda _h: [listed, clean])
+    j = TestClient(livemap.app).get("/flights/abc123").json()
+    assert j == {"hex": "abc123", "flights": [clean]}   # only the listed-callsign row is suppressed

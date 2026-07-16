@@ -11,8 +11,14 @@ export const S = {
   pings: [],
   trailSegments: [],
   selectedSegments: [],
+  histPts: [], // fetched historical fused path of a clicked recent-sighting [{lon, lat, ts}]
+  histSegments: [], // gap-split segments for the HISTORY path layer (constant muted-slate colour)
+  histMarkers: [], // journey endpoints: hollow dot at the start, filled at the end
+  histCrumbs: [], // orphan fixes (no segment either side) as small slate dots — keeps a sparse path legible
+  histFlightId: null, // flight_id (decimal string) of the drawn sighting; null = none drawn
   trackFetchSeq: 0,
   flightsFetchSeq: 0,
+  pathFetchSeq: 0, // orphans an in-flight /path fetch on a newer click or deselect
   trails: new Map(), // hex → { pts, mil }
   renderState: new Map(), // hex → { offset, snapTs, prev, t }
   lastSeen: new Map(), // hex → last capture_ts

@@ -1,0 +1,62 @@
+version: 2
+
+models:
+  - name: fct_flight_path
+    description: "Fused per-second trajectory per reconciled flight (grain: flight_id, ts): priority union of rooftop ADS-B > adsb.lol full trace > OpenSky states, keyed to fct_flights_reconciled.flight_id and honest about gaps. Incremental daily partitions are replaced atomically after a three-day settlement lag, including a five-day rolling repair window; an orphaned historical partition is repaired first if later spine churn re-keys it. No LADD flag: serving authorizes against fct_flights_reconciled plus the current open LADD identity set."
+    columns:
+      - name: flight_id
+        description: "fct_flights_reconciled.flight_id this fix belongs to; a fix inside two fused windows is assigned to exactly one flight (nearest window midpoint)."
+        tests:
+          - not_null
+      - name: ts
+        description: "Whole-second fix time (UTC)."
+        tests:
+          - not_null
+      - name: lat
+        description: "Latitude of the fix."
+      - name: lon
+        description: "Longitude of the fix."
+      - name: alt_ft
+        description: "Barometric altitude in feet (adsb.lol native; rooftop 'ground' sentinel -> 0; OpenSky metres x 3.28084); NULL when the source had no altitude."
+      - name: on_ground
+        description: "1 when the fix reports on-ground (rooftop alt_baro='ground', or the source on_ground flag), else 0."
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: gs_kt
+        description: "Ground speed in knots (OpenSky m/s x 1.94384); NULL when the source had none."
+      - name: track_deg
+        description: "True track in degrees; NULL when the source had none."
+      - name: source
+        description: "Winning source for this second: adsb (rooftop, priority 1), adsblol (priority 2), opensky (priority 3)."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['adsb', 'adsblol', 'opensky']
+      - name: day_key
+        description: "toDate(flight start_time), the daily partition and incremental watermark key. It is stable for one flight_id; replacing the whole day also removes an old id when upstream re-anchors the same physical flight. A start day first builds at max(adsblol trace_day)-3, and the newest five eligible daily partitions are repaired whenever that watermark advances."
+
+  - name: fct_flight_path_summary
+    description: "Per-flight QA companion to fct_flight_path (grain: flight_id): point counts, per-source split, largest coverage gap, and observed_fraction vs the unpadded reconciled window. Inner-joined to fct_flights_reconciled; assert_flight_path_reconciled_fk separately fails if the path mart contains an orphan hidden by that join."
+    columns:
+      - name: flight_id
+        tests: [not_null, unique]
+      - name: n_points
+        description: "Total fused fixes for the flight."
+      - name: n_adsb
+        description: "Fixes won by the rooftop source."
+      - name: n_adsblol
+        description: "Fixes won by the adsb.lol full-trace source."
+      - name: n_opensky
+        description: "Fixes won by the OpenSky states source."
+      - name: first_fix_ts
+        description: "Earliest fix time (UTC)."
+      - name: last_fix_ts
+        description: "Latest fix time (UTC)."
+      - name: largest_gap_s
+        description: "Largest gap in seconds between consecutive fixes; 0 for a single-point flight."
+      - name: window_s
+        description: "Unpadded reconciled window length in seconds (end_time - start_time)."
+      - name: observed_fraction
+        description: "least(1, in-window fixes / window_s), guarded to 0 when window_s = 0. Numerator counts only fixes inside the UNPADDED [start_time, end_time] (n_points keeps the +/-10min pad fixes, so it is NOT the numerator here); a coarse coverage proxy, not a completeness claim."

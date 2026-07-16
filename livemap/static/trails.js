@@ -103,3 +103,55 @@ export function appendSelectedFix(a) {
     rebuildSelectedSegments();
   }
 }
+
+// A clicked recent-sighting's historical fused path (fct_flight_path). The mart is per-second with real
+// coverage holes, so split on gaps > 60 s — a hole must read as a hole, never a straight line drawn as if flown.
+// Colour is a constant muted slate (set on the layer, not per-fix): a past journey is one class, not altitude.
+const HIST_GAP_S = 60;
+export function rebuildHistSegments() {
+  const segs = [];
+  const crumbs = [];
+  const pts = S.histPts;
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i].ts - pts[i - 1].ts > HIST_GAP_S) continue; // gap → leave the hole empty, never bridge it
+    segs.push({ path: [[pts[i - 1].lon, pts[i - 1].lat], [pts[i].lon, pts[i].lat]] });
+  }
+  // orphan fixes — no segment on either side — become breadcrumb dots so an all-sparse path (e.g. a
+  // 5-fix opensky-only trace, all gaps > 60 s) reads as a dotted trail, not two lone markers. Interior only:
+  // the endpoints already carry the hollow/filled markers. Never a connecting line — the honesty rule stands.
+  for (let i = 1; i < pts.length - 1; i++) {
+    if (pts[i].ts - pts[i - 1].ts > HIST_GAP_S && pts[i + 1].ts - pts[i].ts > HIST_GAP_S)
+      crumbs.push({ pos: [pts[i].lon, pts[i].lat] });
+  }
+  S.histSegments = segs;
+  S.histCrumbs = crumbs;
+  // endpoint markers read the trajectory as a completed journey: hollow at the start, filled at the end
+  if (!pts.length) S.histMarkers = [];
+  else if (pts.length === 1) S.histMarkers = [{ pos: [pts[0].lon, pts[0].lat], filled: true }];
+  else S.histMarkers = [
+    { pos: [pts[0].lon, pts[0].lat], filled: false },
+    { pos: [pts[pts.length - 1].lon, pts[pts.length - 1].lat], filled: true },
+  ];
+}
+
+// /path returns [lon, lat, ts_epoch, alt_ft, source]; only geometry + time is used (colour is constant).
+export function setHistPath(rawPoints) {
+  const pts = [];
+  for (const [lon, lat, ts] of rawPoints || []) {
+    const t = Number(ts);
+    // ts == null guard is load-bearing: Number(null) is 0, which passes Number.isFinite and would fake an epoch-0 fix
+    if (lon == null || lat == null || ts == null || !Number.isFinite(t)) continue;
+    pts.push({ lon, lat, ts: t });
+  }
+  S.histPts = pts;
+  rebuildHistSegments();
+  return pts.length;
+}
+
+export function clearHistPath() {
+  S.histFlightId = null;
+  S.histPts = [];
+  S.histSegments = [];
+  S.histMarkers = [];
+  S.histCrumbs = [];
+}

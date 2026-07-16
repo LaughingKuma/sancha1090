@@ -38,10 +38,16 @@ def _prepare(engine: Optional[sa.Engine]) -> sa.Engine:
     return eng
 
 
-def filter_unattempted(pairs: list[tuple[str, str]], engine: Optional[sa.Engine] = None, *,
-                       retry_after_days: int = 7, max_attempts: int = 2) -> list[tuple[str, str]]:
-    # 'missing' gets ONE aged retry (adsb.lol occasionally publishes late); 'landed'
-    # never refetches — the bronze RMT would only re-collapse identical rows.
+def filter_unattempted(
+    pairs: list[tuple[str, str]],
+    engine: Optional[sa.Engine] = None,
+    *,
+    retry_after_days: int = 7,
+    max_attempts: int = 2,
+    error_retry_after_minutes: int = 4,
+) -> list[tuple[str, str]]:
+    # Missing traces get one aged retry; transport/parse errors stay retryable so a transient
+    # failure cannot become a permanent coverage hole. Landed pairs never refetch.
     if not pairs:
         return []
     eng = _prepare(engine)
@@ -60,16 +66,44 @@ def filter_unattempted(pairs: list[tuple[str, str]], engine: Optional[sa.Engine]
         if row is None:
             keep.append((hexid, day))
             continue
-        if row.outcome == "landed" or row.attempts >= max_attempts:
+        if row.outcome == "landed":
+            continue
+        if row.outcome != "error" and row.attempts >= max_attempts:
             continue
         attempted = row.attempted_at
         if isinstance(attempted, str):
             attempted = datetime.fromisoformat(attempted)
         if attempted.tzinfo is None:
             attempted = attempted.replace(tzinfo=timezone.utc)
-        if now - attempted >= timedelta(days=retry_after_days):
+        retry_after = (
+            timedelta(minutes=error_retry_after_minutes)
+            if row.outcome == "error"
+            else timedelta(days=retry_after_days)
+        )
+        if now - attempted >= retry_after:
             keep.append((hexid, day))
     return keep
+
+
+def due_error_pairs(
+    engine: Optional[sa.Engine] = None,
+    *,
+    retry_after_minutes: int = 4,
+    limit: int = 200,
+) -> list[tuple[str, str]]:
+    """Return older failed pairs even when tonight's target selection no longer proposes them."""
+    if limit < 1:
+        return []
+    eng = _prepare(engine)
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=retry_after_minutes)).isoformat()
+    stmt = sa.text(
+        f"SELECT icao24, trace_day FROM {_TABLE} "
+        "WHERE outcome = 'error' AND attempted_at <= :cutoff "
+        "ORDER BY attempted_at, trace_day, icao24 LIMIT :limit"
+    )
+    with eng.begin() as conn:
+        rows = conn.execute(stmt, {"cutoff": cutoff, "limit": limit})
+        return [(r.icao24, r.trace_day) for r in rows]
 
 
 def delete_attempts(pairs: list[tuple[str, str]], engine: Optional[sa.Engine] = None) -> int:

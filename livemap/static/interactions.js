@@ -1,6 +1,6 @@
 import { S } from "./state.js";
 import { cardData, hoverCardHTML } from "./card.js";
-import { rebuildSelectedSegments, pruneSelectedPts, pushFix } from "./trails.js";
+import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js";
 import { map, overlay } from "./mapsetup.js";
 
 // Spotlight panel (v5.6) — pure reader of S.selected + S.snap.
@@ -18,9 +18,97 @@ const ffDate = (ts) => {
   const d = new Date(ts * 1000);
   return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
+// The drawn sighting's row — tracked so a new pick, a re-render (expand), or a deselect clears the prior
+// active chrome. The drawn path itself lives in S (histSegments/histMarkers).
+let activeRow = null;
+function clearActiveRow() {
+  if (activeRow) { activeRow.classList.remove("ff-active"); activeRow.setAttribute("aria-pressed", "false"); }
+  activeRow = null;
+}
+// "No recorded path" is shown IN the route cell (swap-and-restore), never as an extra line — the old
+// flex-wrap hint made the row grow taller on empty, which read as jank.
+let hintTimer = 0, hintRoute = null, hintOrig = "";
+// The route-cell swap is silent to screen readers (and making the cell itself a live region would re-announce
+// the route on restore). A dedicated visually-hidden status region announces the hint once instead.
+const hintLive = document.createElement("div");
+hintLive.setAttribute("role", "status");
+hintLive.setAttribute("aria-live", "polite");
+hintLive.style.cssText = "position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;";
+document.body.appendChild(hintLive);
+function restoreHint() {
+  if (hintTimer) { clearTimeout(hintTimer); hintTimer = 0; }
+  if (hintRoute) { hintRoute.textContent = hintOrig; hintRoute.classList.remove("ff-nopath"); }
+  hintRoute = null; hintOrig = "";
+  hintLive.textContent = ""; // clearing is silent; the visible route restore is not a live region
+}
+function showRouteHint(route, text) {
+  restoreHint();
+  hintRoute = route; hintOrig = route.textContent;
+  route.classList.add("ff-nopath");
+  route.textContent = text;
+  hintLive.textContent = text; // announce once to assistive tech
+  hintTimer = setTimeout(restoreHint, 2000); // transient — the row returns to its route after a beat
+}
+// A path far from the current view must visibly do something — frame the whole journey unless both ends are
+// already on-screen. Endpoints, not a point-count fraction: dense per-second approach fixes cluster at one end
+// and would fool a fraction test into thinking a trans-ocean flight is "mostly in view".
+function maybeFitHistPath(pts) {
+  if (pts.length < 2) return;
+  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+  for (const p of pts) { w = Math.min(w, p.lon); e = Math.max(e, p.lon); s = Math.min(s, p.lat); n = Math.max(n, p.lat); }
+  // antimeridian: a naive lon box wider than 180° is the wrong way round the globe — shift western-hemisphere
+  // lons +360 so the box wraps the dateline the short way (fitBounds accepts lngs > 180). HNL legs hit this.
+  if (e - w > 180) {
+    w = Infinity; e = -Infinity;
+    for (const p of pts) { const lon = p.lon < 0 ? p.lon + 360 : p.lon; w = Math.min(w, lon); e = Math.max(e, lon); }
+  }
+  const b = map.getBounds();
+  const inView = (p) => p.lon >= b.getWest() && p.lon <= b.getEast() && p.lat >= b.getSouth() && p.lat <= b.getNorth();
+  // maplibre honours prefers-reduced-motion, so the flight is instant for those users
+  if (!(inView(pts[0]) && inView(pts[pts.length - 1])))
+    map.fitBounds([[w, s], [e, n]], { padding: 80, maxZoom: 11, duration: 700 });
+}
+// Clicking a recent-sightings row draws that historical flight's fused path; clicking it again clears it.
+function selectSighting(fid, li, route) {
+  const seq = ++S.pathFetchSeq; // any click supersedes an in-flight fetch — including a toggle-off re-click
+  restoreHint(); // drop any lingering row hint (no-path / sparse) from a prior pick
+  if (S.histFlightId === fid) { clearHistPath(); clearActiveRow(); return; } // re-click the drawn row → toggle off
+  clearActiveRow();
+  activeRow = li;
+  li.classList.add("ff-active");
+  li.setAttribute("aria-pressed", "true");
+  S.histFlightId = fid; // claim active now so a re-click toggles even before the fetch resolves
+  setHistPath([]);      // drop any prior path immediately; the fetch fills it back in
+  fetch(`/path/${encodeURIComponent(fid)}`, { cache: "no-store" })
+    .then((r) => r.json())
+    .then((j) => {
+      if (seq !== S.pathFetchSeq) return; // a newer pick or a deselect superseded this fetch
+      const n = setHistPath(j.points);
+      // a re-render (expand) between click and callback detaches the captured route node — resolve the live one
+      const liveRoute = route.isConnected ? route
+        : (S.histFlightId === fid && activeRow) ? activeRow.querySelector(".ff-route") : null;
+      if (!n) { if (liveRoute) showRouteHint(liveRoute, "no recorded path"); } // drew nothing → say so, honestly
+      else {
+        maybeFitHistPath(S.histPts); // drew a path → frame it if it's off-screen
+        // all-sparse (breadcrumbs, no line): name the dots so they don't read as a mystery
+        if (S.histSegments.length === 0 && liveRoute) showRouteHint(liveRoute, `sparse path · ${n} fixes`);
+      }
+    })
+    .catch(() => { /* best-effort: the active row stays, no path drawn */ });
+}
+// A deselect or a switch to another aircraft drops the drawn history path with the selection.
+function resetHistPath() {
+  S.pathFetchSeq++; // orphan any in-flight /path fetch
+  restoreHint();
+  clearHistPath();
+  clearActiveRow();
+}
+
 const FLIGHTS_COLLAPSED = 5;
 function renderFlights(list, expanded = false) {
   flightsListEl.replaceChildren();
+  activeRow = null; // the old nodes are detached; re-link below if the drawn row re-renders
+  restoreHint(); // a re-render detaches the route node a pending hint would restore — cancel it here
   flightsListEl.classList.toggle("expanded", expanded);
   if (!list || !list.length) { flightsWrapEl.hidden = true; return; }
   // list is this airframe's history (keyed by hex) — label with the reg so rows don't read as the header flight's legs
@@ -41,6 +129,21 @@ function renderFlights(list, expanded = false) {
     const oName = f.origin && f.origin.name, dName = f.dest && f.dest.name;
     if (oName || dName) route.title = `${oName || ffCode(f.origin)} → ${dName || ffCode(f.dest)}`;
     li.append(date, call, route);
+    if (f.flight_id) {
+      // rows click through to the historical fused path; role+tabindex give a native-button affordance
+      li.classList.add("ff-clickable");
+      li.setAttribute("role", "button");
+      li.setAttribute("aria-pressed", "false");
+      li.tabIndex = 0;
+      const fire = () => selectSighting(f.flight_id, li, route);
+      li.addEventListener("click", fire);
+      li.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fire(); } });
+      if (S.histFlightId === f.flight_id) { // an expand re-render must keep the drawn row highlighted
+        li.classList.add("ff-active");
+        li.setAttribute("aria-pressed", "true");
+        activeRow = li;
+      }
+    }
     flightsListEl.appendChild(li);
   }
   if (!expanded && list.length > FLIGHTS_COLLAPSED) {
@@ -135,6 +238,7 @@ function clearSelection() {
   S.selected = null;
   S.trackFetchSeq++; // a deselect must orphan any in-flight /track fetch
   S.flightsFetchSeq++; // orphan any in-flight /flights fetch
+  resetHistPath(); // a deselect drops the drawn history path too
   renderFlights(null);
   rebuildSelectedSegments();
   renderSpotlight();
@@ -147,6 +251,7 @@ async function selectAircraft(hex) {
   renderSpotlight();
   const seq = ++S.trackFetchSeq;
   const fseq = ++S.flightsFetchSeq;
+  resetHistPath(); // switching aircraft drops the previous one's drawn history path
   renderFlights(null); // clear any prior selection's list immediately
   fetch(`/flights/${encodeURIComponent(hex)}`, { cache: "no-store" })
     .then((r) => r.json())

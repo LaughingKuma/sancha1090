@@ -41,6 +41,39 @@ def test_missing_retries_once_after_cooldown_then_permanent():
     assert ledger.filter_unattempted([("a61c53", "2026-06-25")], eng) == []
 
 
+def test_error_retries_after_short_cooldown_without_attempt_cap():
+    eng = _engine()
+    pair = ("a61c53", "2026-06-25")
+    for _ in range(3):
+        ledger.record_attempts([(*pair, "error")], eng)
+    # Fresh errors wait long enough for Airflow's retry delay, avoiding an immediate hot loop.
+    assert ledger.filter_unattempted([pair], eng) == []
+    with eng.begin() as conn:
+        conn.execute(sa.text(
+            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
+    assert ledger.filter_unattempted([pair], eng) == [pair]
+
+
+def test_due_error_pairs_returns_only_aged_errors_in_stable_order():
+    eng = _engine()
+    ledger.record_attempts([
+        ("bbbbbb", "2026-06-24", "error"),
+        ("aaaaaa", "2026-06-24", "error"),
+        ("cccccc", "2026-06-24", "missing"),
+        ("dddddd", "2026-06-24", "landed"),
+    ], eng)
+    assert ledger.due_error_pairs(eng) == []
+    with eng.begin() as conn:
+        conn.execute(sa.text(
+            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
+    assert ledger.due_error_pairs(eng) == [
+        ("aaaaaa", "2026-06-24"),
+        ("bbbbbb", "2026-06-24"),
+    ]
+    assert ledger.due_error_pairs(eng, limit=1) == [("aaaaaa", "2026-06-24")]
+    assert ledger.due_error_pairs(eng, limit=0) == []
+
+
 def test_delete_attempts_reenables_refetch():
     eng = _engine()
     ledger.record_attempts([("a61c53", "2026-06-25", "landed"),

@@ -235,9 +235,10 @@ Aircraft dead-reckon between polls (track and groundspeed, capped at 15 s of pro
 fade with position age over the 120 s window. It has grown into the platform's showcase
 surface, with per-type aircraft silhouettes (ICAO Doc 8643), motion trails, a spotlight card
 carrying airline, registration, and owner identity, click-to-select 30-minute track history,
-a recent-flights drill-down per airframe, and the antenna's measured coverage outline. Those
-accumulated-history features are computed in the ClickHouse batch lane and shipped to the
-map, so the hot path stays a thin 120-second window.
+a recent-flights drill-down per airframe that draws each flight's own fused historical path
+on click, and the antenna's measured coverage outline. Those accumulated-history features are
+computed in the ClickHouse batch lane and shipped to the map, so the hot path stays a thin
+120-second window.
 
 ## Tech stack
 
@@ -314,7 +315,7 @@ This project stands on three community projects that choose to keep aviation dat
   The same full-day traces also resolve the overflight route backstory, meaning where a
   flight that only clips the antenna's ring actually came from and is headed. Each aircraft's
   global trace is walked into airport-to-airport segments
-  (`bronze.adsblol_flight_segments`, plus capture-only full paths in
+  (`bronze.adsblol_flight_segments`, plus full per-second paths in
   `bronze.adsblol_flight_paths`). The walk breaks at missed landings even without a captured
   ground fix: a sub-1,000 ft fix beside a turnaround-sized gap, or a below-cruise gap of 30+
   minutes crossed at under 100 km/h implied groundspeed (the aircraft must have stopped inside
@@ -326,7 +327,8 @@ This project stands on three community projects that choose to keep aviation dat
   crosses at under 550 km/h, or a sub-1,000 ft fix beside a turnaround-sized gap, breaks the
   chain instead of fusing a tech-stop rotation into one flight. A daily DAG
   (`ingest_adsblol_routes`) makes targeted per-hex fetches against the still-unresolved
-  endpoints, and a backlog driver (`scripts/backfill_adsblol_routes.py`) streams the
+  endpoints, plus a nightly fetch of every hex the rooftop antenna itself heard the day before
+  (about 950 a night), and a backlog driver (`scripts/backfill_adsblol_routes.py`) streams the
   historical tarballs.
 
   `gold.fct_flights_reconciled` is the canonical O/D source. It resolves each flight's
@@ -393,6 +395,12 @@ This project stands on three community projects that choose to keep aviation dat
   untouched as an input. `gold.fct_flight_legs` remains the single-lane OpenSky-states
   inferred view, sessionized and airport-snapped from the OpenSky-context feed alone with no
   adsb.lol or curated blending, for consumers that want that one source's opinion on its own.
+
+  A companion mart, `gold.fct_flight_path`, fuses the same three position sources — rooftop,
+  adsb.lol, and OpenSky — into a per-second trajectory for every reconciled flight, priority
+  rooftop over adsb.lol over OpenSky wherever more than one source saw the same second. It
+  builds in replaceable daily partitions after a settlement lag, with a rolling repair window
+  that absorbs late source loads and recent reconciled-flight re-keys without row mutations.
 - **[Virtual Radar Server standing data](https://github.com/vradarserver/standing-data)**
   is the community-curated callsign→route table (consumed via the hourly
   [adsb.lol mirror](https://vrs-standing-data.adsb.lol)) that gives the reconciled mart a

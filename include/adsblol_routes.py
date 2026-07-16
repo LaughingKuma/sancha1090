@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import gzip
 import json
+import logging
 import math
 import os
+import re
 import threading
 import time
 import zlib
@@ -19,6 +21,8 @@ from include import manifest
 from include import adsblol_route_ledger as ledger
 from include.adsblol_backfill import _num, _trace_preamble
 from include.s3_helpers import write_parquet
+
+log = logging.getLogger(__name__)
 
 # Mirrors dbt legs_gap_min (90 min) so trace segments and fct_flight_legs sessions
 # agree on what counts as one flight.
@@ -312,6 +316,28 @@ def route_targets(day: date, *, client=None) -> list[str]:
     return sorted({r[0] for r in rows if r[0]})
 
 
+_HEX_RE = re.compile(r"^[0-9a-f]{6}$")
+
+
+def rooftop_cohort(day: date, *, client=None) -> list[str]:
+    from include.clickhouse import ch_client
+
+    c = client or ch_client()
+    try:
+        # Bronze has zero non-ICAO hexes today; the SQL match() + this module's own regex
+        # re-check are both belts so a producer schema change can't leak junk fetch targets.
+        rows = c.query(
+            "SELECT DISTINCT lower(hex) FROM bronze.adsb_states "
+            "WHERE capture_date = %(day)s AND hex IS NOT NULL "
+            "AND match(lower(hex), '^[0-9a-f]{6}$')",
+            parameters={"day": day.isoformat()},
+        ).result_rows
+    finally:
+        if client is None:
+            c.close()
+    return sorted({r[0] for r in rows if r[0] and _HEX_RE.match(r[0])})
+
+
 def _fetch_pair(fetch, session, hexid: str, iso_day: str, spacing_s: float):
     # One pair's whole unit of work (fetch + politeness sleep + segmentation), returning its rows
     # and attempt outcome so the caller aggregates on a single thread — workers never touch shared
@@ -319,15 +345,23 @@ def _fetch_pair(fetch, session, hexid: str, iso_day: str, spacing_s: float):
     d = date.fromisoformat(iso_day)
     try:
         doc = fetch(d, hexid, session=session)
-    except RuntimeError:
+    except RuntimeError as exc:
+        log.warning("trace fetch failed for (%s, %s): %s", hexid, iso_day, exc)
         # One persistently-failing pair must not discard the rest of the run's fetches.
         time.sleep(spacing_s)
         return [], [], (hexid, iso_day, "error")
     if doc is None:
         time.sleep(spacing_s)
         return [], [], (hexid, iso_day, "missing")
-    segs = trace_segments(doc, d)
-    paths = trace_paths(doc, d, segs)
+    try:
+        segs = trace_segments(doc, d)
+        paths = trace_paths(doc, d, segs)
+    except Exception:
+        log.warning("trace segmentation failed for (%s, %s)", hexid, iso_day, exc_info=True)
+        # A malformed-but-parseable doc (unexpected shape) must not kill the whole batch either —
+        # same isolation as a fetch error, so the ledger's error-retry cooldown owns the pair.
+        time.sleep(spacing_s)
+        return [], [], (hexid, iso_day, "error")
     time.sleep(spacing_s)
     return segs, paths, (hexid, iso_day, "landed")
 
@@ -390,16 +424,29 @@ def _run_concurrent(pairs, fetch, spacing_s, workers, progress, total):
     return rows, path_rows, attempts
 
 
-def run_daily(day: date, targets: Optional[list[str]] = None, *, engine=None, fetch=None,
-              spacing_s: float = FETCH_SPACING_S, progress=None, workers: int = 1) -> dict:
+def run_daily(
+    day: date,
+    targets: Optional[list[str]] = None,
+    *,
+    engine=None,
+    fetch=None,
+    spacing_s: float = FETCH_SPACING_S,
+    progress=None,
+    workers: int = 1,
+    include_error_retries: bool = False,
+    raise_on_errors: bool = False,
+) -> dict:
     fetch = fetch or fetch_trace
     # None keeps the scheduled route_targets(day) selection; a list is the backfill's re-segment
     # target set, still flowing through filter_unattempted + record_attempts below.
     hexes = targets if targets is not None else route_targets(day)
-    # Scheduled path also fetches D-1 (midnight-spanning departures live in the prior day's trace);
-    # explicit targets re-segment self-contained trace-days, so D-1 there is pure double-fetch.
+    # Scheduled path also fetches D-1 (midnight-spanning departures live in the prior day's trace); explicit
+    # targets fetch their own day only — pure double-fetch for backfill re-segments, but for the cohort lane an
+    # accepted cross-midnight gap: a hex heard on only one UTC day never gets the other day's trace.
     days = (day,) if targets is not None else (day, day - timedelta(days=1))
     pairs = [(h, d.isoformat()) for h in hexes for d in days]
+    retry_pairs = ledger.due_error_pairs(engine) if include_error_retries else []
+    pairs = list(dict.fromkeys([*pairs, *retry_pairs]))
     pairs = ledger.filter_unattempted(pairs, engine)
 
     total = len(pairs)
@@ -412,7 +459,7 @@ def run_daily(day: date, targets: Optional[list[str]] = None, *, engine=None, fe
     df = segments_frame(rows)
     pdf = paths_frame(path_rows)
     # Outcome tally lets the backfill print a per-day landed/missing/errors line.
-    result = {"targets": len(hexes), "fetched": len(pairs),
+    result = {"targets": len(hexes), "retry_pairs": len(retry_pairs), "fetched": len(pairs),
               "rows": df.height, "path_rows": pdf.height, "uri": None,
               "landed": sum(1 for _, _, o in attempts if o == "landed"),
               "missing": sum(1 for _, _, o in attempts if o == "missing"),
@@ -435,4 +482,9 @@ def run_daily(day: date, targets: Optional[list[str]] = None, *, engine=None, fe
         ts = pdf.get_column("ts")
         manifest.record_load(puri, int(ts.min()), int(ts.max()), pdf.height, engine=engine)
     ledger.record_attempts(attempts, engine)
+    if raise_on_errors and result["errors"]:
+        raise RuntimeError(
+            f"{result['errors']} adsb.lol trace pair(s) failed; successful pairs were landed and "
+            "failed pairs remain eligible for retry"
+        )
     return result

@@ -63,7 +63,7 @@ sources:
             tests:
               - not_null
       - name: adsblol_flight_paths
-        description: "Full path points of the kept segments (ODbL, capture-only — no dbt consumer yet); RMT versioned on ingested_at"
+        description: "Full path points of the kept segments (ODbL); consumed by fct_flight_path as the adsb.lol trajectory source. max(trace_day)-path_settlement_lag_days gates the next eligible path start day. RMT versioned on ingested_at"
         tags: ['adsblol']
         columns:
           - name: icao24

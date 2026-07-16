@@ -239,6 +239,16 @@
   .ff-route { text-align: right; }
   /* rooftop = this antenna saw the leg (fresher than OpenSky's ~48h-lagged report) */
   .ff-rooftop .ff-date::before { content: "◦ "; color: var(--amber); }
+  /* recent-sightings rows click through to the historical fused path (fct_flight_path) */
+  .ff-clickable { cursor: pointer; }
+  .ff-clickable:hover { color: var(--amber); }
+  .ff-clickable:focus-visible { outline: 2px solid var(--ink-dim); outline-offset: 1px; }
+  .ff-row.ff-active { color: var(--amber); background: rgba(255, 176, 0, 0.09); }
+  .ff-row.ff-active .ff-date { color: var(--amber); }
+  /* honest empty state: the route cell itself reads "no recorded path" for a beat, then restores — no reflow */
+  .ff-route.ff-nopath { color: var(--ink-dim); font-style: italic; animation: ffNoPath 0.25s ease; }
+  @keyframes ffNoPath { from { opacity: 0.15; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .ff-route.ff-nopath { animation: none; } }
   .sp-lost {
     margin-top: 7px; font-size: 9px; letter-spacing: 0.2em; color: var(--mil);
     border: 1px solid var(--mil); padding: 3px 6px; text-align: center;
@@ -361,6 +371,6 @@
 <script src="vendor/maplibre-gl.js"></script>
 <script src="vendor/deck.gl.min.js"></script>
 <!-- versioned URL evicts pre-no-cache copies browsers heuristic-cached; bump on release -->
-<script type="module" src="map.js?v=6.7"></script>
+<script type="module" src="map.js?v=6.25"></script>
 </body>
 </html>

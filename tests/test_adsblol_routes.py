@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip as _gzip
 import json
+import logging
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -382,11 +383,12 @@ def test_run_daily_skips_ledgered_pairs(monkeypatch):
     assert out["fetched"] == 0 and out["uri"] is None
 
 
-def test_run_daily_isolates_a_persistently_failing_pair(monkeypatch):
+def test_run_daily_isolates_a_persistently_failing_pair(monkeypatch, caplog):
     import sqlalchemy as sa
 
     import include.adsblol_route_ledger as ledger
 
+    caplog.set_level(logging.WARNING, logger="include.adsblol_routes")
     eng = sa.create_engine("sqlite://")
     ledger.ensure_table(eng)
     monkeypatch.setattr(routes, "route_targets", lambda _day, **_kw: ["a61c53"])
@@ -409,6 +411,123 @@ def test_run_daily_isolates_a_persistently_failing_pair(monkeypatch):
     # so both are inside their cooldown right after the run.
     assert ledger.filter_unattempted(
         [("a61c53", "2026-06-25"), ("a61c53", "2026-06-24")], eng) == []
+    # A persistently-failing pair must be identifiable from task logs, not just the aggregate error count.
+    assert "a61c53" in caplog.text and "2026-06-24" in caplog.text
+
+
+def _malformed_doc():
+    # Parseable JSON but a trace point shaped nothing like adsb.lol's schema (not a list) ->
+    # _parse_point crashes deep in segmentation, not at fetch/preamble.
+    return {"icao": "badc0d", "timestamp": 1782345600, "trace": [None]}
+
+
+def test_run_daily_isolates_a_malformed_trace_doc_serial(monkeypatch, caplog):
+    import sqlalchemy as sa
+
+    import include.adsblol_route_ledger as ledger
+
+    caplog.set_level(logging.WARNING, logger="include.adsblol_routes")
+    eng = sa.create_engine("sqlite://")
+    ledger.ensure_table(eng)
+    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(routes, "write_parquet", lambda _df, key: f"s3://b/{key}")
+    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
+
+    def fake_fetch(_day, hexid, **_kw):
+        return _malformed_doc() if hexid == "badc0d" else _doc()
+
+    out = routes.run_daily(DAY, targets=["a61c53", "badc0d"], engine=eng, fetch=fake_fetch)
+    # trace_segments/trace_paths raising on the malformed doc must not abort the batch: the
+    # good pair still lands and the bad one is isolated as an 'error' for ledger retry.
+    assert out["fetched"] == 2
+    assert out["landed"] == 1
+    assert out["errors"] == 1
+    assert out["rows"] > 0
+    assert ledger.filter_unattempted(
+        [("a61c53", "2026-06-25"), ("badc0d", "2026-06-25")], eng) == []
+    # A malformed doc must be identifiable from task logs (pair + traceback), not just the error tally.
+    assert "badc0d" in caplog.text and "2026-06-25" in caplog.text
+    assert "TypeError" in caplog.text
+
+
+def test_run_daily_isolates_a_malformed_trace_doc_concurrent(monkeypatch):
+    import sqlalchemy as sa
+
+    import include.adsblol_route_ledger as ledger
+
+    eng = sa.create_engine("sqlite://")
+    ledger.ensure_table(eng)
+    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(routes, "write_parquet", lambda _df, key: f"s3://b/{key}")
+    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
+
+    def fake_fetch(_day, hexid, **_kw):
+        return _malformed_doc() if hexid == "badc0d" else _doc()
+
+    out = routes.run_daily(DAY, targets=["a61c53", "badc0d"], engine=eng, fetch=fake_fetch, workers=2)
+    # Same isolation on the concurrent path: fut.result() in _run_concurrent must never see the
+    # exception (caught inside the worker), so the aggregation loop can't abort mid-flight.
+    assert out["fetched"] == 2
+    assert out["landed"] == 1
+    assert out["errors"] == 1
+    assert out["rows"] > 0
+    assert ledger.filter_unattempted(
+        [("a61c53", "2026-06-25"), ("badc0d", "2026-06-25")], eng) == []
+
+
+def test_run_daily_includes_aged_errors_outside_current_targets(monkeypatch):
+    import sqlalchemy as sa
+
+    import include.adsblol_route_ledger as ledger
+
+    eng = sa.create_engine("sqlite://")
+    ledger.ensure_table(eng)
+    ledger.record_attempts([("a61c53", "2026-06-20", "error")], eng)
+    with eng.begin() as conn:
+        conn.execute(sa.text(
+            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
+    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(routes, "write_parquet", lambda _df, key: f"s3://b/{key}")
+    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
+
+    fetched = []
+
+    def fake_fetch(day, hexid, **_kw):
+        fetched.append((hexid, day.isoformat()))
+        return _doc()
+
+    out = routes.run_daily(
+        DAY,
+        targets=["a61c53"],
+        engine=eng,
+        fetch=fake_fetch,
+        include_error_retries=True,
+    )
+    assert set(fetched) == {("a61c53", "2026-06-25"), ("a61c53", "2026-06-20")}
+    assert out["retry_pairs"] == 1 and out["fetched"] == 2
+
+
+def test_run_daily_raises_after_recording_failed_pairs(monkeypatch):
+    import sqlalchemy as sa
+
+    eng = sa.create_engine("sqlite://")
+    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
+
+    import pytest
+    with pytest.raises(RuntimeError, match="remain eligible for retry"):
+        routes.run_daily(
+            DAY,
+            targets=["a61c53"],
+            engine=eng,
+            fetch=lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("boom")),
+            raise_on_errors=True,
+        )
+
+    with eng.begin() as conn:
+        row = conn.execute(sa.text(
+            "SELECT outcome, attempts FROM adsblol_route_attempts WHERE icao24 = 'a61c53'"
+        )).one()
+    assert row.outcome == "error" and row.attempts == 1
 
 
 class _FakeResult:
@@ -439,6 +558,34 @@ def test_route_targets_overlaps_on_either_endpoint():
     assert "icao24 IS NOT NULL" in sql
     assert fake.seen["parameters"] == {"day": DAY.isoformat()}
     assert out == ["a61c53", "abc123"]  # deduped + sorted
+
+
+def test_rooftop_cohort_filters_junk_lowercases_and_sorts():
+    fake = _FakeClient([("b61c53",), ("a61c53",), ("zzzzzz",), ("b61c53",)])
+    out = routes.rooftop_cohort(DAY, client=fake)
+    sql = fake.seen["sql"]
+    assert "FROM bronze.adsb_states" in sql
+    assert "capture_date = %(day)s" in sql
+    assert "hex IS NOT NULL" in sql
+    assert "match(lower(hex), '^[0-9a-f]{6}$')" in sql
+    assert fake.seen["parameters"] == {"day": DAY.isoformat()}
+    # "zzzzzz" isn't a hex digit string -> the Python-side belt drops it even though the fake
+    # client bypasses the SQL match() filter; the rest dedup + sort.
+    assert out == ["a61c53", "b61c53"]
+
+
+def test_rooftop_cohort_closes_its_own_client(monkeypatch):
+    closed = []
+
+    class _ClosingClient(_FakeClient):
+        def close(self):
+            closed.append(True)
+
+    fake = _ClosingClient([("a61c53",)])
+    import include.clickhouse as ch_mod
+    monkeypatch.setattr(ch_mod, "ch_client", lambda: fake)
+    assert routes.rooftop_cohort(DAY) == ["a61c53"]
+    assert closed == [True]
 
 
 def test_routes_sql_reads_reconciled():

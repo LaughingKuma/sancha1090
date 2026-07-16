@@ -1,5 +1,5 @@
 import { S, serverNow } from "./state.js";
-import { RING_NM, AIRPORTS, RUNWAY_PATHS, RUNWAY_ENDS, AMBER, MIL, TEAL } from "./constants.js";
+import { RING_NM, AIRPORTS, RUNWAY_PATHS, RUNWAY_ENDS, AMBER, MIL, TEAL, HISTORY } from "./constants.js";
 import { SIL, CHEV_UP, CHEV_DOWN, zoomMult } from "./silhouettes.js";
 import { LABEL_ZOOM, LABEL_MAX, labelText, shadowPx, SHADOW_DIR } from "./altitude.js";
 import { frameData, metresBetween } from "./motion.js";
@@ -149,6 +149,51 @@ function buildLayers() {
       getLineColor: [...TEAL, 130],
       getLineWidth: 1.3,
       lineWidthUnits: "pixels",
+      parameters: { depthTest: false },
+    }),
+    // clicked recent-sighting's historical fused path (fct_flight_path) — a constant muted-slate dashed ghost,
+    // recessive under the live amber trail so a past journey reads as its own class at a glance
+    new PathLayer({
+      id: "history-path",
+      data: S.histSegments,
+      getPath: (d) => d.path,
+      getColor: [...HISTORY, 150],
+      getWidth: 2,
+      widthUnits: "pixels",
+      capRounded: true,
+      getDashArray: [4, 6], // longer dash than any live layer — dotted-ghost reading, never confused with a wake
+      wrapLongitude: true, // a dateline-crossing segment (adjacent fixes at ±179.9°) must wrap the short way
+      extensions: [new PathStyleExtension({ dash: true })],
+      parameters: { depthTest: false },
+    }),
+    // orphan fixes (no segment either side) as small slate breadcrumbs — an all-sparse path still reads as a
+    // dotted trail, not two lone markers; clearly smaller than the 5px endpoints so start/end still dominate
+    new ScatterplotLayer({
+      id: "history-crumbs",
+      data: S.histCrumbs,
+      getPosition: (d) => d.pos,
+      getRadius: 2.5,
+      radiusUnits: "pixels",
+      stroked: false,
+      filled: true,
+      getFillColor: [...HISTORY, 170],
+      wrapLongitude: true,
+      parameters: { depthTest: false },
+    }),
+    // its endpoints — hollow slate dot at the start, filled at the end, so the trajectory reads as a journey
+    new ScatterplotLayer({
+      id: "history-endpoints",
+      data: S.histMarkers,
+      getPosition: (d) => d.pos,
+      getRadius: 5,
+      radiusUnits: "pixels",
+      stroked: true,
+      filled: true,
+      getFillColor: (d) => (d.filled ? [...HISTORY, 235] : [0, 0, 0, 0]), // filled arrival vs truly-hollow start (transparent, not void-fill)
+      getLineColor: [...HISTORY, 235],
+      getLineWidth: 1.5,
+      lineWidthUnits: "pixels",
+      wrapLongitude: true,
       parameters: { depthTest: false },
     }),
     // selected aircraft's 30-min track — under the wake so the live fade reads on top

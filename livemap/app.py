@@ -68,13 +68,37 @@ TRACK_QUERY = """
 
 # "Where else has it been": one clean source now — the reconciled consensus mart (SP2) carries
 # resolved O/D + endpoint geo + provenance, so no read-time fact_flights/legs UNION or watermark.
+# flight_id is cityHash64 → UInt64; toString keeps it exact (JS Number can't hold it) and keys /path.
 FLIGHTS_QUERY = f"""
     SELECT 'reconciled' AS src, end_time AS ts,
            coalesce(origin_iata, origin_icao) AS o_code, coalesce(origin_city, origin_name) AS o_name,
-           coalesce(dest_iata,   dest_icao)   AS d_code, coalesce(dest_city,   dest_name)   AS d_name, callsign
+           coalesce(dest_iata,   dest_icao)   AS d_code, coalesce(dest_city,   dest_name)   AS d_name, callsign,
+           toString(flight_id) AS flight_id
     FROM {CH_DB}.fct_flights_reconciled
     WHERE icao24 = {{hex:String}} AND is_ladd = 0 AND (origin_icao IS NOT NULL OR dest_icao IS NOT NULL)
     ORDER BY ts DESC LIMIT 10
+"""
+
+# Historical fused trajectory for one reconciled flight; LADD suppression rides the is_ladd=0 subquery
+# (window-aware) so a listed flight yields zero rows — indistinguishable from no-path, no privacy oracle.
+PATH_QUERY = f"""
+    SELECT toUnixTimestamp(ts), lon, lat, alt_ft, source
+    FROM {CH_DB}.fct_flight_path
+    WHERE flight_id = {{fid:UInt64}}
+      AND flight_id IN (
+        SELECT flight_id FROM {CH_DB}.fct_flights_reconciled
+        WHERE flight_id = {{fid:UInt64}} AND is_ladd = 0
+      )
+    ORDER BY ts
+"""
+
+# Cheap authorization lookup runs on every /path click, including geometry-cache hits. This closes
+# both stale-LADD and stale-flight-id windows without giving up the expensive trajectory cache.
+PATH_AUTH_QUERY = f"""
+    SELECT lower(icao24), callsign, is_ladd
+    FROM {CH_DB}.fct_flights_reconciled
+    WHERE flight_id = {{fid:UInt64}}
+    LIMIT 1
 """
 
 @asynccontextmanager
@@ -147,6 +171,15 @@ try:
     FLIGHTS_CACHE_MAX = max(0, int(os.environ.get("LIVEMAP_FLIGHTS_CACHE_MAX", "512")))
 except ValueError:
     FLIGHTS_CACHE_MAX = 512
+
+# /path geometry is expensive but authorization is cheap; only geometry rides this longer cache.
+_path_cache: dict = {}
+PATH_CACHE_TTL_S = float(os.environ.get("LIVEMAP_PATH_CACHE_TTL_S", "900"))
+try:
+    PATH_CACHE_MAX = max(0, int(os.environ.get("LIVEMAP_PATH_CACHE_MAX", "256")))
+except ValueError:
+    PATH_CACHE_MAX = 256
+UINT64_MAX = 2**64 - 1
 
 
 def _rw_rows(sql, params=None, cursor_factory=None):
@@ -258,7 +291,7 @@ def _fetch_flights(hex_: str) -> list:
     finally:
         client.close()
     out = []
-    for src, ts, o_code, o_name, d_code, d_name, callsign in res.result_rows:
+    for src, ts, o_code, o_name, d_code, d_name, callsign, flight_id in res.result_rows:
         out.append({
             "src": src,
             # CH driver returns naive UTC datetimes — pin tzinfo so process TZ can't skew epochs
@@ -266,8 +299,45 @@ def _fetch_flights(hex_: str) -> list:
             "origin": {"code": o_code, "name": o_name},
             "dest": {"code": d_code, "name": d_name},
             "callsign": (callsign or "").strip() or None,
+            # decimal string, not a number: cityHash64 UInt64 overflows JS Number, so it must stay text end-to-end
+            "flight_id": flight_id,
         })
     return out
+
+
+def _ladd_filter_flights(rows, suppress) -> list:
+    # Per-row callsign belt at serve time (around the CH cache): the hex is already cleared upstream, so drop only
+    # rows on a currently-listed callsign — a listing added after the flight escapes the window-scoped mart is_ladd.
+    return [r for r in rows
+            if not _is_ladd_suppressed(None, r.get("callsign"), mv_is_ladd=False, suppress=suppress)]
+
+
+def _valid_flight_id(fid: str) -> bool:
+    # len cap MUST be first — it keeps int() under CPython's 4300-digit str->int limit (which raises ValueError,
+    # and this runs outside the endpoint's try/except). UInt64 max is 20 digits.
+    return len(fid) <= 20 and fid.isascii() and fid.isdigit() and int(fid) <= UINT64_MAX
+
+
+def _fetch_path(flight_id: str) -> list:
+    client = _ch_client()
+    try:
+        res = client.query(PATH_QUERY, parameters={"fid": int(flight_id)})
+    finally:
+        client.close()
+    # lean array-of-arrays mirroring /track: [lon, lat, ts_epoch, alt_ft, source]
+    return [[lon, lat, ts, alt, source] for ts, lon, lat, alt, source in res.result_rows]
+
+
+def _fetch_path_auth(flight_id: str):
+    client = _ch_client()
+    try:
+        res = client.query(PATH_AUTH_QUERY, parameters={"fid": int(flight_id)})
+    finally:
+        client.close()
+    if not res.result_rows:
+        return None
+    icao24, callsign, is_ladd = res.result_rows[0]
+    return icao24, callsign, bool(is_ladd)
 
 
 def _is_ladd_suppressed(hex_, callsign, mv_is_ladd, suppress) -> bool:
@@ -409,10 +479,20 @@ async def track(icao: str) -> JSONResponse:
 async def flights(hex: str) -> JSONResponse:
     # recent origin→dest history from CH; on-click like /track, never polled. CH down → empty, never 500.
     key = hex.lower()
+    # Live-set LADD gate runs per-request around the CH cache (the mart's is_ladd is batch-refreshed): a newly
+    # listed airframe would else keep serving history here while /aircraft, /track, /path already suppress it.
+    suppress = _ladd_suppress
+    # None = suppression never loaded → fail closed for every hex (mirrors /track); empty is indistinguishable
+    # from no-history, so no privacy oracle.
+    if suppress is None:
+        return JSONResponse({"hex": hex, "flights": []})
+    # Requested hex listed right now → empty before we read cache or touch CH, warm cache or not.
+    if _is_ladd_suppressed(key, None, mv_is_ladd=False, suppress=suppress):
+        return JSONResponse({"hex": hex, "flights": []})
     now = time.time()
     hit = _flights_cache.get(key)
     if hit and hit[0] > now:
-        return JSONResponse({"hex": hex, "flights": hit[1]})
+        return JSONResponse({"hex": hex, "flights": _ladd_filter_flights(hit[1], suppress)})
     try:
         rows = await asyncio.to_thread(_fetch_flights, key)
         _flights_cache[key] = (now + FLIGHTS_CACHE_TTL_S, rows)  # cache only successes
@@ -426,7 +506,44 @@ async def flights(hex: str) -> JSONResponse:
         # type name distinguishes a real CH outage from a bug the broad never-500 catch would mask
         print(f"livemap flights fetch failed: {type(exc).__name__}: {exc}", flush=True)
         rows = []
-    return JSONResponse({"hex": hex, "flights": rows})
+    return JSONResponse({"hex": hex, "flights": _ladd_filter_flights(rows, suppress)})
+
+
+@app.get("/path/{flight_id}")
+async def path(flight_id: str) -> JSONResponse:
+    # Suppressed / unknown / missing-table / CH-down all return the same empty shape — never 404/500, no
+    # privacy oracle (mirrors /flights: never raise).
+    if not _valid_flight_id(flight_id):
+        return JSONResponse({"flight_id": flight_id, "points": []})
+    suppress = _ladd_suppress
+    if suppress is None:
+        return JSONResponse({"flight_id": flight_id, "points": []})
+    try:
+        auth = await asyncio.to_thread(_fetch_path_auth, flight_id)
+    except Exception as exc:
+        print(f"livemap path auth failed: {type(exc).__name__}: {exc}", flush=True)
+        return JSONResponse({"flight_id": flight_id, "points": []})
+    if auth is None or _is_ladd_suppressed(
+        auth[0], auth[1], mv_is_ladd=auth[2], suppress=suppress
+    ):
+        return JSONResponse({"flight_id": flight_id, "points": []})
+    now = time.time()
+    hit = _path_cache.get(flight_id)
+    if hit and hit[0] > now:
+        return JSONResponse({"flight_id": flight_id, "points": hit[1]})
+    try:
+        points = await asyncio.to_thread(_fetch_path, flight_id)
+        _path_cache[flight_id] = (now + PATH_CACHE_TTL_S, points)  # immutable settled-day history: cache successes
+        if len(_path_cache) > PATH_CACHE_MAX:
+            # entries only age out on same-key hits, so a many-flight sweep would grow the dict unboundedly
+            for k in [k for k, v in _path_cache.items() if v[0] <= now]:
+                del _path_cache[k]
+            while len(_path_cache) > PATH_CACHE_MAX:
+                del _path_cache[min(_path_cache, key=lambda k: _path_cache[k][0])]
+    except Exception as exc:
+        print(f"livemap path fetch failed: {type(exc).__name__}: {exc}", flush=True)
+        points = []
+    return JSONResponse({"flight_id": flight_id, "points": points})
 
 
 @app.get("/history")
