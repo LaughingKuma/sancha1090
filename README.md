@@ -64,7 +64,7 @@ filed-plan stamp that no in-box source can corroborate.
 
 A second, independent obligation rides the same feed's identity data: the FAA's LADD
 privacy list. Any airframe currently listed is tracked SCD2 in `dim.dim_ladd` (a manual
-monthly pull) and suppressed at display time everywhere the platform serves live or
+weekly pull) and suppressed at display time everywhere the platform serves live or
 historical positions. The livemap's `/aircraft`, `/flights`, and `/track` endpoints all drop
 a listed airframe before it reaches a client, the same way the reconciled mart flags it
 (`is_ladd`) rather than deleting the row. This is the pipeline's own read of a public FAA

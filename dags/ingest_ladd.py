@@ -11,7 +11,8 @@ from airflow.sdk import dag, task
     dag_id="ingest_ladd",
     description="Weekly FAA LADD privacy-list pull (Garage dims/ladd_raw) -> dim.dim_ladd SCD2 (SP3b)",
     start_date=pendulum.datetime(2026, 7, 1, tz="UTC"),
-    # 03:00 JST Tuesday, off-peak and clear of the Monday dim refreshes; the pull itself is a manual monthly upload.
+    # 03:00 JST Tuesday, off-peak and clear of the Monday dim refreshes; the pull itself is a manual weekly
+    # upload (FAA emails the filter file Tuesdays).
     schedule="0 18 * * 1",
     catchup=False,
     max_active_runs=1,

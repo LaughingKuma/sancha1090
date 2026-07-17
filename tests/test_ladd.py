@@ -97,6 +97,99 @@ def test_parse_rejects_header_only_no_valid_registrations():
         ladd.parse_ladd_csv(b"Registration\n' '\n,\n")
 
 
+@pytest.mark.parametrize("first_line", ["identifier", "Call Sign"])
+def test_parse_single_column_unrecognized_or_callsign_header_raises(first_line):
+    # Format is dispatched by FILENAME now, not inferred from content shape — parse_ladd_csv is strictly the
+    # headered parser, so any single-column CSV reaching it treats row 0 as a header. An unrecognized word
+    # ("identifier") and a recognizable callsign header ("Call Sign") both hard-fail the same simple way.
+    with pytest.raises(ValueError, match="no recognizable registration column"):
+        ladd.parse_ladd_csv(f"{first_line}\nZZZ655\n".encode())
+
+
+def test_parse_multi_column_no_reg_header_still_raises():
+    with pytest.raises(ValueError, match="no recognizable registration column"):
+        ladd.parse_ladd_csv(b"owner,city,state\nSomeone,Reno,NV\nOther,City,CA\n")
+
+
+# --- Public headerless "Industry filter" parser (FAA-native format, dispatched by filename) ---------------------
+# Invented identities only — N12345/N54321/2FAKE/ZZZ123/etc. are fabricated for these fixtures, never copied from
+# a real FAA file (it's a privacy list).
+
+def test_industry_filter_rejects_empty_file():
+    with pytest.raises(ValueError, match="empty"):
+        ladd.parse_ladd_industry_filter(b"")
+
+
+def test_industry_filter_parses_mixed_single_column_crlf():
+    csv_bytes = b"N12345\r\nZZZ123\r\n2FAKE\r\n"
+    rows = ladd.parse_ladd_industry_filter(csv_bytes)
+    by_reg = {r["registration"]: r for r in rows}
+    assert set(by_reg) == {"N12345", "ZZZ123", "2FAKE"}
+    # row 0 is ALWAYS data here — no header sniffing at all — so N12345 must survive
+    assert by_reg["N12345"] == {"registration": "N12345", "callsign": "N12345"}
+
+
+def test_industry_filter_n_shaped_value_keys_registration_with_matching_callsign():
+    rows = ladd.parse_ladd_industry_filter(b"N54321\r\nZZZ999\r\n")
+    assert {"registration": "N54321", "callsign": "N54321"} in rows
+
+
+@pytest.mark.parametrize("callsign", ["2FAKE", "ZZZ123", "ZZZ655", "FFL123"])
+def test_industry_filter_non_n_values_become_callsign_keyed_not_n_prefixed(callsign):
+    rows = ladd.parse_ladd_industry_filter(f"{callsign}\r\nN99999\r\n".encode())
+    by_reg = {r["registration"]: r for r in rows}
+    assert callsign in by_reg                        # keyed by the bare value, never N-prefixed
+    assert by_reg[callsign] == {"registration": callsign, "callsign": callsign}
+
+
+def test_industry_filter_tolerates_blank_lines_and_dedups_case_and_whitespace():
+    csv_bytes = b"\r\n' n12345 '\r\nN12345\r\n\r\nZZZ123\r\n"
+    rows = ladd.parse_ladd_industry_filter(csv_bytes)
+    regs = sorted(r["registration"] for r in rows)
+    assert regs == ["N12345", "ZZZ123"]               # blank/quoted/lowercase dupe collapsed into N12345 once
+
+
+def test_industry_filter_all_blank_raises():
+    with pytest.raises(ValueError, match="no valid identities"):
+        ladd.parse_ladd_industry_filter(b"\r\n\r\n' '\r\n")
+
+
+def test_industry_filter_junk_only_raises():
+    # An N/A-style placeholder or stray punctuation must never become a suppression identity.
+    with pytest.raises(ValueError, match="no valid identities"):
+        ladd.parse_ladd_industry_filter(b"N/A\r\n---\r\nUNKNOWN!\r\n")
+
+
+def test_industry_filter_mixed_file_skips_junk_line_keeps_valid():
+    csv_bytes = b"N12345\r\nN/A\r\nZZZ123\r\n"
+    rows = ladd.parse_ladd_industry_filter(csv_bytes)
+    regs = sorted(r["registration"] for r in rows)
+    assert regs == ["N12345", "ZZZ123"]               # N/A dropped, valid identities kept
+
+
+def test_industry_filter_multi_field_row_raises():
+    # The native format is one identity per line, no commas at all — a multi-field row means the file
+    # isn't what its filename claims. Must fail loud, not silently discard the extra field.
+    with pytest.raises(ValueError, match="row 1 has 2 fields"):
+        ladd.parse_ladd_industry_filter(b"N12345,EXTRA\r\nZZZ123\r\n")
+
+
+def test_industry_filter_multi_field_row_raises_even_if_every_other_row_valid():
+    with pytest.raises(ValueError, match="row 2 has 2 fields"):
+        ladd.parse_ladd_industry_filter(b"N12345\r\nZZZ123,EXTRA\r\nN99999\r\n")
+
+
+def test_industry_filter_lone_comma_row_raises():
+    with pytest.raises(ValueError, match="row 1 has 2 fields"):
+        ladd.parse_ladd_industry_filter(b",\r\nN12345\r\n")
+
+
+def test_industry_filter_truly_blank_rows_still_tolerated():
+    # A bare CRLF line is zero fields ([]), not a violation — distinct from a multi-field row.
+    rows = ladd.parse_ladd_industry_filter(b"\r\nN12345\r\n\r\nZZZ123\r\n")
+    assert sorted(r["registration"] for r in rows) == ["N12345", "ZZZ123"]
+
+
 # --- FAA registry hex resolution -------------------------------------------------------------------------------
 
 _MASTER = (
@@ -249,6 +342,17 @@ def test_check_mass_close_guard():
         ladd.check_mass_close(n_open=100, n_removed=51)
 
 
+def test_check_duplicate_dates_guard():
+    ladd.check_duplicate_dates([{"list_date": D1, "key": "a"}, {"list_date": D2, "key": "b"}])   # distinct dates
+    ladd.check_duplicate_dates([{"list_date": D1, "key": "a"}])                                    # single file
+    key1 = "dims/ladd_raw/IndustryLADD-2026-06-01.csv"
+    key2 = "dims/ladd_raw/LADD_Industry_Filter_CUI_SP_PRVCY_20260601.txt"
+    with pytest.raises(ValueError) as excinfo:
+        ladd.check_duplicate_dates([{"list_date": D1, "key": key1}, {"list_date": D1, "key": key2}])
+    msg = str(excinfo.value)
+    assert str(D1) in msg and key1 in msg and key2 in msg     # names the date and both colliding keys
+
+
 # --- Freshness decision ----------------------------------------------------------------------------------------
 
 def test_freshness_never_loaded_skips():
@@ -257,15 +361,36 @@ def test_freshness_never_loaded_skips():
 
 def test_freshness_boundary_ok_then_fail():
     today = date(2026, 7, 9)
-    assert ladd.freshness_decision(date(2026, 6, 29), today, max_age_days=40)[0] == "ok"      # 10d old
+    assert ladd.freshness_decision(date(2026, 6, 29), today, max_age_days=21)[0] == "ok"      # 10d old
     assert ladd.freshness_decision(today, today, max_age_days=0)[0] == "ok"                    # exactly at limit
     assert ladd.freshness_decision(date(2026, 6, 28), today, max_age_days=10)[0] == "fail"     # 11d > 10d
+
+
+def test_freshness_default_sla_is_21_days():
+    # Amit's SLA decision: 21d = 3 missed weekly FAA emails.
+    today = date(2026, 7, 22)
+    assert ladd.freshness_decision(date(2026, 7, 1), today) == ("ok", "newest LADD list is 21d old")
+    assert ladd.freshness_decision(date(2026, 6, 30), today)[0] == "fail"                      # 22d > 21d
 
 
 def test_parse_list_date_filename_convention():
     assert ladd.parse_list_date("IndustryLADD-2026-07-03.csv") == date(2026, 7, 3)
     assert ladd.parse_list_date("something-else.csv") is None
     assert ladd.parse_list_date("IndustryLADD-2026-13-40.csv") is None    # not a real calendar date
+
+
+def test_parse_list_date_accepts_faa_native_filename():
+    # FAA's own weekly distribution name, accepted as-received — no manual rename step needed.
+    assert ladd.parse_list_date("LADD_Industry_Filter_CUI_SP_PRVCY_20260703.txt") == date(2026, 7, 3)
+    assert ladd.parse_list_date("LADD_Industry_Filter_CUI_SP_PRVCY_20261399.txt") is None  # not a real date
+    assert ladd.parse_list_date("some_other_file_20260703.txt") is None
+
+
+def test_classify_ladd_filename_returns_format_tag():
+    # The filename IS the format signal the loader dispatches on — pin the (date, tag) contract directly.
+    assert ladd._classify_ladd_filename("IndustryLADD-2026-07-03.csv") == (date(2026, 7, 3), "legacy")
+    assert ladd._classify_ladd_filename("LADD_Industry_Filter_CUI_SP_PRVCY_20260703.txt") == (date(2026, 7, 3), "native")
+    assert ladd._classify_ladd_filename("something-else.csv") == (None, None)
 
 
 # --- End-to-end orchestration over fakes (RMT-FINAL semantics emulated) ----------------------------------------
@@ -334,6 +459,17 @@ def _wire(monkeypatch, client, files, registry=None):
     monkeypatch.setattr(ladd, "download_registry_index", lambda: registry or {})
 
 
+def test_list_ladd_objects_tags_format():
+    fs = _FakeFs({
+        "sancha1090/dims/ladd_raw/IndustryLADD-2026-06-01.csv": b"x",
+        "sancha1090/dims/ladd_raw/LADD_Industry_Filter_CUI_SP_PRVCY_20260701.txt": b"x",
+        "sancha1090/dims/ladd_raw/unrelated.txt": b"x",       # no date match -> excluded entirely
+    })
+    objs = ladd._list_ladd_objects(fs, "sancha1090")
+    by_date = {o["list_date"]: o["format"] for o in objs}
+    assert by_date == {date(2026, 6, 1): "legacy", date(2026, 7, 1): "native"}
+
+
 def test_load_noop_when_prefix_empty(monkeypatch):
     client = _FakeClient()
     _wire(monkeypatch, client, files={})
@@ -392,6 +528,45 @@ def test_load_fails_loud_on_malformed_file(monkeypatch):
     _wire(monkeypatch, client, files={key: b"owner,city\nSomeone,Reno\n"})
     with pytest.raises(ValueError, match="no recognizable registration column"):
         ladd.load_ladd_pulls_to_ch()
+
+
+def test_load_dispatches_native_filename_to_headerless_parser(monkeypatch):
+    key = "sancha1090/dims/ladd_raw/LADD_Industry_Filter_CUI_SP_PRVCY_20260601.txt"
+    client = _FakeClient()
+    _wire(monkeypatch, client, files={key: b"N12345\r\nZZZ123\r\n"})
+    res = ladd.load_ladd_pulls_to_ch()
+    assert res == {"files": 1, "opened": 2, "closed": 0, "ok": True}
+    assert {r[0] for r in client._open_intervals()} == {"N12345", "ZZZ123"}
+
+
+def test_load_legacy_filename_with_headerless_content_fails_loud(monkeypatch):
+    # A legacy-named object always goes through the strict header parser — headerless content (no
+    # recognizable registration column) must fail loud, not silently succeed via shape inference.
+    key = "sancha1090/dims/ladd_raw/IndustryLADD-2026-06-01.csv"
+    client = _FakeClient()
+    _wire(monkeypatch, client, files={key: b"N12345\r\nZZZ123\r\n"})
+    with pytest.raises(ValueError, match="no recognizable registration column"):
+        ladd.load_ladd_pulls_to_ch()
+
+
+def test_load_native_filename_with_multi_field_row_fails_loud_nothing_applied(monkeypatch):
+    key = "sancha1090/dims/ladd_raw/LADD_Industry_Filter_CUI_SP_PRVCY_20260601.txt"
+    client = _FakeClient()
+    _wire(monkeypatch, client, files={key: b"N12345,EXTRA\r\nZZZ123\r\n"})
+    with pytest.raises(ValueError, match="row 1 has 2 fields"):
+        ladd.load_ladd_pulls_to_ch()
+    assert client._ladd == [] and client._pulls == []   # nothing applied
+
+
+def test_load_fails_loud_on_duplicate_list_date(monkeypatch):
+    # A renamed legacy file and the FAA-native file landing for the SAME date must never both apply.
+    key1 = "sancha1090/dims/ladd_raw/IndustryLADD-2026-06-01.csv"
+    key2 = "sancha1090/dims/ladd_raw/LADD_Industry_Filter_CUI_SP_PRVCY_20260601.txt"
+    client = _FakeClient()
+    _wire(monkeypatch, client, files={key1: b"Registration\nN1AA\n", key2: b"Registration\nN1AB\n"})
+    with pytest.raises(ValueError, match="multiple files for the same list_date"):
+        ladd.load_ladd_pulls_to_ch()
+    assert client._ladd == [] and client._pulls == []   # nothing applied — fails loud before any _apply_list
 
 
 def test_freshness_ch_reads_newest(monkeypatch):

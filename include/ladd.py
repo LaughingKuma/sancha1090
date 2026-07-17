@@ -164,7 +164,52 @@ def _normalize_callsign(raw: Optional[str]) -> Optional[str]:
     return c or None
 
 
+_BARE_IDENTITY_RE = re.compile(r"^[A-Z0-9]+$")
+
+
+def _normalize_bare(raw: Optional[str]) -> Optional[str]:
+    # Same trim/de-quote/uppercase as _normalize_registration but no N-prefixing — a bare callsign like "2FAKE"
+    # must never be mistaken for a digit-leading US tail. \s also eats stray non-breaking spaces (\xa0).
+    v = re.sub(r"\s+", "", (raw or "").strip().strip("'\"").upper())
+    return v if v and _BARE_IDENTITY_RE.match(v) else None
+
+
+def _parse_ladd_industry_filter(rows: list[list[str]]) -> list[dict]:
+    # N-shaped and bare-callsign lines get the identical shape: callsign=value keeps hex-OR-callsign
+    # suppression alive for both (registration here is only the SCD2 key); which lines are N-shaped only
+    # matters later, in resolve_icao24.
+    out: dict[str, dict] = {}
+    for i, row in enumerate(rows, start=1):
+        if len(row) > 1:
+            # The FAA native format is one identity per line, no commas at all — a multi-field row (even with
+            # only blank extra fields) means the file isn't what its filename claims; fail loud rather than
+            # silently discard fields. A blank line (len 0) is still tolerated padding, not a violation.
+            raise ValueError(f"LADD file row {i} has {len(row)} fields (expected 1): {row!r}")
+        val = _normalize_bare(row[0]) if row else None
+        if not val:
+            continue
+        out.setdefault(val, {"registration": val, "callsign": val})
+    return list(out.values())
+
+
+def parse_ladd_industry_filter(data: bytes) -> list[dict]:
+    # Public bytes-level entry point for the FAA-native "Industry filter" format: headerless, single column,
+    # CRLF, one N-number or bare callsign per line. Row 0 is ALWAYS data — the loader dispatches to this
+    # function purely on the object's filename (the FAA-native convention), never by sniffing file shape.
+    text = data.decode("utf-8-sig", errors="replace")
+    rows = list(csv.reader(io.StringIO(text)))
+    if not rows:
+        raise ValueError("LADD file is empty")
+    out = _parse_ladd_industry_filter(rows)
+    if not out:
+        raise ValueError("LADD file looks like a headerless identity list but has no valid identities")
+    return out
+
+
 def parse_ladd_csv(data: bytes) -> list[dict]:
+    # Strictly the headered parser — the legacy IndustryLADD- filename convention only. No shape inference:
+    # a single-column file reaching here (whatever its first line says) is treated as headered, since the
+    # loader only ever routes here for objects whose NAME matched the legacy convention.
     text = data.decode("utf-8-sig", errors="replace")
     rows = list(csv.reader(io.StringIO(text)))
     if not rows:
@@ -287,7 +332,7 @@ def scd2_plan(list_date: date, new_rows: list[dict], open_rows: list[dict]) -> d
 
 
 def check_mass_close(n_open: int, n_removed: int, min_open: int = 20) -> None:
-    # A monthly privacy list never legitimately sheds most of its members at once — a plan that removes >half of
+    # A weekly privacy list never legitimately sheds most of its members at once — a plan that removes >half of
     # the open intervals means partial corruption or a wrongly-sniffed column. The floor avoids tripping during
     # early small-dim adoption. Pure so the load path can gate on it before touching ClickHouse.
     if n_open >= min_open and n_removed * 2 > n_open:
@@ -296,9 +341,24 @@ def check_mass_close(n_open: int, n_removed: int, min_open: int = 20) -> None:
         )
 
 
+def check_duplicate_dates(pending: list[dict]) -> None:
+    # One authoritative file per list date: the legacy IndustryLADD- name and FAA's native filename could both
+    # land for the same date, and applying both in one run would produce order-dependent same-day interval
+    # churn. Pure so the load path can gate on it before touching ClickHouse, same as check_mass_close.
+    by_date: dict[date, list[str]] = {}
+    for o in pending:
+        by_date.setdefault(o["list_date"], []).append(o["key"])
+    dupes = {d: keys for d, keys in by_date.items() if len(keys) > 1}
+    if dupes:
+        detail = "; ".join(f"{d}: {keys!r}" for d, keys in sorted(dupes.items()))
+        raise ValueError(f"LADD pull has multiple files for the same list_date — refusing ({detail})")
+
+
 # --- Freshness decision (pure) --------------------------------------------------------------------------------
 
-def freshness_decision(newest_list_date: Optional[date], today: date, max_age_days: int = 40) -> tuple[str, str]:
+def freshness_decision(newest_list_date: Optional[date], today: date, max_age_days: int = 21) -> tuple[str, str]:
+    # 21d = 3 missed weekly FAA emails; sized to tolerate a vacation/out-of-cycle gap without failing on the
+    # very first miss, while still catching a genuinely broken channel well before it goes stale for a month.
     if newest_list_date is None:
         return "skip", "dim.dim_ladd has never been loaded — no LADD pull yet"
     age = (today - newest_list_date).days
@@ -313,17 +373,32 @@ _DIM_LADD = "dim.dim_ladd"
 _LADD_PULLS = "dim.ladd_pulls"
 _LADD_PREFIX = "dims/ladd_raw"
 _LADD_FILE_RE = re.compile(r"IndustryLADD-(\d{4}-\d{2}-\d{2})\.csv$")
+# FAA distributes the weekly Industry filter pull under this exact native name; accepting it as-received
+# removes a manual rename step per pull.
+_LADD_FAA_NATIVE_RE = re.compile(r"LADD_Industry_Filter_CUI_SP_PRVCY_(\d{8})\.txt$")
 _LADD_COLS = ["registration", "callsign", "icao24", "valid_from", "valid_to"]
 
 
+def _classify_ladd_filename(name: str) -> tuple[Optional[date], Optional[str]]:
+    # The Garage prefix listing only ever admits these two known conventions — the filename itself IS the
+    # format signal, so the loader dispatches the parser off this tag instead of inferring shape from content.
+    name = name or ""
+    for pattern, fmt, tag in (
+        (_LADD_FILE_RE, "%Y-%m-%d", "legacy"),
+        (_LADD_FAA_NATIVE_RE, "%Y%m%d", "native"),
+    ):
+        m = pattern.search(name)
+        if not m:
+            continue
+        try:
+            return datetime.strptime(m.group(1), fmt).date(), tag
+        except ValueError:
+            return None, None
+    return None, None
+
+
 def parse_list_date(name: str) -> Optional[date]:
-    m = _LADD_FILE_RE.search(name or "")
-    if not m:
-        return None
-    try:
-        return datetime.strptime(m.group(1), "%Y-%m-%d").date()
-    except ValueError:
-        return None
+    return _classify_ladd_filename(name)[0]
 
 
 def _list_ladd_objects(fs, bucket: str) -> list[dict]:
@@ -331,12 +406,11 @@ def _list_ladd_objects(fs, bucket: str) -> list[dict]:
         keys = fs.find(f"{bucket}/{_LADD_PREFIX}")
     except FileNotFoundError:
         return []
-    out = [
-        {"list_date": d, "uri": f"s3://{k}", "key": k}
-        for k in keys
-        for d in (parse_list_date(k.rsplit("/", 1)[-1]),)
-        if d is not None
-    ]
+    out = []
+    for k in keys:
+        d, fmt = _classify_ladd_filename(k.rsplit("/", 1)[-1])
+        if d is not None:
+            out.append({"list_date": d, "uri": f"s3://{k}", "key": k, "format": fmt})
     out.sort(key=lambda r: r["list_date"])
     return out
 
@@ -381,6 +455,7 @@ def load_ladd_pulls_to_ch() -> dict:
         pending = [o for o in objects if o["list_date"] not in seen]
         if not pending:
             return {"files": 0, "opened": 0, "closed": 0, "ok": True}
+        check_duplicate_dates(pending)   # fail loud before any _apply_list — nothing applied on a collision
         # Registry download is best-effort: the deterministic algorithm still resolves standard US tails.
         try:
             registry = download_registry_index()
@@ -389,7 +464,10 @@ def load_ladd_pulls_to_ch() -> dict:
             registry = {}
         opened = closed = files = 0
         for o in pending:
-            rows = parse_ladd_csv(fs.cat_file(o["key"]))   # raises on a no-identity file → fail loud
+            # Dispatch by the filename convention that was already recorded at listing time — never by
+            # re-inspecting file content/shape.
+            parser = parse_ladd_industry_filter if o["format"] == "native" else parse_ladd_csv
+            rows = parser(fs.cat_file(o["key"]))   # raises on a no-identity/malformed file → fail loud
             for r in rows:
                 r["icao24"], r["icao24_from_registry"] = resolve_icao24(r["registration"], registry)
             res = _apply_list(client, o["list_date"], rows, o["uri"])
@@ -401,7 +479,7 @@ def load_ladd_pulls_to_ch() -> dict:
         client.close()
 
 
-def ladd_freshness_ch(today: Optional[date] = None, max_age_days: int = 40) -> tuple[str, str]:
+def ladd_freshness_ch(today: Optional[date] = None, max_age_days: int = 21) -> tuple[str, str]:
     from include.clickhouse import ch_client
 
     client = ch_client()

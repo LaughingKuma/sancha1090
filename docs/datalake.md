@@ -1021,11 +1021,13 @@ are exempt by construction (canary-pinned in the test suite).
 
 - **Grain:** one open-or-closed interval per `(registration, valid_from)` —
   `ReplacingMergeTree(_version)`; read with `FINAL` for current state.
-- **Source:** a manual monthly IndustryLADD CSV upload to Garage
-  (`dims/ladd_raw/IndustryLADD-YYYY-MM-DD.csv`), pulled weekly by `ingest_ladd`. Each
-  registration resolves to a hex via the FAA registry (`ReleasableAircraft.zip`, best-effort
-  download) falling back to the deterministic N-number↔hex algorithm (`include/ladd.py`) for
-  anything the registry download misses or fails to fetch.
+- **Source:** a manual weekly IndustryLADD upload to Garage — FAA's native filename
+  `dims/ladd_raw/LADD_Industry_Filter_CUI_SP_PRVCY_YYYYMMDD.txt` is the primary accepted
+  name (the legacy `IndustryLADD-YYYY-MM-DD.csv` naming is still accepted), loaded by
+  `ingest_ladd`. Each registration resolves to a hex via the FAA registry
+  (`ReleasableAircraft.zip`, best-effort download) falling back to the deterministic
+  N-number↔hex algorithm (`include/ladd.py`) for anything the registry download misses
+  or fails to fetch.
 - **Notes:** an **open** interval (`valid_to IS NULL`) is the currently-listed state — the only
   thing the live suppression surfaces (livemap) check. A **closed** interval (a registration that
   dropped off a later list) still protects any historical row that fell inside its window —
@@ -1048,7 +1050,7 @@ are exempt by construction (canary-pinned in the test suite).
   `FINAL`.
 - **Purpose:** idempotency (a same-date re-run's unseen-file gate reads this) and the freshness
   guard `ingest_ladd` runs after every load — SKIP if `dim.dim_ladd` has never been loaded, FAIL
-  if the newest pull is older than the SLA (40 days).
+  if the newest pull is older than the SLA (21 days).
 
 | Column | Type | Meaning |
 |--------|------|---------|

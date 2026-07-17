@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS dim.dim_ladd
 ENGINE = ReplacingMergeTree(_version)
 ORDER BY (registration, valid_from);
 
--- ladd_pulls — processed monthly lists so a same-date re-run is idempotent (the unseen-file gate reads this).
+-- ladd_pulls — processed weekly lists so a same-date re-run is idempotent (the unseen-file gate reads this).
 CREATE TABLE IF NOT EXISTS dim.ladd_pulls
 (
     list_date   Date,
