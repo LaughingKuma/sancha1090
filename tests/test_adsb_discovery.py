@@ -27,10 +27,16 @@ class FakeFS:
         return self.store[key]
 
 
-def _manifest_bytes(filename: str, stream: str, **extra) -> bytes:
+def _manifest_bytes(
+    filename: str, stream: str,
+    process_uuid: str = "5f3b0bb5-7da1-48d5-be0c-9cff1808a86f",
+    process_start_ts: str = "2026-05-29T00:00:00Z",
+    **extra,
+) -> bytes:
     base = {
         "filename": filename, "stream": stream, "complete": True,
-        "hostname": "sangenjaya-edge", "process_uuid": "5f3b0bb5-7da1-48d5-be0c-9cff1808a86f",
+        "hostname": "sangenjaya-edge", "process_uuid": process_uuid,
+        "process_start_ts": process_start_ts,
         "rotation_start_ts": "2026-05-29T00:00:00Z", "rotation_end_ts": "2026-05-29T01:00:00Z",
         "schema_version": 1,
     }
@@ -102,6 +108,231 @@ def test_skips_manifest_not_marked_complete():
             f"{stem}.parquet", "adsb_state", complete=False, row_count=1),
     })
     assert list(ad.list_remote_bundles(fs, BUCKET)) == []
+
+
+def test_superseded_partial_from_dead_process_is_yielded():
+    # A newer process completing a rotation proves the old writer died — its partial is final.
+    partial_stem = "sangenjaya-edge_adsb_state_2026-05-29T09_partial"
+    complete_stem = "sangenjaya-edge_adsb_state_2026-05-29T10_complete"
+    store = {
+        _key("adsb_state", f"{partial_stem}.parquet"): b"X",
+        _key("adsb_state", f"{partial_stem}.manifest.json"): _manifest_bytes(
+            f"{partial_stem}.parquet", "adsb_state", process_uuid="uuid-A",
+            process_start_ts="2026-05-29T09:00:00Z", complete=False, row_count=100),
+        _key("adsb_state", f"{complete_stem}.parquet"): b"Y",
+        _key("adsb_state", f"{complete_stem}.manifest.json"): _manifest_bytes(
+            f"{complete_stem}.parquet", "adsb_state", process_uuid="uuid-B",
+            process_start_ts="2026-05-29T10:00:00Z", row_count=200),
+    }
+    fs = FakeFS(store)
+    filenames = {b.filename for b in ad.list_remote_bundles(fs, BUCKET)}
+    assert filenames == {f"{partial_stem}.parquet", f"{complete_stem}.parquet"}
+
+
+def test_partial_from_newest_process_not_yielded():
+    # Live in-progress case: no complete bundle is newer, so the partial can't be proven dead.
+    complete_stem = "sangenjaya-edge_adsb_state_2026-05-29T09_complete"
+    partial_stem = "sangenjaya-edge_adsb_state_2026-05-29T10_partial"
+    store = {
+        _key("adsb_state", f"{complete_stem}.parquet"): b"X",
+        _key("adsb_state", f"{complete_stem}.manifest.json"): _manifest_bytes(
+            f"{complete_stem}.parquet", "adsb_state", process_uuid="uuid-B",
+            process_start_ts="2026-05-29T09:00:00Z", row_count=100),
+        _key("adsb_state", f"{partial_stem}.parquet"): b"Y",
+        _key("adsb_state", f"{partial_stem}.manifest.json"): _manifest_bytes(
+            f"{partial_stem}.parquet", "adsb_state", process_uuid="uuid-A",
+            process_start_ts="2026-05-29T10:00:00Z", complete=False, row_count=200),
+    }
+    fs = FakeFS(store)
+    filenames = {b.filename for b in ad.list_remote_bundles(fs, BUCKET)}
+    assert filenames == {f"{complete_stem}.parquet"}
+
+
+def test_partial_same_uuid_as_complete_not_yielded():
+    # An unflipped-manifest producer bug (same process, still marked incomplete) must stay
+    # visible to the gate, not silently ingested.
+    partial_stem = "sangenjaya-edge_adsb_state_2026-05-29T09_partial"
+    complete_stem = "sangenjaya-edge_adsb_state_2026-05-29T10_complete"
+    store = {
+        _key("adsb_state", f"{partial_stem}.parquet"): b"X",
+        _key("adsb_state", f"{partial_stem}.manifest.json"): _manifest_bytes(
+            f"{partial_stem}.parquet", "adsb_state", process_uuid="uuid-A",
+            process_start_ts="2026-05-29T09:00:00Z", complete=False, row_count=100),
+        _key("adsb_state", f"{complete_stem}.parquet"): b"Y",
+        _key("adsb_state", f"{complete_stem}.manifest.json"): _manifest_bytes(
+            f"{complete_stem}.parquet", "adsb_state", process_uuid="uuid-A",
+            process_start_ts="2026-05-29T10:00:00Z", row_count=200),
+    }
+    fs = FakeFS(store)
+    filenames = {b.filename for b in ad.list_remote_bundles(fs, BUCKET)}
+    assert filenames == {f"{complete_stem}.parquet"}
+
+
+def test_beast_complete_does_not_supersede_adsb_partial():
+    # Cross-stream isolation: a beast_raw completion says nothing about the adsb_state writer.
+    partial_stem = "sangenjaya-edge_adsb_state_2026-05-29T09_partial"
+    store = {
+        _key("adsb_state", f"{partial_stem}.parquet"): b"X",
+        _key("adsb_state", f"{partial_stem}.manifest.json"): _manifest_bytes(
+            f"{partial_stem}.parquet", "adsb_state", process_uuid="uuid-A",
+            process_start_ts="2026-05-29T09:00:00Z", complete=False, row_count=100),
+        **_complete_beast_store(),
+    }
+    fs = FakeFS(store)
+    filenames = {b.filename for b in ad.list_remote_bundles(fs, BUCKET)}
+    assert f"{partial_stem}.parquet" not in filenames
+    assert any(f.endswith(".beast.gz") for f in filenames)
+
+
+def test_superseded_partial_missing_data_file_not_yielded():
+    # Superseded-by-identity still must clear the ordinary integrity guards.
+    partial_stem = "sangenjaya-edge_adsb_state_2026-05-29T09_partial"
+    complete_stem = "sangenjaya-edge_adsb_state_2026-05-29T10_complete"
+    store = {
+        # no parquet for the partial — data never landed.
+        _key("adsb_state", f"{partial_stem}.manifest.json"): _manifest_bytes(
+            f"{partial_stem}.parquet", "adsb_state", process_uuid="uuid-A",
+            process_start_ts="2026-05-29T09:00:00Z", complete=False, row_count=100),
+        _key("adsb_state", f"{complete_stem}.parquet"): b"Y",
+        _key("adsb_state", f"{complete_stem}.manifest.json"): _manifest_bytes(
+            f"{complete_stem}.parquet", "adsb_state", process_uuid="uuid-B",
+            process_start_ts="2026-05-29T10:00:00Z", row_count=200),
+    }
+    fs = FakeFS(store)
+    filenames = {b.filename for b in ad.list_remote_bundles(fs, BUCKET)}
+    assert filenames == {f"{complete_stem}.parquet"}
+
+
+def test_partial_without_start_ts_not_yielded():
+    partial_stem = "sangenjaya-edge_adsb_state_2026-05-29T09_partial"
+    complete_stem = "sangenjaya-edge_adsb_state_2026-05-29T10_complete"
+    store = {
+        _key("adsb_state", f"{partial_stem}.parquet"): b"X",
+        _key("adsb_state", f"{partial_stem}.manifest.json"): _manifest_bytes(
+            f"{partial_stem}.parquet", "adsb_state", process_uuid="uuid-A",
+            process_start_ts=None, complete=False, row_count=100),
+        _key("adsb_state", f"{complete_stem}.parquet"): b"Y",
+        _key("adsb_state", f"{complete_stem}.manifest.json"): _manifest_bytes(
+            f"{complete_stem}.parquet", "adsb_state", process_uuid="uuid-B",
+            process_start_ts="2026-05-29T10:00:00Z", row_count=200),
+    }
+    fs = FakeFS(store)
+    filenames = {b.filename for b in ad.list_remote_bundles(fs, BUCKET)}
+    assert filenames == {f"{complete_stem}.parquet"}
+
+
+def test_all_complete_without_start_ts_partial_not_yielded():
+    partial_stem = "sangenjaya-edge_adsb_state_2026-05-29T09_partial"
+    complete_stem = "sangenjaya-edge_adsb_state_2026-05-29T10_complete"
+    store = {
+        _key("adsb_state", f"{partial_stem}.parquet"): b"X",
+        _key("adsb_state", f"{partial_stem}.manifest.json"): _manifest_bytes(
+            f"{partial_stem}.parquet", "adsb_state", process_uuid="uuid-A",
+            process_start_ts="2026-05-29T09:00:00Z", complete=False, row_count=100),
+        _key("adsb_state", f"{complete_stem}.parquet"): b"Y",
+        _key("adsb_state", f"{complete_stem}.manifest.json"): _manifest_bytes(
+            f"{complete_stem}.parquet", "adsb_state", process_uuid="uuid-B",
+            process_start_ts=None, row_count=200),
+    }
+    fs = FakeFS(store)
+    filenames = {b.filename for b in ad.list_remote_bundles(fs, BUCKET)}
+    assert filenames == {f"{complete_stem}.parquet"}
+
+
+def test_partial_with_naive_start_ts_not_yielded_no_exception():
+    # A naive timestamp (producer bug, missing Z/offset) must not TypeError against an aware
+    # peer — one malformed manifest can't be allowed to kill the whole discovery generator.
+    partial_stem = "sangenjaya-edge_adsb_state_2026-07-12T06_partial"
+    complete_stem = "sangenjaya-edge_adsb_state_2026-07-12T10_complete"
+    store = {
+        _key("adsb_state", f"{partial_stem}.parquet"): b"X",
+        _key("adsb_state", f"{partial_stem}.manifest.json"): _manifest_bytes(
+            f"{partial_stem}.parquet", "adsb_state", process_uuid="uuid-A",
+            process_start_ts="2026-07-12T06:00:00", complete=False, row_count=100),
+        _key("adsb_state", f"{complete_stem}.parquet"): b"Y",
+        _key("adsb_state", f"{complete_stem}.manifest.json"): _manifest_bytes(
+            f"{complete_stem}.parquet", "adsb_state", process_uuid="uuid-B",
+            process_start_ts="2026-07-12T10:00:00Z", row_count=200),
+    }
+    fs = FakeFS(store)
+    filenames = {b.filename for b in ad.list_remote_bundles(fs, BUCKET)}
+    assert filenames == {f"{complete_stem}.parquet"}
+
+
+def test_partial_with_missing_process_uuid_not_yielded():
+    # No identity on the partial means no proof-of-death, regardless of timestamps.
+    partial_stem = "sangenjaya-edge_adsb_state_2026-05-29T09_partial"
+    complete_stem = "sangenjaya-edge_adsb_state_2026-05-29T10_complete"
+    store = {
+        _key("adsb_state", f"{partial_stem}.parquet"): b"X",
+        _key("adsb_state", f"{partial_stem}.manifest.json"): _manifest_bytes(
+            f"{partial_stem}.parquet", "adsb_state", process_uuid=None,
+            process_start_ts="2026-05-29T09:00:00Z", complete=False, row_count=100),
+        _key("adsb_state", f"{complete_stem}.parquet"): b"Y",
+        _key("adsb_state", f"{complete_stem}.manifest.json"): _manifest_bytes(
+            f"{complete_stem}.parquet", "adsb_state", process_uuid="uuid-B",
+            process_start_ts="2026-05-29T10:00:00Z", row_count=200),
+    }
+    fs = FakeFS(store)
+    filenames = {b.filename for b in ad.list_remote_bundles(fs, BUCKET)}
+    assert filenames == {f"{complete_stem}.parquet"}
+
+
+def test_partial_with_non_string_start_ts_not_yielded_no_exception():
+    # fromisoformat raises TypeError (not ValueError) on a non-string; a JSON number/array/object
+    # is truthy so it clears the `if not value` guard and must still be treated as unparseable.
+    partial_stem = "sangenjaya-edge_adsb_state_2026-05-29T09_partial"
+    complete_stem = "sangenjaya-edge_adsb_state_2026-05-29T10_complete"
+    store = {
+        _key("adsb_state", f"{partial_stem}.parquet"): b"X",
+        _key("adsb_state", f"{partial_stem}.manifest.json"): _manifest_bytes(
+            f"{partial_stem}.parquet", "adsb_state", process_uuid="uuid-A",
+            process_start_ts=123, complete=False, row_count=100),
+        _key("adsb_state", f"{complete_stem}.parquet"): b"Y",
+        _key("adsb_state", f"{complete_stem}.manifest.json"): _manifest_bytes(
+            f"{complete_stem}.parquet", "adsb_state", process_uuid="uuid-B",
+            process_start_ts="2026-05-29T10:00:00Z", row_count=200),
+    }
+    fs = FakeFS(store)
+    filenames = {b.filename for b in ad.list_remote_bundles(fs, BUCKET)}
+    assert filenames == {f"{complete_stem}.parquet"}
+
+
+def test_complete_with_non_string_start_ts_partial_not_yielded_no_exception():
+    partial_stem = "sangenjaya-edge_adsb_state_2026-05-29T09_partial"
+    complete_stem = "sangenjaya-edge_adsb_state_2026-05-29T10_complete"
+    store = {
+        _key("adsb_state", f"{partial_stem}.parquet"): b"X",
+        _key("adsb_state", f"{partial_stem}.manifest.json"): _manifest_bytes(
+            f"{partial_stem}.parquet", "adsb_state", process_uuid="uuid-A",
+            process_start_ts="2026-05-29T09:00:00Z", complete=False, row_count=100),
+        _key("adsb_state", f"{complete_stem}.parquet"): b"Y",
+        _key("adsb_state", f"{complete_stem}.manifest.json"): _manifest_bytes(
+            f"{complete_stem}.parquet", "adsb_state", process_uuid="uuid-B",
+            process_start_ts=123, row_count=200),
+    }
+    fs = FakeFS(store)
+    filenames = {b.filename for b in ad.list_remote_bundles(fs, BUCKET)}
+    assert filenames == {f"{complete_stem}.parquet"}
+
+
+def test_complete_with_missing_process_uuid_does_not_supersede():
+    # An identity-less successor is not proof a DIFFERENT process exists.
+    partial_stem = "sangenjaya-edge_adsb_state_2026-05-29T09_partial"
+    complete_stem = "sangenjaya-edge_adsb_state_2026-05-29T10_complete"
+    store = {
+        _key("adsb_state", f"{partial_stem}.parquet"): b"X",
+        _key("adsb_state", f"{partial_stem}.manifest.json"): _manifest_bytes(
+            f"{partial_stem}.parquet", "adsb_state", process_uuid="uuid-A",
+            process_start_ts="2026-05-29T09:00:00Z", complete=False, row_count=100),
+        _key("adsb_state", f"{complete_stem}.parquet"): b"Y",
+        _key("adsb_state", f"{complete_stem}.manifest.json"): _manifest_bytes(
+            f"{complete_stem}.parquet", "adsb_state", process_uuid=None,
+            process_start_ts="2026-05-29T10:00:00Z", row_count=200),
+    }
+    fs = FakeFS(store)
+    filenames = {b.filename for b in ad.list_remote_bundles(fs, BUCKET)}
+    assert filenames == {f"{complete_stem}.parquet"}
 
 
 def test_skips_inprogress_data():

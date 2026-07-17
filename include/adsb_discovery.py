@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Iterable, Optional
 
 
@@ -33,11 +34,29 @@ def _uri(key: str) -> str:
     return f"s3://{key}"
 
 
+def _parse_process_start_ts(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    # naive would TypeError against aware peers — one malformed manifest must not kill discovery.
+    if dt.tzinfo is None:
+        return None
+    return dt
+
+
 def list_remote_bundles(fs, bucket: str, prefix: str = "bronze") -> Iterable[RemoteManifestBundle]:
-    """Yield complete bundles only: manifest present, data file present, all sidecars present,
-    data file not *.inprogress. Manifest-driven (the manifest's existence is the completeness
-    gate). Dedup against Postgres is the caller's job — discovery is stateless."""
+    """Yield complete bundles, plus any partial whose writer process is provably dead — a
+    complete bundle exists for the same stream from a different, strictly newer process_uuid.
+    Manifest present, data file present, all sidecars present, data file not *.inprogress.
+    Manifest-driven (the manifest's existence is the completeness gate). Dedup against Postgres
+    is the caller's job — discovery is stateless."""
     keys = set(fs.find(f"{bucket}/{prefix}"))
+
+    deferred: dict[str, list[RemoteManifestBundle]] = {}
+    complete_processes: dict[str, list[tuple[object, object]]] = {}
 
     for manifest_key in sorted(k for k in keys if k.endswith(_MANIFEST_SUFFIX)):
         try:
@@ -58,8 +77,6 @@ def list_remote_bundles(fs, bucket: str, prefix: str = "bronze") -> Iterable[Rem
 
         if stream not in _STREAMS or not data_name:
             continue
-        if manifest.get("complete") is not True:
-            continue
         if data_name.endswith(".inprogress"):
             continue
 
@@ -76,7 +93,7 @@ def list_remote_bundles(fs, bucket: str, prefix: str = "bronze") -> Iterable[Rem
         if any(sk not in keys for sk in sidecar_keys):
             continue  # incomplete bundle — a sidecar is missing
 
-        yield RemoteManifestBundle(
+        bundle = RemoteManifestBundle(
             stream=stream,
             filename=data_name,
             data_s3_uri=_uri(data_key),
@@ -84,6 +101,31 @@ def list_remote_bundles(fs, bucket: str, prefix: str = "bronze") -> Iterable[Rem
             extra_sidecar_s3_uris=[_uri(sk) for sk in sidecar_keys],
             manifest=manifest,
         )
+
+        if manifest.get("complete") is not True:
+            deferred.setdefault(stream, []).append(bundle)
+            continue
+
+        complete_processes.setdefault(stream, []).append(
+            (manifest.get("process_uuid"), manifest.get("process_start_ts")))
+        yield bundle
+
+    # A dead process's partial never flips complete; a complete bundle from a provably newer
+    # process (the edge runs exactly one at a time) proves it final — identity ordering, not
+    # hour arithmetic, since the successor's first complete bundle can land hours later.
+    for stream, partials in deferred.items():
+        for bundle in partials:
+            partial_uuid = bundle.manifest.get("process_uuid")
+            partial_start = _parse_process_start_ts(bundle.manifest.get("process_start_ts"))
+            if not partial_uuid or partial_start is None:
+                continue  # no identity to prove the writer dead — never supersede without it
+            for uuid, start_ts in complete_processes.get(stream, []):
+                if not uuid or uuid == partial_uuid:
+                    continue  # an identity-less successor is not proof a different process exists
+                start = _parse_process_start_ts(start_ts)
+                if start is not None and start > partial_start:
+                    yield bundle
+                    break
 
 
 def validate_bundle(bundle: RemoteManifestBundle, num_rows: Optional[int]) -> None:
