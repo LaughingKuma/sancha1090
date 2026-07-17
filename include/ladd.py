@@ -196,10 +196,22 @@ def parse_ladd_industry_filter(data: bytes) -> list[dict]:
     # Public bytes-level entry point for the FAA-native "Industry filter" format: headerless, single column,
     # CRLF, one N-number or bare callsign per line. Row 0 is ALWAYS data — the loader dispatches to this
     # function purely on the object's filename (the FAA-native convention), never by sniffing file shape.
+    #
+    # Parsed per PHYSICAL LINE, not as one csv.reader stream over the whole file: a whole-stream reader lets
+    # an unterminated quoted field swallow every following line as literal content, fusing several identities
+    # into one fabricated value that survives normalization and the alnum guard — real suppression identities
+    # vanish with no error. The native contract is strictly one identity per physical line, so csv.reader runs
+    # once per line with strict=True; a line malformed enough that csv can't parse it fails loud, naming the row.
     text = data.decode("utf-8-sig", errors="replace")
-    rows = list(csv.reader(io.StringIO(text)))
-    if not rows:
+    lines = text.splitlines()
+    if not lines:
         raise ValueError("LADD file is empty")
+    rows = []
+    for i, line in enumerate(lines, start=1):
+        try:
+            rows.append(next(csv.reader([line], strict=True)))
+        except csv.Error as e:
+            raise ValueError(f"LADD file row {i} is malformed CSV: {e}") from e
     out = _parse_ladd_industry_filter(rows)
     if not out:
         raise ValueError("LADD file looks like a headerless identity list but has no valid identities")
@@ -240,6 +252,13 @@ def parse_ladd_csv(data: bytes) -> list[dict]:
 # --- FAA registry hex resolution (authoritative MASTER.txt first, algorithm fallback) --------------------------
 
 _REGISTRY_URL = "https://registry.faa.gov/database/ReleasableAircraft.zip"
+# registry.faa.gov 403s httpx's bare default User-Agent; a browser-like one unblocks the download.
+_REGISTRY_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+}
 
 
 def build_registry_index(master_text: str) -> dict[str, str]:
@@ -283,7 +302,7 @@ def download_registry_index(url: str = _REGISTRY_URL, timeout: float = 300.0) ->
     import httpx
 
     buf = io.BytesIO()
-    with httpx.stream("GET", url, timeout=timeout, follow_redirects=True) as r:
+    with httpx.stream("GET", url, timeout=timeout, follow_redirects=True, headers=_REGISTRY_HEADERS) as r:
         r.raise_for_status()
         for chunk in r.iter_bytes():
             buf.write(chunk)
@@ -382,12 +401,14 @@ _LADD_COLS = ["registration", "callsign", "icao24", "valid_from", "valid_to"]
 def _classify_ladd_filename(name: str) -> tuple[Optional[date], Optional[str]]:
     # The Garage prefix listing only ever admits these two known conventions — the filename itself IS the
     # format signal, so the loader dispatches the parser off this tag instead of inferring shape from content.
+    # fullmatch, not search: only an EXACT basename is a real pull — a junk-prefixed name that merely ends
+    # like a known convention (e.g. a stray "copy-of-IndustryLADD-...csv") must not classify as one.
     name = name or ""
     for pattern, fmt, tag in (
         (_LADD_FILE_RE, "%Y-%m-%d", "legacy"),
         (_LADD_FAA_NATIVE_RE, "%Y%m%d", "native"),
     ):
-        m = pattern.search(name)
+        m = pattern.fullmatch(name)
         if not m:
             continue
         try:

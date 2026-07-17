@@ -190,6 +190,21 @@ def test_industry_filter_truly_blank_rows_still_tolerated():
     assert sorted(r["registration"] for r in rows) == ["N12345", "ZZZ123"]
 
 
+def test_industry_filter_unterminated_quote_collapse_raises():
+    # The confirmed defect: a whole-stream csv.reader lets an unterminated quoted field swallow every
+    # following physical line as literal content, fusing 3 identities into 1 fabricated value that
+    # survives normalization and the alnum guard. Per-line parsing must fail loud on row 1 instead.
+    with pytest.raises(ValueError, match="row 1"):
+        ladd.parse_ladd_industry_filter(b'"N12345\r\nZZZ123\r\nFFL999\r\n')
+
+
+def test_industry_filter_quoted_single_line_value_still_parses():
+    # A quote that opens AND closes within one physical line is legitimate CSV quoting, not a collapse
+    # risk — csv unquotes it and the value parses normally.
+    rows = ladd.parse_ladd_industry_filter(b'"N12345"\r\n')
+    assert rows == [{"registration": "N12345", "callsign": "N12345"}]
+
+
 # --- FAA registry hex resolution -------------------------------------------------------------------------------
 
 _MASTER = (
@@ -239,6 +254,41 @@ def test_download_registry_index_extracts_master_from_zip(monkeypatch):
     import httpx
     monkeypatch.setattr(httpx, "stream", lambda *_a, **_k: _Stream())
     assert ladd.download_registry_index() == {"N1AA": "abcdef"}
+
+
+def test_download_registry_index_sends_browser_user_agent(monkeypatch):
+    # registry.faa.gov 403s httpx's bare default User-Agent in production — a browser-like header unblocks it.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("MASTER.txt", _MASTER)
+    payload = buf.getvalue()
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self):
+            yield payload
+
+    class _Stream:
+        def __enter__(self):
+            return _Resp()
+
+        def __exit__(self, *a):
+            return False
+
+    calls = []
+
+    def _fake_stream(*_a, **kwargs):
+        calls.append(kwargs)
+        return _Stream()
+
+    import httpx
+    monkeypatch.setattr(httpx, "stream", _fake_stream)
+    ladd.download_registry_index()
+    assert calls, "httpx.stream was never called"
+    ua = calls[0].get("headers", {}).get("User-Agent", "")
+    assert "Mozilla" in ua                    # browser-like, not httpx's bare default UA
 
 
 # --- SCD2 diff -------------------------------------------------------------------------------------------------
@@ -391,6 +441,16 @@ def test_classify_ladd_filename_returns_format_tag():
     assert ladd._classify_ladd_filename("IndustryLADD-2026-07-03.csv") == (date(2026, 7, 3), "legacy")
     assert ladd._classify_ladd_filename("LADD_Industry_Filter_CUI_SP_PRVCY_20260703.txt") == (date(2026, 7, 3), "native")
     assert ladd._classify_ladd_filename("something-else.csv") == (None, None)
+
+
+def test_classify_ladd_filename_rejects_prefixed_junk_basename():
+    # Only an EXACT basename is a real pull — a junk-prefixed name that merely ends like a known
+    # convention (e.g. a stray copy/backup) must not be classified as one.
+    assert ladd._classify_ladd_filename("copy-of-IndustryLADD-2026-06-01.csv") == (None, None)
+    assert ladd._classify_ladd_filename("backup_LADD_Industry_Filter_CUI_SP_PRVCY_20260601.txt") == (None, None)
+    # legitimate exact basenames still classify
+    assert ladd._classify_ladd_filename("IndustryLADD-2026-06-01.csv") == (date(2026, 6, 1), "legacy")
+    assert ladd._classify_ladd_filename("LADD_Industry_Filter_CUI_SP_PRVCY_20260601.txt") == (date(2026, 6, 1), "native")
 
 
 # --- End-to-end orchestration over fakes (RMT-FINAL semantics emulated) ----------------------------------------
@@ -556,6 +616,15 @@ def test_load_native_filename_with_multi_field_row_fails_loud_nothing_applied(mo
     with pytest.raises(ValueError, match="row 1 has 2 fields"):
         ladd.load_ladd_pulls_to_ch()
     assert client._ladd == [] and client._pulls == []   # nothing applied
+
+
+def test_load_native_filename_with_quoted_garbage_fails_loud_nothing_applied(monkeypatch):
+    key = "sancha1090/dims/ladd_raw/LADD_Industry_Filter_CUI_SP_PRVCY_20260601.txt"
+    client = _FakeClient()
+    _wire(monkeypatch, client, files={key: b'"N12345\r\nZZZ123\r\nFFL999\r\n'})
+    with pytest.raises(ValueError, match="row 1"):
+        ladd.load_ladd_pulls_to_ch()
+    assert client._ladd == [] and client._pulls == []   # nothing applied — no fabricated identity ever lands
 
 
 def test_load_fails_loud_on_duplicate_list_date(monkeypatch):
