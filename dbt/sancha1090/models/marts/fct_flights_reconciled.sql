@@ -102,9 +102,9 @@ n_src as (
     select flight_id, uniqExact(source) as n_sources from {{ ref('int_flight_attach') }} group by flight_id
 ),
 box_observed as (
-    -- the Japan box actually saw this flight (an in-box bronze fix in-window); reads bronze, not
-    -- fact_state_snapshots, whose 30-day window would age adsblol/states-anchored flights out of the
-    -- mart. Box is the japan_box_* vars (same as stg_states). EXISTS-semantics: dups fine.
+    -- the Japan box actually saw this flight (an in-box bronze fix in-window); reads bronze directly —
+    -- cheap at this grain and independent of staging. Box is the japan_box_* vars (same as stg_states).
+    -- EXISTS-semantics: dups fine.
     select distinct sp.flight_id as flight_id
     from {{ ref('int_flight_spine') }} sp
     join {{ source('bronze', 'opensky_states') }} s on s.icao24 = sp.icao24

@@ -300,8 +300,8 @@ shared across both feeds.
 ### `silver.stg_states` — staging (OpenSky context)
 
 - **Grain:** one row per `(icao24, snapshot_time)` — deduped OpenSky context state vector.
-- **Notes:** scans only the last **30 days** of bronze (retention mirror), so it is not full
-  history. Dedup keeps the row with the latest `ingested_at` per grain. All measures nullable.
+- **Notes:** scans full bronze history — bronze is the only retention boundary (no rolling
+  window since 2026-07). Dedup keeps the row with the latest `ingested_at` per grain. All measures nullable.
   Columns `geo_altitude_m`, `squawk`, `spi`, `position_source`, `time_position`, `last_contact`,
   `ingested_at` exist here but are **not** carried into `fact_state_snapshots`.
 
@@ -330,7 +330,7 @@ shared across both feeds.
 ### `silver.fact_state_snapshots` — OpenSky context movement fact
 
 - **Grain:** one row per `(icao24, snapshot_time)`, **positioned only** (lat/lon non-null).
-- **Notes:** strict subset of `stg_states` (filters NULL position); inherits the 30-day window.
+- **Notes:** strict subset of `stg_states` (filters NULL position); full history, like `stg_states`.
   A ClickHouse MergeTree table, partitioned by `day(snapshot_time)`, ordered `snapshot_time DESC`. Base of the
   OpenSky-context-feed gold marts.
 

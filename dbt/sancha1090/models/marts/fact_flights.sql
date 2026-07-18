@@ -21,12 +21,11 @@ with deduped as (
     from {{ source('bronze', 'opensky_flights') }}
     where first_seen is not null
 ),
--- "Seen" = surfaced by the Japan-context feed (which covers the antenna's sky too);
--- marts filter on this so routes are the ones flying over us, not anonymous catalogs.
+-- "Seen" = ever surfaced by the Japan-context feed (which covers the antenna's sky too);
+-- flags routes as flying over us vs anonymous catalog entries.
 seen as (
     select distinct icao24
     from {{ ref('fact_state_snapshots') }}
-    where snapshot_time > now('UTC') - INTERVAL 30 DAY
 )
 -- Explicit AS icao24: icao24 is ambiguous across deduped(f) and seen(s), and CH keeps the
 -- table qualifier in the output column name when unaliased — same fix as fct_flight_legs.

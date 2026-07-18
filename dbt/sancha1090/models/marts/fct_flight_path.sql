@@ -7,6 +7,25 @@
     query_settings={'max_memory_usage': 16000000000},
 ) }}
 
+{#- path_repair_days (manual restoration lever): contiguous sorted prefix only, capped at the chunk size — mixing dates with orphan/forward days (or a non-contiguous list) widens chunk_bounds and can breach the 16 GiB bound. #}
+{%- set repair_days_raw = var('path_repair_days', []) %}
+{%- set repair_batch = [] %}
+{%- if repair_days_raw %}
+{%- if repair_days_raw is string %}
+{{ exceptions.raise_compiler_error("path_repair_days must be a list of 'YYYY-MM-DD' strings") }}
+{%- endif %}
+{%- set parsed_days = [] %}
+{%- for d in repair_days_raw %}
+{%- do parsed_days.append(modules.datetime.datetime.strptime(d | string, '%Y-%m-%d').date()) %}
+{%- endfor %}
+{%- for d in parsed_days | sort %}
+{%- if repair_batch | length < var('path_build_chunk_days')
+      and (repair_batch | length == 0 or (d - repair_batch[-1]).days == 1) %}
+{%- do repair_batch.append(d) %}
+{%- endif %}
+{%- endfor %}
+{%- endif %}
+
 -- Fused per-second trajectory per reconciled flight: priority union rooftop(adsb) > adsblol > opensky.
 -- Daily partitions are replaced atomically, not appended. START day remains the partition key because it is
 -- stable for one flight_id; replacement is what also removes an OLD id when the same physical flight re-anchors.
@@ -16,7 +35,8 @@
 -- LIMIT BY sorts in memory and does not spill; five dense days fit below the 16 GB query backstop.
 -- Operators: changing the partition key from the pre-v6.25 monthly layout requires one paused --full-refresh.
 -- An unfixable orphan partition (no current-spine start; stays red on assert_flight_path_reconciled_fk) is
--- removed manually: ALTER TABLE gold_ch.fct_flight_path DROP PARTITION '<day>'.
+-- removed manually: ALTER TABLE gold_ch.fct_flight_path DROP PARTITION '<day>'. A targeted rebuild instead
+-- forces days via --vars path_repair_days=['<day>',...]; DROP PARTITION remains only for truly unfixable orphans.
 with source_floor as (
     select least(
         (select min(capture_date) from {{ source('bronze', 'adsb_states') }}),
@@ -36,6 +56,13 @@ eligible_state as (
     select coalesce(max(day), toDate('1970-01-01')) as eligible_hi from eligible_days
 ),
 {%- if is_incremental() %}
+{%- if repair_batch %}
+chunk_days as (
+    -- Manual targeted repair: EXCLUSIVE of orphan/forward nomination for this run (see header Jinja note).
+    select toDate(day) as day
+    from (select arrayJoin([{% for d in repair_batch %}'{{ d.isoformat() }}'{{ ", " if not loop.last }}{% endfor %}]) as day)
+),
+{%- else %}
 path_state as (
     select coalesce(max(day_key), toDate('1970-01-01')) as built_hi from {{ this }}
 ),
@@ -75,7 +102,13 @@ chunk_days as (
     union all
     select day from forward_days
 ),
+{%- endif %}
 {%- else %}
+{#- Guard is execute-gated on the non-incremental branch: dbt renders twice and is_incremental() is False
+    during the parse pass (execute=False), so an ungated check false-trips every repair run at compile. #}
+{%- if execute and repair_batch %}
+{{ exceptions.raise_compiler_error("path_repair_days requires the existing incremental table (no --full-refresh / first build)") }}
+{%- endif %}
 chunk_days as (
     select day from eligible_days
     order by day

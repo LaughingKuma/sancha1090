@@ -42,7 +42,7 @@ def test_rjec_civilian_beats_rjca_military_when_outvoted(ch_cur):
 
 def test_rjec_mislabel_regression_anchors(ch_cur):
     # Historical RJEC-vs-RJCA mislabel anchors: pin the stable OUTCOME (RJEC wins via consensus or sched-service
-    # tiebreak), not the vote margin — the opensky_states RJEC vote ages out of the ~30-day context feed.
+    # tiebreak), not the vote margin, so vote-set changes (e.g. the 2026-07 states-history restoration) can't flap it.
     ado = _q(ch_cur, "SELECT dest_icao FROM gold_ch.fct_flights_reconciled "
                      "WHERE icao24='861b64' AND callsign='ADO81' AND toDate(start_time)='2026-06-06'")
     assert ado and all(r[0]=='RJEC' for r in ado), f"ADO81 anchor not RJEC: {ado}"

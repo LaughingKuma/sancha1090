@@ -1,3 +1,5 @@
+import re
+
 import pytest
 import sqlalchemy as sa
 
@@ -128,24 +130,45 @@ def test_unbounded_catchup_validates_a_hour_far_below_the_watermark():
         _run(oracle, agg, {_LAST_CLOSED: 10, bad: 12}, wm)
 
 
-def test_fss_retention_floor_skips_aged_out_hours():
-    # After an outage > fss's 30-day window, the oldest held hours are gone from fact_state_snapshots by design;
-    # the gate must not red on fss==0 there, while agg_hourly (accumulate-forever) still validates cleanly.
-    wm_start = _LAST_CLOSED - 35 * 24 * H
-    aged = wm_start + H                                     # ~35 days back: below the 29-day fss floor
-    oracle = {_LAST_CLOSED: (10, 5), aged: (7, 4)}
-    out = _run(oracle, dict(oracle), {_LAST_CLOSED: 10}, _WM(start=wm_start))   # fss holds nothing for `aged`
-    assert out["all_ok"]
-
-
-def test_agg_still_validated_below_fss_floor():
-    # agg_hourly has no retention floor, so a discrepancy in a hour below the fss window must STILL red.
+def test_fss_reds_on_aged_out_hours():
+    # No retention floor: staging is full-history (2026-07 unwindowing), so fss missing an old
+    # oracle-present hour is a real defect, not aging.
     wm_start = _LAST_CLOSED - 35 * 24 * H
     aged = wm_start + H
     oracle = {_LAST_CLOSED: (10, 5), aged: (7, 4)}
-    agg = {_LAST_CLOSED: (10, 5), aged: (2, 4)}             # agg corrupted below the fss floor
     with pytest.raises(RuntimeError, match="served-value gate FAILED"):
-        _run(oracle, agg, {_LAST_CLOSED: 10}, _WM(start=wm_start))
+        _run(oracle, dict(oracle), {_LAST_CLOSED: 10}, _WM(start=wm_start))
+
+
+def test_fss_query_bound_matches_oracle_bound():
+    # Deep catch-up: pre-fix the fss query clamped its lower bound 29d above the oracle's — they must match now.
+    wm_start = _LAST_CLOSED - 35 * 24 * H
+    aged = wm_start + H
+    oracle = {_LAST_CLOSED: (10, 5), aged: (7, 4)}
+    inner = _ch_fake(oracle, dict(oracle), {_LAST_CLOSED: 10, aged: 7})
+    captured = []
+
+    def spy(sql):
+        captured.append(sql)
+        return inner(sql)
+    wm = _WM(start=wm_start)
+    v.run_value_gate(ch_query=spy, get_wm=wm.get, set_wm=wm.set, now_epoch=_NOW)
+    bounds = {}
+    for q in captured:
+        m = re.search(r"FROM (\S+)\s.*?snapshot_time >= (.*?) AND snapshot_time <", q, re.DOTALL)
+        if m:
+            bounds[m.group(1)] = m.group(2)
+    assert bounds["silver_ch.fact_state_snapshots"] == bounds["bronze.opensky_states"]
+
+
+def test_agg_validated_on_deep_catchup():
+    # agg discrepancy on a deep catch-up hour reds regardless of depth.
+    wm_start = _LAST_CLOSED - 35 * 24 * H
+    aged = wm_start + H
+    oracle = {_LAST_CLOSED: (10, 5), aged: (7, 4)}
+    agg = {_LAST_CLOSED: (10, 5), aged: (2, 4)}             # agg corrupted on the deep-catchup hour
+    with pytest.raises(RuntimeError, match="served-value gate FAILED"):
+        _run(oracle, agg, {_LAST_CLOSED: 10, aged: 7}, _WM(start=wm_start))
 
 
 def test_long_backlog_drains_one_chunk_per_run():
@@ -251,7 +274,8 @@ def test_adsb_checks_skipped_below_ttl_floor():
     wm_start = _LAST_CLOSED - 95 * 24 * H
     oracle = {_LAST_CLOSED: (10, 5), wm_start + H: (7, 4)}
     cc_o = {("Japan", wm_start + H): (3, 5, 0)}                      # bronze still has it; the mart aged it out
-    out = _run(oracle, dict(oracle), {_LAST_CLOSED: 10}, _WM(start=wm_start), cc_oracle=cc_o)
+    # fss now validates full history (no floor), so its dict must hold the aged hour too, isolating the adsb skip.
+    out = _run(oracle, dict(oracle), {_LAST_CLOSED: 10, wm_start + H: 7}, _WM(start=wm_start), cc_oracle=cc_o)
     assert out["all_ok"]
     assert not any("adsb" in r["check"] for r in out["results"])     # adsb checks skipped, not failed
 

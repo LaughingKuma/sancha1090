@@ -30,12 +30,8 @@ _GEO = "latitude BETWEEN 20 AND 50 AND longitude BETWEEN 122 AND 165 AND latitud
 # Re-validate this many hours below the watermark each run: a late bronze insert the MV missed (broken/detached MV)
 # would otherwise pass once and never be revisited (catchup=False + no reseed once the watermark advances).
 _LATENESS_S = 6 * 3600
-# fact_state_snapshots is a rolling 30-day window (stg_states: snapshot_time >= now()-30d), so it legitimately
-# holds nothing older — don't compare it beyond this (1-day margin under 30d for build lag), or a deep catch-up
-# after a long outage false-reds it. agg_hourly_traffic (accumulate-forever) has no such floor.
-_FSS_VALID_S = 29 * 24 * 3600
 # The two re-grained ADS-B _acc tables carry a 90d TTL; stay a day inside it (TTL drops lazily on merge) so the
-# gate never compares a (group,hour) the _acc may already have aged out — the adsb analog of _FSS_VALID_S.
+# gate never compares a (group,hour) the _acc may already have aged out.
 _ADSB_TTL_VALID_S = 89 * 24 * 3600
 # Validate at most this much window per run. The catch-up is unbounded over time, but the CH client has a hard
 # 60s timeout (_TIMEOUT_S) — one oversized post-outage scan would time out, red the task, and never advance the
@@ -138,7 +134,7 @@ def _adsb_value_checks(chq, win_start: int, chunk_end: int, last_closed: int) ->
     floor = last_closed - _ADSB_TTL_VALID_S
     lo = max(win_start, floor)
     if lo >= chunk_end:
-        return []  # whole window below the TTL floor: the _acc has aged it out by design (like the fss floor)
+        return []  # whole window below the TTL floor: the _acc has aged it out by design
     dt_lo, dt_hi = _dt(lo), _dt(chunk_end)
 
     # 1) Country — distinct_aircraft + observations + military, per (reg_country, hour). Clean exact (no backfill).
@@ -213,32 +209,26 @@ def run_value_gate(*, ch_query=None, get_wm=None, set_wm=None, now_epoch=None) -
         f"SELECT toUnixTimestamp(snapshot_hour) h, total_observations obs, unique_aircraft ac "
         f"FROM gold_ch.agg_hourly_traffic "
         f"WHERE snapshot_hour >= {_dt(win_start)} AND snapshot_hour < {_dt(chunk_end)}"), 2)
-    # fss only holds its rolling retention window — query (and compare) no deeper than that floor.
-    fss_floor = last_closed - _FSS_VALID_S
     fss = _rows_to_map(chq(
         f"SELECT toUnixTimestamp(toStartOfHour(snapshot_time)) h, count() obs "
         f"FROM silver_ch.fact_state_snapshots "
-        f"WHERE snapshot_time >= {_dt(max(win_start, fss_floor))} AND snapshot_time < {_dt(chunk_end)} "
+        f"WHERE snapshot_time >= {_dt(win_start)} AND snapshot_time < {_dt(chunk_end)} "
         f"GROUP BY h"), 1)
 
     # Union of hour keys so a phantom mart hour (present in the mart, zero in the oracle) reds too, not just a drop.
     hours = sorted(set(oracle) | set(agg) | set(fss))
     agg_mm, fss_mm = [], []
-    fss_hours = 0
     for h in hours:
         o_obs, o_ac = oracle.get(h, (0.0, 0.0))
         a_obs, a_ac = agg.get(h, (0.0, 0.0))
         if a_obs != o_obs or a_ac != o_ac:
             agg_mm.append({"hour": h, "mart": [a_obs, a_ac], "oracle": [o_obs, o_ac]})
-        # Below fss_floor the mart has aged the hour out by design — not a defect, so skip it (agg still checked).
-        if h >= fss_floor:
-            fss_hours += 1
-            if fss.get(h, 0.0) != o_obs:
-                fss_mm.append({"hour": h, "mart": fss.get(h, 0.0), "oracle": o_obs})
+        if fss.get(h, 0.0) != o_obs:
+            fss_mm.append({"hour": h, "mart": fss.get(h, 0.0), "oracle": o_obs})
 
     results.append({"check": "agg_hourly_traffic.value", "hours": len(hours),
                     "ok": not agg_mm, "mismatches": agg_mm[:8]})
-    results.append({"check": "fact_state_snapshots.value", "hours": fss_hours,
+    results.append({"check": "fact_state_snapshots.value", "hours": len(hours),
                     "ok": not fss_mm, "mismatches": fss_mm[:8]})
     # The two now-exact ADS-B MVs (re-grained off HLL in v6.3) — same window + watermark (capture_ts shares
     # wall-clock with snapshot_time), so a defect there freezes the same watermark until it's fixed.

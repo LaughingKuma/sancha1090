@@ -236,8 +236,8 @@ ORDER BY snapshot_hour
 """.strip(),
     }
 
-    # 2) Airline traffic (OpenSky context) — hourly grain. NOT accumulate-forever: the dbt mart reads
-    # the 30-day-windowed fact_state_snapshots, so the read applies a 30-day filter for parity.
+    # 2) Airline traffic (OpenSky context) — hourly grain.
+    # Accumulate-forever read since the 2026-07 stg_states unwindowing (the old 30d parity window inverted).
     al_join = _AL_JOIN.format(dim=_DIM_AIRLINES, cs="s.callsign")
     specs["agg_airline_traffic_acc"] = {
         "drop_old": ["agg_airline_traffic"],
@@ -287,7 +287,6 @@ SELECT
     uniqExactMerge(distinct_aircraft_state) AS distinct_aircraft,
     uniqExactMerge(observations_state)      AS observations
 FROM gold_ch.agg_airline_traffic_acc
-WHERE snapshot_hour >= now('UTC') - INTERVAL 30 DAY
 GROUP BY snapshot_hour, airline_name, airline_country
 ORDER BY snapshot_hour, distinct_aircraft DESC
 """.strip(),
