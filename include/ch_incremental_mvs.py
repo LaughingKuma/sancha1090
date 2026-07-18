@@ -166,6 +166,9 @@ def _spec():
 
     specs = {}
 
+    # acc parts are the only non-rederivable state (reseed is an operator action); fsync closes the
+    # crash-loss class from #116 — parts are tiny+hourly, cost is negligible.
+
     # 1) Hourly traffic — accumulate-forever (replaces agg_hourly_traffic{,_adsblol,_opensky_settled}).
     specs["agg_hourly_traffic_acc"] = {
         "drop_old": ["agg_hourly_traffic", "agg_hourly_traffic_history", "agg_hourly_traffic_live_archive",
@@ -183,6 +186,7 @@ CREATE TABLE IF NOT EXISTS gold_ch.agg_hourly_traffic_acc
 )
 ENGINE = AggregatingMergeTree
 ORDER BY snapshot_hour
+SETTINGS fsync_after_insert = 1, fsync_part_directory = 1
 """.strip(),
         "mv": f"""
 CREATE MATERIALIZED VIEW IF NOT EXISTS gold_ch.agg_hourly_traffic_acc_mv
@@ -248,6 +252,7 @@ CREATE TABLE IF NOT EXISTS gold_ch.agg_airline_traffic_acc
 )
 ENGINE = AggregatingMergeTree
 ORDER BY (snapshot_hour, airline_name, airline_country)
+SETTINGS fsync_after_insert = 1, fsync_part_directory = 1
 """.strip(),
         "mv": f"""
 CREATE MATERIALIZED VIEW IF NOT EXISTS gold_ch.agg_airline_traffic_acc_mv
@@ -304,6 +309,7 @@ CREATE TABLE IF NOT EXISTS gold_ch.agg_airline_traffic_adsb_acc
 ENGINE = AggregatingMergeTree
 ORDER BY (snapshot_hour, airline_name, airline_country)
 TTL snapshot_hour + INTERVAL 90 DAY
+SETTINGS fsync_after_insert = 1, fsync_part_directory = 1
 """.strip(),
         "mv": f"""
 CREATE MATERIALIZED VIEW IF NOT EXISTS gold_ch.agg_airline_traffic_adsb_acc_mv
@@ -357,6 +363,7 @@ CREATE TABLE IF NOT EXISTS gold_ch.agg_country_traffic_adsb_acc
 ENGINE = AggregatingMergeTree
 ORDER BY (snapshot_hour, reg_country)
 TTL snapshot_hour + INTERVAL 90 DAY
+SETTINGS fsync_after_insert = 1, fsync_part_directory = 1
 """.strip(),
         "mv": f"""
 CREATE MATERIALIZED VIEW IF NOT EXISTS gold_ch.agg_country_traffic_adsb_acc_mv

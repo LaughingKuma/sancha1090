@@ -5,6 +5,19 @@ from include import ch_incremental_mvs as mv
 # The two formerly-flat all-time HLL ADS-B MVs, re-grained to hourly uniqExact in v6.3.
 ADSB_ACC = ("agg_country_traffic_adsb_acc", "agg_airline_traffic_adsb_acc")
 
+# All four accumulate-forever _acc marts — the only tables that can't re-derive without an operator reseed.
+ALL_ACC = ("agg_hourly_traffic_acc", "agg_airline_traffic_acc",
+           "agg_airline_traffic_adsb_acc", "agg_country_traffic_adsb_acc")
+
+
+def test_acc_targets_are_fsynced():
+    # #116: fsync closes the crash-loss class for the only non-rederivable state — a stray edit to any of the
+    # four target DDLs must not silently drop the SETTINGS clause.
+    for name in ALL_ACC:
+        target = mv.SPECS[name]["target"]
+        assert "fsync_after_insert = 1" in target, f"{name} target missing fsync_after_insert"
+        assert "fsync_part_directory = 1" in target, f"{name} target missing fsync_part_directory"
+
 
 def test_adsb_mvs_use_exact_not_hll():
     # v6.3: re-grain from uniq (HLL, ~0.5%/country error) to hourly uniqExact — exact, replay-immune, and

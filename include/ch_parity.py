@@ -48,6 +48,15 @@ _ADSB_SRC_STRUCT = "capture_ts Nullable(Float64), hex Nullable(String)"
 _FLIGHTS_SRC_STRUCT = "ingested_at Nullable(String)"
 _ADSBLOL_SRC_STRUCT = "icao24 Nullable(String)"  # count()-only; one real column is enough to pin the schema
 
+# Broken-on-start tripwire (#116): a hard crash with fsync off silently detaches a 0-byte part on restart,
+# and the four accumulate-forever _acc marts have no rederivation path (an operator reseed is the only fix) —
+# one sat invisible for two days until the value gate happened to notice. __dbt_ tables are ephemeral dbt
+# temp/backup relations that rebuild every tick; 'system' is CH's own housekeeping logs, neither is warehouse data.
+_BROKEN_PARTS_SQL = (
+    "SELECT concat(database, '.', table, '/', name) FROM system.detached_parts "
+    "WHERE reason = 'broken-on-start' AND database != 'system' AND table NOT ILIKE '%\\_\\_dbt\\_%'"
+)
+
 
 def _closed_cutoff() -> int:
     # One hour-aligned cutoff (UTC epoch, 2h ago) captured ONCE per gate run and substituted as a literal into
@@ -231,22 +240,47 @@ SOURCE_FRESHNESS_CHECKS: list[tuple[str, str, str, Callable[[float, float], bool
 ]
 
 
+def _broken_parts_check(ch_query) -> dict:
+    # Own check (not a run_parity comparator: the query returns part names, not a scalar) so the RuntimeError
+    # can name the actual broken part(s) — the point is the operator sees WHICH table/part broke on the next tick.
+    name = "source.no_broken_parts"
+    try:
+        parts = [r[0] for r in ch_query(_BROKEN_PARTS_SQL)]
+        ok, err = not parts, None
+    except Exception as e:  # a bad tripwire query must not abort the rest of the gate
+        parts, ok, err = [], False, repr(e)
+    if parts:
+        log.warning("parity[source] broken-on-start detached parts found: %s", parts)
+    elif err:
+        log.warning("parity[source] broken-parts tripwire query failed: %s", err)
+    return {"check": name, "ch": len(parts), "ref": 0, "ok": ok, "error": err, "parts": parts}
+
+
 def run_source_gate(*, ch_query=None, serving_query=None) -> dict:
-    # The standing serving guard: CH bronze is complete vs the source Parquet AND the served marts are fresh.
-    # Completeness runs on the admin client (needs bronze + the garage s3() collection); freshness runs as
-    # superset_ro (the serving identity) to also catch credential drift. Raises on any miss.
+    # The standing serving guard: CH bronze is complete vs the source Parquet, the served marts are fresh, AND
+    # no _acc part crash-detached silently (#116). Completeness + the tripwire run on the admin client (needs
+    # bronze + the garage s3() collection); freshness runs as superset_ro (the serving identity) to also catch
+    # credential drift. Raises on any miss.
     chq = ch_query or _ch_query
     sq = serving_query or _ch_query_serving
     comp = run_parity(source_checks(_closed_cutoff()), "source.complete", ch_query=chq, ref_query=chq)
     frsh = run_parity(SOURCE_FRESHNESS_CHECKS, "source.fresh", ch_query=sq, ref_query=sq)
-    results = comp["results"] + frsh["results"]
-    passed = comp["passed"] + frsh["passed"]
-    total = comp["total"] + frsh["total"]
+    broken = _broken_parts_check(chq)
+    results = comp["results"] + frsh["results"] + [broken]
+    passed = comp["passed"] + frsh["passed"] + (1 if broken["ok"] else 0)
+    total = comp["total"] + frsh["total"] + 1
     summary = {"label": "source", "passed": passed, "total": total,
                "all_ok": passed == total, "results": results}
     if not summary["all_ok"]:
         fails = [r["check"] for r in results if not r["ok"]]
-        raise RuntimeError(f"CH source gate FAILED ({len(fails)}/{total}): {fails}")
+        # A tripwire QUERY failure (not a real broken part) must still be diagnosable, not just an anonymous red.
+        if broken["parts"]:
+            detail = f"; broken parts: {broken['parts'][:5]}"
+        elif broken["error"]:
+            detail = f"; broken-parts query error: {broken['error']}"
+        else:
+            detail = ""
+        raise RuntimeError(f"CH source gate FAILED ({len(fails)}/{total}): {fails}{detail}")
     return summary
 
 

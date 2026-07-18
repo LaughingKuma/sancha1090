@@ -31,9 +31,12 @@ _FRESH_OK = {"agg_hourly_traffic": _NOW - 60, "fact_state_snapshots": _NOW - 60,
              "fct_flights_reconciled": _NOW - 60}
 
 
-def _completeness_fake(ch_counts, parquet_counts):
-    # one fn drives both sides of each completeness check: CH bronze count vs s3() Parquet count.
+def _completeness_fake(ch_counts, parquet_counts, broken_parts=()):
+    # one fn drives both sides of each completeness check: CH bronze count vs s3() Parquet count. Also answers
+    # the broken-parts tripwire (same admin client) so every completeness-fake caller stays green by default.
     def q(sql):
+        if "detached_parts" in sql:
+            return [[p] for p in broken_parts]
         src = parquet_counts if "s3(" in sql else ch_counts
         for token, val in src.items():
             if token in sql:
@@ -58,7 +61,8 @@ def test_source_gate_passes_when_complete_and_fresh():
         ch_query=_completeness_fake(_CH_OK, _PARQUET),
         serving_query=_freshness_fake(_NOW, _FRESH_OK))
     assert out["all_ok"]
-    assert out["passed"] == out["total"] == 10   # 4 completeness + 6 freshness (states/context + adsb + flights + reconciled; anomalies excluded)
+    # 4 completeness + 6 freshness (states/context + adsb + flights + reconciled; anomalies excluded) + 1 tripwire
+    assert out["passed"] == out["total"] == 11
 
 
 def test_source_gate_raises_when_ch_short_of_source():
@@ -67,6 +71,42 @@ def test_source_gate_raises_when_ch_short_of_source():
         p.run_source_gate(
             ch_query=_completeness_fake(ch_short, _PARQUET),
             serving_query=_freshness_fake(_NOW, _FRESH_OK))
+
+
+# --- #116: broken-on-start detached-parts tripwire ------------------------------------------------
+
+def test_source_gate_passes_when_no_broken_parts():
+    out = p.run_source_gate(
+        ch_query=_completeness_fake(_CH_OK, _PARQUET),
+        serving_query=_freshness_fake(_NOW, _FRESH_OK))
+    by_name = {r["check"]: r for r in out["results"]}
+    assert by_name["source.no_broken_parts"]["ok"]
+
+
+def test_source_gate_raises_and_names_the_broken_part():
+    broken = _completeness_fake(_CH_OK, _PARQUET,
+                                 broken_parts=["gold_ch.agg_hourly_traffic_acc/broken-on-start_all_1_1_0"])
+    with pytest.raises(RuntimeError, match="source gate FAILED") as exc:
+        p.run_source_gate(ch_query=broken, serving_query=_freshness_fake(_NOW, _FRESH_OK))
+    msg = str(exc.value)
+    assert "no_broken_parts" in msg
+    assert "gold_ch.agg_hourly_traffic_acc/broken-on-start_all_1_1_0" in msg
+
+
+def test_source_gate_raises_when_tripwire_query_errors():
+    # A tripwire QUERY failure (not a real broken part) must still be diagnosable, not an anonymous red.
+    base = _completeness_fake(_CH_OK, _PARQUET)
+
+    def flaky(sql):
+        if "detached_parts" in sql:
+            raise RuntimeError("boom: connection reset")
+        return base(sql)
+
+    with pytest.raises(RuntimeError, match="source gate FAILED") as exc:
+        p.run_source_gate(ch_query=flaky, serving_query=_freshness_fake(_NOW, _FRESH_OK))
+    msg = str(exc.value)
+    assert "no_broken_parts" in msg
+    assert "boom: connection reset" in msg
 
 
 def test_source_gate_raises_when_mart_stale():
