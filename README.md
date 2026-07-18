@@ -3,7 +3,8 @@
 A rooftop ADS-B receiver over Tokyo feeds two paths at once: a streaming hot path
 (Redpanda → RisingWave) for what is overhead right now, and Airflow-orchestrated
 bronze/silver/gold marts (Garage S3 → ClickHouse → dbt → Superset) for the accumulated
-history. Both run on a single host under Docker Compose, with no cloud accounts.
+history. Both run on a single host under Docker Compose, with no cloud accounts. The
+live hot-path map is public at **[sancha1090.tokyo](https://sancha1090.tokyo)**.
 
 The receiver is the anchor, and whatever it hears directly is ground truth. The
 [OpenSky Network](https://opensky-network.org) covers what one antenna cannot: all of
@@ -239,6 +240,36 @@ a recent-flights drill-down per airframe that draws each flight's own fused hist
 on click, and the antenna's measured coverage outline. Those accumulated-history features are
 computed in the ClickHouse batch lane and shipped to the map, so the hot path stays a thin
 120-second window.
+
+### Public deployment (Cloudflare Tunnel)
+
+The map can be exposed to the public web without opening a single router port. A dedicated
+`livemap-public` service (a second copy of the same image) runs alongside the private instance
+and is reached only through a `cloudflared` container that dials **out** to Cloudflare — the
+home IP never appears in DNS and nothing else in the stack is reachable through the tunnel.
+This is how <https://sancha1090.tokyo> is served: the apex domain (not a subdomain) routes
+through Cloudflare's edge, then over the tunnel to the public instance.
+Both live behind the `public` compose profile, so the default `docker compose up -d` is
+completely unaffected until an operator opts in:
+
+```bash
+# add CLOUDFLARED_TUNNEL_TOKEN to .env, then:
+docker compose --profile public up -d livemap-public cloudflared
+```
+
+The tunnel is remotely managed (token mode): in the Cloudflare dashboard you create the tunnel,
+route the public hostname to `http://livemap-public:8000`, and add a Cache Rule making `/aircraft`
+cache-eligible (Cloudflare does not cache JSON by default, so the app's cache header is inert on
+its own). The public instance runs in hardened mode (`LIVEMAP_PUBLIC_MODE=1`): a per-IP
+token-bucket rate limit on the per-request database endpoints, an edge-cache hint on the snapshot
+endpoint that — with that Cache Rule in place — lets Cloudflare absorb viewer fan-out, and standard
+security headers. It publishes no host port at all, and `cloudflared` shares only a dedicated `edge`
+network with it, so the tunnel reaches the public map and nothing else in the stack.
+
+The public instance serves no receiver anchor: its `/range-outline` returns a null center, so the
+map draws no receiver marker, no range rings, and no distance or bearing readouts — only the
+measured coverage outline. It also does not receive the feeder coordinates that the private
+instance reads from `.env`, so those coordinates never enter its environment.
 
 ## Tech stack
 

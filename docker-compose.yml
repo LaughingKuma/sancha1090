@@ -507,6 +507,61 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  livemap-public:
+    # Public-facing livemap behind the Cloudflare Tunnel. Same image/build/healthcheck/depends_on as `livemap`,
+    # but NO host port is published anywhere (reachable only in-network, via cloudflared). Behind the `public`
+    # profile so the default `docker compose up -d` is unaffected until an operator opts in with --profile public.
+    profiles: ["public"]
+    build: ./livemap
+    image: sancha1090-livemap:latest
+    depends_on:
+      risingwave:
+        condition: service_healthy
+      risingwave-init:
+        condition: service_completed_successfully
+    environment:
+      # DO NOT reference LIVEMAP_FEEDER_LAT/LON here — not even as ${VAR:-default}. Compose interpolation would
+      # inject the real gitignored .env value; this instance MUST serve the app's baked public-landmark decoy
+      # (Carrot Tower), so the real antenna coords never enter its environment.
+      LIVEMAP_PUBLIC_MODE: "1"
+      LIVEMAP_POLL_SECONDS: "0.5"
+      LIVEMAP_CH_HOST: ${LIVEMAP_CH_HOST:-clickhouse}
+      LIVEMAP_CH_PORT: ${LIVEMAP_CH_PORT:-8123}
+      LIVEMAP_CH_USER: superset_ro
+      LIVEMAP_CH_PASSWORD: ${CH_SUPERSET_PASSWORD:?CH_SUPERSET_PASSWORD must be set in .env}
+      LIVEMAP_CH_DB: ${LIVEMAP_CH_DB:-gold_ch}
+    volumes:
+      - ./livemap/static:/app/static:ro
+    # default keeps RW/CH reachable; edge is the tunnel-only network shared with cloudflared. Listing
+    # networks drops the implicit default, so default must be named explicitly here.
+    networks: ["default", "edge"]
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  cloudflared:
+    # Cloudflare Tunnel: dials OUT to Cloudflare (zero inbound ports; the home IP never appears in DNS).
+    # Token mode — the hostname -> http://livemap-public:8000 ingress rule is managed in the Cloudflare
+    # dashboard, NOT in this repo. `:-` (not `:?`) so a missing token can't break the base stack; the
+    # `public` profile keeps this opt-in alongside livemap-public.
+    profiles: ["public"]
+    # Pin like every other third-party image here — :latest on the tunnel is a security/reproducibility risk.
+    image: cloudflare/cloudflared:2026.7.2
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TUNNEL_TOKEN:-}
+    # edge network ONLY: the tunnel can reach livemap-public but no other stack service by topology, so
+    # "nothing else goes public" is enforced at the network layer, not just by the dashboard ingress rule.
+    networks: ["edge"]
+    depends_on:
+      livemap-public:
+        condition: service_healthy
+    restart: unless-stopped
+
   swim-consumer:
     build:
       context: .
@@ -547,6 +602,11 @@ services:
       retries: 6
       start_period: 20s
     restart: unless-stopped
+
+networks:
+  # Public edge: shared ONLY by cloudflared + livemap-public so the tunnel reaches the public app and nothing
+  # else in the stack. A normal bridge (not internal) — cloudflared needs egress to dial out to Cloudflare.
+  edge:
 
 volumes:
   # Pin existing names so renaming COMPOSE_PROJECT_NAME doesn't orphan data.

@@ -47,6 +47,16 @@ LADD_CACHE_PATH = os.environ.get("LIVEMAP_LADD_CACHE_PATH", "/tmp/ladd_suppress_
 FEEDER_LAT = float(os.environ.get("LIVEMAP_FEEDER_LAT", "35.6434"))
 FEEDER_LON = float(os.environ.get("LIVEMAP_FEEDER_LON", "139.6692"))
 
+# Public-instance hardening — every effect below is gated on this flag so the private LAN instance is
+# byte-identical when it is unset (the middleware isn't even registered).
+PUBLIC_MODE = os.environ.get("LIVEMAP_PUBLIC_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+# Per-IP token bucket on the per-request DB endpoints only (/aircraft + /history are in-memory reads, free).
+RATE_LIMITED_PREFIXES = ("/track/", "/flights/", "/path/")
+RATE_LIMIT_BURST = float(os.environ.get("LIVEMAP_RATE_LIMIT_BURST", "10"))
+RATE_LIMIT_REFILL_PER_SEC = float(os.environ.get("LIVEMAP_RATE_LIMIT_REFILL_PER_SEC", "1"))
+# Cap on tracked IP buckets; fully-refilled idle ones are swept lazily on access past this cap.
+RATE_BUCKETS_MAX = int(os.environ.get("LIVEMAP_RATE_BUCKETS_MAX", "65536"))
+
 # recv rides the payload end-to-end (the P2 multi-receiver seam); rendered uniformly today.
 QUERY = """
     SELECT capture_ts, hex, flight, lat, lon, alt_baro, gs, track,
@@ -413,6 +423,33 @@ def _refresh_ladd_suppress(current):
     return fresh
 
 
+# value shape: ip -> (tokens, last_seen_ts)
+_rate_buckets: collections.OrderedDict = collections.OrderedDict()
+
+
+def _client_ip(request) -> str:
+    # Only Cloudflare can reach the public instance (tunnel-only ingress), so CF-Connecting-IP is the real
+    # client; fall back to the socket peer for a direct/local hit.
+    cf = request.headers.get("CF-Connecting-IP")
+    if cf:
+        return cf.strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limit_allow(key, now, buckets, burst=RATE_LIMIT_BURST,
+                      refill=RATE_LIMIT_REFILL_PER_SEC, max_buckets=RATE_BUCKETS_MAX) -> bool:
+    tokens, last = buckets.pop(key, (burst, now))   # pop+reinsert = move-to-end, so dict order IS recency
+    tokens = min(burst, tokens + (now - last) * refill)
+    allowed = tokens >= 1.0
+    buckets[key] = (tokens - 1.0 if allowed else tokens, now)
+    # Hard LRU ceiling, O(1) per request: evicting the least-recently-seen bucket only re-grants that IP a
+    # fresh burst — acceptable for a backstop limiter, unlike unbounded growth plus a full-map scan per
+    # request under exactly the distributed load the limiter exists to absorb.
+    while len(buckets) > max_buckets:
+        del buckets[next(iter(buckets))]
+    return allowed
+
+
 async def _poller() -> None:
     global _snapshot, _outline, _routes, _ladd_suppress
     n = 0
@@ -444,6 +481,30 @@ async def _poller() -> None:
         await asyncio.sleep(POLL_SECONDS)
 
 
+if PUBLIC_MODE:
+    # Public hardening: per-IP rate limit on the DB endpoints, an edge-cache hint on /aircraft, and security
+    # headers. Registered only in public mode so the private instance's responses stay byte-identical.
+    @app.middleware("http")
+    async def _public_hardening(request, call_next):
+        path = request.url.path
+        if path.startswith(RATE_LIMITED_PREFIXES) and not _rate_limit_allow(
+            # monotonic, not wall-clock: an NTP step backwards would make elapsed negative and over-deny
+            _client_ip(request), time.monotonic(), _rate_buckets
+        ):
+            # Generic body: the limit is rate-based, not identity-based, so a 429 can't be a privacy oracle.
+            resp = JSONResponse({"detail": "rate limited"}, status_code=429)
+        else:
+            resp = await call_next(request)
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        resp.headers["X-Frame-Options"] = "DENY"
+        if path == "/aircraft":
+            # s-maxage=1: with a dashboard Cache Rule making /aircraft cache-eligible (Cloudflare doesn't
+            # cache JSON by default), the edge absorbs the snapshot fan-out; browsers still poll ~live.
+            resp.headers["Cache-Control"] = "public, s-maxage=1"
+        return resp
+
+
 @app.get("/aircraft")
 async def aircraft() -> JSONResponse:
     return JSONResponse(_snapshot)
@@ -451,8 +512,10 @@ async def aircraft() -> JSONResponse:
 
 @app.get("/range-outline")
 async def range_outline() -> JSONResponse:
-    # center = receiver (Carrot Tower default in public; real antenna from .env); ring = coverage polygon
-    return JSONResponse({"center": [FEEDER_LON, FEEDER_LAT], "ring": _outline})
+    # Public mode serves no receiver anchor (center null): the public-landmark default was judged too close
+    # to the real antenna to anchor publicly. Frontend null-guards marker/rings/range-bearing; ring renders.
+    center = None if PUBLIC_MODE else [FEEDER_LON, FEEDER_LAT]
+    return JSONResponse({"center": center, "ring": _outline})
 
 
 @app.get("/track/{icao}")
