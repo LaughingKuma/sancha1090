@@ -303,10 +303,11 @@ def route_targets(day: date, *, client=None) -> list[str]:
     try:
         # Overlap on either endpoint: a flight landing on 'day' but departing 'day-1' must be
         # targeted on the 'day' run so run_daily's (day, day-1) fetch grabs its arrival trace.
+        # Every reconciled flight qualifies (rung 1): endpoint-NULL-only targeting starved
+        # fct_flight_path once SWIM resolved O/D pre-departure; the attempt ledger self-limits.
         rows = c.query(
             f"SELECT DISTINCT lower(icao24) FROM {gold}.fct_flights_reconciled "
-            f"WHERE (origin_icao IS NULL OR dest_icao IS NULL) "
-            f"AND (toDate(start_time) = %(day)s OR toDate(end_time) = %(day)s) "
+            f"WHERE (toDate(start_time) = %(day)s OR toDate(end_time) = %(day)s) "
             f"AND icao24 IS NOT NULL",
             parameters={"day": day.isoformat()},
         ).result_rows
@@ -434,6 +435,7 @@ def run_daily(
     progress=None,
     workers: int = 1,
     include_error_retries: bool = False,
+    include_missing_retries: bool = False,
     raise_on_errors: bool = False,
 ) -> dict:
     fetch = fetch or fetch_trace
@@ -445,7 +447,10 @@ def run_daily(
     # accepted cross-midnight gap: a hex heard on only one UTC day never gets the other day's trace.
     days = (day,) if targets is not None else (day, day - timedelta(days=1))
     pairs = [(h, d.isoformat()) for h in hexes for d in days]
-    retry_pairs = ledger.due_error_pairs(engine) if include_error_retries else []
+    retry_pairs = (
+        (ledger.due_error_pairs(engine) if include_error_retries else [])
+        + (ledger.due_missing_pairs(engine) if include_missing_retries else [])
+    )
     pairs = list(dict.fromkeys([*pairs, *retry_pairs]))
     pairs = ledger.filter_unattempted(pairs, engine)
 

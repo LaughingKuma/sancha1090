@@ -106,6 +106,29 @@ def due_error_pairs(
         return [(r.icao24, r.trace_day) for r in rows]
 
 
+def due_missing_pairs(
+    engine: Optional[sa.Engine] = None,
+    *,
+    retry_after_days: int = 7,
+    max_attempts: int = 2,
+    limit: int = 500,
+) -> list[tuple[str, str]]:
+    # The scheduled D-3..D sweep stops proposing a pair days before the 7-day aging window opens,
+    # so aged 404s need their own due selector or late-published adsb.lol traces are never retried.
+    if limit < 1:
+        return []
+    eng = _prepare(engine)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retry_after_days)).isoformat()
+    stmt = sa.text(
+        f"SELECT icao24, trace_day FROM {_TABLE} "
+        "WHERE outcome = 'missing' AND attempts < :max_attempts AND attempted_at <= :cutoff "
+        "ORDER BY attempted_at, trace_day, icao24 LIMIT :limit"
+    )
+    with eng.begin() as conn:
+        rows = conn.execute(stmt, {"max_attempts": max_attempts, "cutoff": cutoff, "limit": limit})
+        return [(r.icao24, r.trace_day) for r in rows]
+
+
 def delete_attempts(pairs: list[tuple[str, str]], engine: Optional[sa.Engine] = None) -> int:
     # Backfill re-segment: drop 'landed' ledger rows so filter_unattempted lets the pair refetch.
     if not pairs:

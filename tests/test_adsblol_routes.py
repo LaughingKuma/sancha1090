@@ -507,6 +507,38 @@ def test_run_daily_includes_aged_errors_outside_current_targets(monkeypatch):
     assert out["retry_pairs"] == 1 and out["fetched"] == 2
 
 
+def test_run_daily_includes_aged_missing_outside_current_targets(monkeypatch):
+    import sqlalchemy as sa
+
+    import include.adsblol_route_ledger as ledger
+
+    eng = sa.create_engine("sqlite://")
+    ledger.ensure_table(eng)
+    ledger.record_attempts([("a61c53", "2026-06-20", "missing")], eng)
+    with eng.begin() as conn:
+        conn.execute(sa.text(
+            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
+    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(routes, "write_parquet", lambda _df, key: f"s3://b/{key}")
+    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
+
+    fetched = []
+
+    def fake_fetch(day, hexid, **_kw):
+        fetched.append((hexid, day.isoformat()))
+        return _doc()
+
+    out = routes.run_daily(
+        DAY,
+        targets=["a61c53"],
+        engine=eng,
+        fetch=fake_fetch,
+        include_missing_retries=True,
+    )
+    assert set(fetched) == {("a61c53", "2026-06-25"), ("a61c53", "2026-06-20")}
+    assert out["retry_pairs"] == 1 and out["fetched"] == 2
+
+
 def test_run_daily_raises_after_recording_failed_pairs(monkeypatch):
     import sqlalchemy as sa
 
@@ -546,7 +578,7 @@ class _FakeClient:
         return _FakeResult(self._rows)
 
 
-def test_route_targets_overlaps_on_either_endpoint():
+def test_route_targets_targets_every_reconciled_flight():
     # SQL lower()s icao24; the fake returns rows already lowered as the driver would.
     fake = _FakeClient([("a61c53",), ("abc123",), ("a61c53",)])
     out = routes.route_targets(DAY, client=fake)
@@ -554,7 +586,9 @@ def test_route_targets_overlaps_on_either_endpoint():
     # Overlap predicate targets both departure-day and arrival-day flights.
     assert "toDate(start_time) = %(day)s" in sql
     assert "toDate(end_time) = %(day)s" in sql
-    assert "origin_icao IS NULL OR dest_icao IS NULL" in sql
+    # rung 1: endpoint-NULL-only targeting starved fct_flight_path once SWIM began resolving
+    # O/D pre-departure — every reconciled flight is a trace target now.
+    assert "origin_icao" not in sql and "dest_icao" not in sql
     assert "icao24 IS NOT NULL" in sql
     assert fake.seen["parameters"] == {"day": DAY.isoformat()}
     assert out == ["a61c53", "abc123"]  # deduped + sorted

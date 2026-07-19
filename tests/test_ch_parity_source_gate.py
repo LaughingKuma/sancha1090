@@ -150,3 +150,88 @@ def test_source_checks_pin_explicit_s3_structure():
     for name, _ch_sql, ref_sql, _cmp in p.source_checks(1_782_100_000):
         if "s3(" in ref_sql:
             assert "structure=" in ref_sql, f"{name}: source s3() read missing explicit structure= (636 risk)"
+
+
+# --- rung 1: fct_flight_path coverage gate --------------------------------------------------------
+
+def _path_fake(now_epoch, path_head_epoch, share_rows):
+    def q(sql):
+        if "now()" in sql:
+            return [[now_epoch]]
+        if "n_adsblol" in sql:
+            return share_rows
+        if "max(day_key)" in sql:
+            return [[path_head_epoch]]
+        raise AssertionError(f"unmapped path-coverage sql: {sql}")
+    return q
+
+
+_PATH_ROWS_OK = [["2026-07-12", 5632, 0.955], ["2026-07-13", 5896, 0.943],
+                 ["2026-07-14", 5762, 0.951]]
+
+
+def test_path_coverage_gate_green_when_fresh_and_covered():
+    out = p.run_path_coverage_gate(ch_query=_path_fake(_NOW, _NOW - 4 * 86400, _PATH_ROWS_OK))
+    assert out["all_ok"]
+    assert out["passed"] == out["total"] == 2
+
+
+def test_path_coverage_gate_reds_on_stalled_mart():
+    # 7 days > the 6.5-day tolerance (healthy worst case 5d + build phase, + one 24h publish slip).
+    with pytest.raises(RuntimeError, match="path coverage gate FAILED"):
+        p.run_path_coverage_gate(ch_query=_path_fake(_NOW, _NOW - 7 * 86400, _PATH_ROWS_OK))
+
+
+def test_path_coverage_freshness_exact_boundary():
+    # fresh()'s comparator is (ref - ch) <= max_lag_s, so exactly at the tolerance still passes;
+    # one second further stale trips it. Healthy share rows so only freshness varies.
+    tol = p._PATH_FRESHNESS_LAG_TOL_S
+    out = p.run_path_coverage_gate(ch_query=_path_fake(_NOW, _NOW - tol, _PATH_ROWS_OK))
+    assert out["all_ok"]
+    with pytest.raises(RuntimeError, match="path coverage gate FAILED"):
+        p.run_path_coverage_gate(ch_query=_path_fake(_NOW, _NOW - tol - 1, _PATH_ROWS_OK))
+
+
+def test_path_coverage_gate_reds_on_share_cliff_and_names_the_day():
+    rows = [["2026-07-12", 5632, 0.955], ["2026-07-13", 5896, 0.943], ["2026-07-14", 5762, 0.607]]
+    with pytest.raises(RuntimeError, match="2026-07-14"):
+        p.run_path_coverage_gate(ch_query=_path_fake(_NOW, _NOW - 4 * 86400, rows))
+
+
+def test_path_coverage_gate_reds_on_empty_share_window():
+    # A zero-row share window (e.g. spine truncation) must fail closed, not false-green.
+    with pytest.raises(RuntimeError, match="share window empty"):
+        p.run_path_coverage_gate(ch_query=_path_fake(_NOW, _NOW - 4 * 86400, []))
+
+
+def test_path_coverage_gate_reds_on_short_window():
+    # Round-3 operator decision: a short window (< _PATH_SHARE_DAYS) can conceal partial/truncated
+    # reconciled data, so it now fails closed instead of passing-but-reported.
+    rows = [["2026-07-13", 5896, 0.943], ["2026-07-14", 5762, 0.951]]
+    with pytest.raises(RuntimeError, match="share window short"):
+        p.run_path_coverage_gate(ch_query=_path_fake(_NOW, _NOW - 4 * 86400, rows))
+
+
+def test_path_coverage_gate_reds_when_all_days_below_min_flights():
+    rows = [["2026-07-16", 120, 0.10], ["2026-07-17", 200, 0.20], ["2026-07-18", 90, 0.05]]
+    with pytest.raises(RuntimeError, match="no evaluable days"):
+        p.run_path_coverage_gate(ch_query=_path_fake(_NOW, _NOW - 4 * 86400, rows))
+
+
+def test_path_coverage_low_sample_day_skips_floor_but_is_reported():
+    # A partial/low-flight day must not red the floor, but must surface as skipped — never silent.
+    rows = [["2026-07-16", 5900, 0.95], ["2026-07-17", 5800, 0.94], ["2026-07-18", 120, 0.10]]
+    out = p.run_path_coverage_gate(ch_query=_path_fake(_NOW, _NOW - 4 * 86400, rows))
+    assert out["all_ok"]
+    share = out["results"][-1]
+    assert share["skipped"] == [("2026-07-18", 120, 0.10)]
+
+
+def test_path_coverage_share_query_contract():
+    # Pin the alarm contract: spine denominator via LEFT JOIN, spine-derived expected days
+    # (a dropped interior partition must read as 0%, not yield its slot to an older day).
+    assert p._PATH_ADSBLOL_SHARE_FLOOR == 0.75
+    assert p._PATH_SHARE_MIN_FLIGHTS == 500
+    assert p._PATH_SHARE_DAYS == 3
+    assert "LEFT JOIN" in p._PATH_SHARE_SQL and "fct_flights_reconciled" in p._PATH_SHARE_SQL
+    assert "max(day_key)" in p._PATH_SHARE_SQL

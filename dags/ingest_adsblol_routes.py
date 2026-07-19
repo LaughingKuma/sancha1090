@@ -35,6 +35,7 @@ def ingest_adsblol_routes():
             targets=rooftop_cohort(day),
             workers=2,
             include_error_retries=True,
+            include_missing_retries=True,
             raise_on_errors=True,
         )
 
@@ -43,7 +44,19 @@ def ingest_adsblol_routes():
         from include.adsblol_routes import run_daily
 
         end_dt = context.get("data_interval_end") or context["dag_run"].run_after
-        return run_daily((end_dt - timedelta(days=1)).date(), raise_on_errors=True)
+        day = (end_dt - timedelta(days=1)).date()
+        # D-3..D sweep: the flights lane's D-2 arrival pull lands 14:30 UTC, after this DAG's
+        # 03:00 tick, so late arrivals need a fourth shot; the ledger dedups re-proposals.
+        results: dict = {}
+        failed: list[str] = []
+        for d in (day - timedelta(days=n) for n in (3, 2, 1, 0)):
+            try:
+                results[d.isoformat()] = run_daily(d, raise_on_errors=True)
+            except Exception as exc:  # one day's failure must not starve the other sweep days
+                failed.append(f"{d} ({exc})")
+        if failed:
+            raise RuntimeError(f"route sweep day(s) failed: {'; '.join(failed)}")
+        return results
 
     @task(trigger_rule="all_done")
     def load_to_clickhouse(_cohort_res: dict | None, _route_res: dict | None) -> dict:

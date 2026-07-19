@@ -357,10 +357,10 @@ This project stands on three community projects that choose to keep aviation dat
   (300 to 1,100 km/h). The exception is a gap that hides a ground stop: an hour-plus gap a jet
   crosses at under 550 km/h, or a sub-1,000 ft fix beside a turnaround-sized gap, breaks the
   chain instead of fusing a tech-stop rotation into one flight. A daily DAG
-  (`ingest_adsblol_routes`) makes targeted per-hex fetches against the still-unresolved
-  endpoints, plus a nightly fetch of every hex the rooftop antenna itself heard the day before
-  (about 950 a night), and a backlog driver (`scripts/backfill_adsblol_routes.py`) streams the
-  historical tarballs.
+  (`ingest_adsblol_routes`) makes targeted per-hex fetches for every reconciled flight touching
+  the day (swept across a four-day window to catch late-reconciled arrivals), plus a nightly
+  fetch of every hex the rooftop antenna itself heard the day before (about 950 a night), and a
+  backlog driver (`scripts/backfill_adsblol_routes.py`) streams the historical tarballs.
 
   `gold.fct_flights_reconciled` is the canonical O/D source. It resolves each flight's
   origin and destination by cross-source consensus, scoped to flights the Japan box is

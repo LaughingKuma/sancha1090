@@ -284,6 +284,97 @@ def run_source_gate(*, ch_query=None, serving_query=None) -> dict:
     return summary
 
 
+# Rung 1 trajectory-coverage alarm. day_key is a midnight epoch and the head only advances after the
+# 03:00 UTC trace load: healthy worst case 5d + ~3h build phase + one tolerated 24h publish slip = 6d3h,
+# rounded up to 6.5d as explicit load/build-jitter headroom. A stall reds here; share owns value regressions.
+_PATH_FRESHNESS_LAG_TOL_S = int(6.5 * 86400)
+# Healthy days measure 84-96% of reconciled flights with >=1 adsblol fix; the starved cliff was ~60%.
+# 75 splits the bands with ~9pt margin each side. Low-flight days are skipped-but-reported, never silent.
+_PATH_ADSBLOL_SHARE_FLOOR = 0.75
+_PATH_SHARE_MIN_FLIGHTS = 500
+_PATH_SHARE_DAYS = 3
+
+PATH_FRESHNESS_CHECKS: list[tuple[str, str, str, Callable[[float, float], bool]]] = [
+    ("fct_flight_path.freshness",
+     "SELECT toUnixTimestamp(toDateTime(max(day_key))) FROM gold_ch.fct_flight_path",
+     "SELECT toUnixTimestamp(now())", fresh(_PATH_FRESHNESS_LAG_TOL_S)),
+]
+
+# Denominator is the reconciled spine (LEFT JOIN): deriving it from the path/summary side would
+# silently drop zero-fix flights and overstate coverage. Expected days also come from the spine
+# (newest settled start-days <= the path head), NOT from day_keys present in the path mart — a
+# dropped interior partition must read as 0%, not yield its slot to an older healthy day.
+# coalesce covers join_use_nulls=0 defaults. Floor/min-sample applied in Python so low-sample
+# days surface as skipped instead of vanishing inside a WHERE.
+_PATH_SHARE_SQL = (
+    "SELECT day, flights, share FROM ("
+    "  SELECT toDate(r.start_time) AS day, count() AS flights,"
+    "         countIf(coalesce(s.n_adsblol, 0) > 0) / count() AS share"
+    "  FROM gold_ch.fct_flights_reconciled r"
+    "  LEFT JOIN gold_ch.fct_flight_path_summary s ON s.flight_id = r.flight_id"
+    "  WHERE toDate(r.start_time) IN ("
+    "    SELECT day FROM (SELECT DISTINCT toDate(start_time) AS day"
+    "                     FROM gold_ch.fct_flights_reconciled"
+    "                     WHERE toDate(start_time) <= (SELECT max(day_key) FROM gold_ch.fct_flight_path)"
+    f"                    ORDER BY day DESC LIMIT {_PATH_SHARE_DAYS}))"
+    "  GROUP BY day)"
+    " ORDER BY day"
+)
+
+
+def _adsblol_share_check(ch_query) -> dict:
+    # Per-day, not pooled: a pooled window rate hides one fresh 60% day behind healthy neighbours.
+    name = "fct_flight_path.adsblol_share"
+    try:
+        days = [(str(r[0]), int(r[1]), float(r[2])) for r in ch_query(_PATH_SHARE_SQL)]
+        evaluated = [d for d in days if d[1] >= _PATH_SHARE_MIN_FLIGHTS]
+        skipped = [d for d in days if d[1] < _PATH_SHARE_MIN_FLIGHTS]
+        low = [d for d in evaluated if d[2] < _PATH_ADSBLOL_SHARE_FLOOR]
+        # Operator decision (round 3): short or all-skipped windows can conceal partial/truncated
+        # reconciled data -> fail closed; only a full window with >=1 evaluable day can pass.
+        if not days:
+            err = "share window empty"
+        elif len(days) < _PATH_SHARE_DAYS:
+            err = f"share window short ({len(days)}/{_PATH_SHARE_DAYS})"
+        elif not evaluated:
+            err = "no evaluable days (all below min-flights)"
+        else:
+            err = None
+        ok = err is None and not low
+        window = len(days)
+    except Exception as e:  # a bad alarm query must not mask the freshness result
+        low, skipped, ok, err, window = [], [], False, repr(e), 0
+    if low:
+        log.warning("parity[path] adsblol share below floor: %s", low)
+    if skipped:
+        log.warning("parity[path] adsblol share days skipped (insufficient sample): %s", skipped)
+    if err:
+        log.warning("parity[path] adsblol share query failed: %s", err)
+    return {"check": name, "ch": len(low), "ref": 0, "ok": ok, "error": err,
+            "days": low, "skipped": skipped, "window": window}
+
+
+def run_path_coverage_gate(*, ch_query=None) -> dict:
+    # Own gate (not part of run_source_gate): a coverage red must never block value_gate's
+    # advance-only watermark — the DAG runs this as a parallel task.
+    chq = ch_query or _ch_query
+    frsh = run_parity(PATH_FRESHNESS_CHECKS, "path", ch_query=chq, ref_query=chq)
+    share = _adsblol_share_check(chq)
+    results = frsh["results"] + [share]
+    passed = frsh["passed"] + (1 if share["ok"] else 0)
+    out = {"results": results, "passed": passed, "total": len(results),
+           "all_ok": passed == len(results)}
+    if not out["all_ok"]:
+        detail = ""
+        if share["days"]:
+            detail = f"; low days: {share['days']}"
+        elif share["error"]:
+            detail = f"; share query error: {share['error']}"
+        raise RuntimeError(
+            f"path coverage gate FAILED ({len(results) - passed}/{len(results)}){detail}; results: {results}")
+    return out
+
+
 if __name__ == "__main__":
     import json
 

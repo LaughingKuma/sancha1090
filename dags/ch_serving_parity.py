@@ -43,9 +43,19 @@ def ch_serving_parity():
 
         return run_value_gate()
 
+    @task
+    def path_coverage() -> dict:
+        # Trajectory-coverage alarm (rung 1): red if fct_flight_path stalls or the adsblol
+        # share cliffs. Parallel to value_gate so its red never stops the served-value watermark.
+        from include.ch_parity import run_path_coverage_gate
+
+        return run_path_coverage_gate()
+
     # gate >> value_gate: its oracle is bronze, so it must only advance the watermark after completeness passes —
     # else a meaningless pass on incomplete bronze ages the discrepancy out of the recheck window.
-    gate() >> value_gate()
+    g = gate()
+    g >> value_gate()
+    g >> path_coverage()
 
 
 ch_serving_parity()

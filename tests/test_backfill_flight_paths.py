@@ -135,8 +135,9 @@ def test_main_default_end_is_yesterday_utc(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["backfill_flight_paths.py"])
     captured = {}
     monkeypatch.setattr(bfp, "run",
-                        lambda start, end, workers, dry_run:
-                        captured.update(start=start, end=end, workers=workers, dry_run=dry_run) or 0)
+                        lambda start, end, workers, dry_run, cohort:
+                        captured.update(start=start, end=end, workers=workers, dry_run=dry_run,
+                                        cohort=cohort) or 0)
 
     class _FixedDatetime(bfp.datetime):
         @classmethod
@@ -151,6 +152,7 @@ def test_main_default_end_is_yesterday_utc(monkeypatch):
     assert captured["end"] == date(2026, 7, 10)
     assert captured["workers"] == 2
     assert captured["dry_run"] is False
+    assert captured["cohort"] == "rooftop"
 
 
 def test_main_parses_explicit_args(monkeypatch):
@@ -160,14 +162,82 @@ def test_main_parses_explicit_args(monkeypatch):
     ])
     captured = {}
     monkeypatch.setattr(bfp, "run",
-                        lambda start, end, workers, dry_run:
-                        captured.update(start=start, end=end, workers=workers, dry_run=dry_run) or 0)
+                        lambda start, end, workers, dry_run, cohort:
+                        captured.update(start=start, end=end, workers=workers, dry_run=dry_run,
+                                        cohort=cohort) or 0)
 
     rc = bfp.main()
     assert rc == 0
     assert captured == {
         "start": date(2026, 6, 1), "end": date(2026, 6, 2), "workers": 4, "dry_run": True,
+        "cohort": "rooftop",
     }
+
+
+def test_reconciled_dry_run_counts_both_halo_days(monkeypatch):
+    monkeypatch.setattr(bfp, "analytics_engine", lambda: "ENGINE")
+    monkeypatch.setattr(bfp.routes, "route_targets", lambda _day: ["a61c53"])
+    monkeypatch.setattr(bfp.routes, "run_daily", _fail)
+    seen = []
+    monkeypatch.setattr(bfp.ledger, "filter_unattempted",
+                        lambda pairs, _engine: seen.append(pairs) or pairs)
+    rc = bfp.run(date(2026, 7, 6), date(2026, 7, 6), workers=2, dry_run=True,
+                 cohort="reconciled")
+    assert rc == 0
+    # No-targets run_daily fetches (day, day-1); the dry-run must count the same halo.
+    assert seen == [[("a61c53", "2026-07-06"), ("a61c53", "2026-07-05")]]
+
+
+def test_reconciled_live_run_uses_no_targets_run_daily(monkeypatch):
+    monkeypatch.setattr(bfp, "analytics_engine", lambda: "ENGINE")
+    calls = []
+
+    def fake_run_daily(day, targets=None, *, engine=None, workers=1, progress=None):  # noqa: ARG001
+        calls.append({"day": day, "targets": targets, "workers": workers})
+        return {"fetched": 2, "landed": 2, "missing": 0, "errors": 0}
+
+    monkeypatch.setattr(bfp.routes, "run_daily", fake_run_daily)
+    rc = bfp.run(date(2026, 7, 6), date(2026, 7, 6), workers=2, dry_run=False,
+                 cohort="reconciled")
+    assert rc == 0
+    assert calls == [{"day": date(2026, 7, 6), "targets": None, "workers": 2}]
+
+
+def test_reconciled_dry_run_dedupes_halo_pairs_across_days(monkeypatch):
+    monkeypatch.setattr(bfp, "analytics_engine", lambda: "ENGINE")
+    monkeypatch.setattr(bfp.routes, "route_targets", lambda _day: ["a61c53"])
+    monkeypatch.setattr(bfp.routes, "run_daily", _fail)
+    seen = []
+    monkeypatch.setattr(bfp.ledger, "filter_unattempted",
+                        lambda pairs, _engine: seen.append(pairs) or pairs)
+    rc = bfp.run(date(2026, 7, 6), date(2026, 7, 7), workers=2, dry_run=True,
+                 cohort="reconciled")
+    assert rc == 0
+    # Day 07-07 must not re-count (a61c53, 2026-07-06): a live run's ledger would have
+    # recorded that pair during the 07-06 iteration and skipped it on 07-07.
+    assert seen == [[("a61c53", "2026-07-06"), ("a61c53", "2026-07-05")],
+                    [("a61c53", "2026-07-07")]]
+
+
+def test_main_passes_cohort_through(monkeypatch):
+    monkeypatch.setattr(sys, "argv", [
+        "backfill_flight_paths.py", "--start", "2026-07-06", "--end", "2026-07-07",
+        "--cohort", "reconciled",
+    ])
+    captured = {}
+    monkeypatch.setattr(bfp, "run",
+                        lambda _start, _end, _workers, _dry_run, cohort:
+                        captured.update(cohort=cohort) or 0)
+    assert bfp.main() == 0
+    assert captured["cohort"] == "reconciled"
+
+
+def test_reconciled_cohort_requires_explicit_start(monkeypatch):
+    # No --start + --cohort reconciled must not silently inherit the rooftop-era default —
+    # that would sweep ~8 weeks and burn aged-404 final retries.
+    monkeypatch.setattr(sys, "argv", ["backfill_flight_paths.py", "--cohort", "reconciled"])
+    with pytest.raises(SystemExit):
+        bfp.main()
 
 
 def test_workers_arg_bounded_1_to_4(monkeypatch):

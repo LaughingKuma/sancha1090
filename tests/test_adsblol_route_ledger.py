@@ -74,6 +74,38 @@ def test_due_error_pairs_returns_only_aged_errors_in_stable_order():
     assert ledger.due_error_pairs(eng, limit=0) == []
 
 
+def test_due_missing_pairs_returns_only_aged_missing_under_cap_in_stable_order():
+    eng = _engine()
+    ledger.record_attempts([
+        ("bbbbbb", "2026-06-24", "missing"),
+        ("aaaaaa", "2026-06-24", "missing"),
+        ("cccccc", "2026-06-24", "error"),
+        ("dddddd", "2026-06-24", "landed"),
+    ], eng)
+    # Fresh misses: inside the 7-day aging window, not due yet.
+    assert ledger.due_missing_pairs(eng) == []
+    with eng.begin() as conn:
+        conn.execute(sa.text(
+            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
+    # Aged missing pairs are due; error/landed outcomes are excluded regardless of age.
+    assert ledger.due_missing_pairs(eng) == [
+        ("aaaaaa", "2026-06-24"),
+        ("bbbbbb", "2026-06-24"),
+    ]
+    assert ledger.due_missing_pairs(eng, limit=1) == [("aaaaaa", "2026-06-24")]
+    assert ledger.due_missing_pairs(eng, limit=0) == []
+
+
+def test_due_missing_pairs_excludes_attempts_at_cap():
+    eng = _engine()
+    ledger.record_attempts([("aaaaaa", "2026-06-24", "missing")], eng)
+    ledger.record_attempts([("aaaaaa", "2026-06-24", "missing")], eng)  # attempts=2 == max_attempts
+    with eng.begin() as conn:
+        conn.execute(sa.text(
+            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
+    assert ledger.due_missing_pairs(eng) == []
+
+
 def test_delete_attempts_reenables_refetch():
     eng = _engine()
     ledger.record_attempts([("a61c53", "2026-06-25", "landed"),
