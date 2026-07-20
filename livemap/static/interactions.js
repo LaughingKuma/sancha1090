@@ -1,5 +1,5 @@
 import { S } from "./state.js";
-import { cardData, hoverCardHTML } from "./card.js";
+import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js";
 import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js";
 import { map, overlay } from "./mapsetup.js";
 
@@ -72,7 +72,7 @@ function maybeFitHistPath(pts) {
 function selectSighting(fid, li, route) {
   const seq = ++S.pathFetchSeq; // any click supersedes an in-flight fetch — including a toggle-off re-click
   restoreHint(); // drop any lingering row hint (no-path / sparse) from a prior pick
-  if (S.histFlightId === fid) { clearHistPath(); clearActiveRow(); return; } // re-click the drawn row → toggle off
+  if (S.histFlightId === fid) { clearHistPath(); clearActiveRow(); renderSpotlight(); return; } // re-click the drawn row → toggle off
   clearActiveRow();
   activeRow = li;
   li.classList.add("ff-active");
@@ -84,6 +84,8 @@ function selectSighting(fid, li, route) {
     .then((j) => {
       if (seq !== S.pathFetchSeq) return; // a newer pick or a deselect superseded this fetch
       const n = setHistPath(j.points);
+      S.histProvisional = !!j.provisional && n > 0; // empty provisional draws nothing — no badge either
+      renderSpotlight(); // sp-badges re-renders from cardData — show/drop the chip now, not next tick
       // a re-render (expand) between click and callback detaches the captured route node — resolve the live one
       const liveRoute = route.isConnected ? route
         : (S.histFlightId === fid && activeRow) ? activeRow.querySelector(".ff-route") : null;
@@ -173,6 +175,11 @@ export function renderSpotlight() {
     spEl("sp-emerg").hidden = true;
     spEl("sp-src").className = ""; // drop the teal MLAT accent so the lost panel greys uniformly
     spEl("sp-vs").className = ""; // and the climb/descent accent — the partial lost-grey wouldn't fully mute it
+    // the lost panel freezes data fields, but the provisional chip tracks its state BOTH ways — a
+    // provisional path drawn while signal-lost must gain the label, and a cleared one must drop it
+    const badges = spEl("sp-badges");
+    if (!S.histProvisional) badges.querySelector(".badge-prov")?.remove();
+    else if (!badges.querySelector(".badge-prov")) badges.insertAdjacentHTML("beforeend", PROV_BADGE);
     return;
   }
   spotlightEl.classList.toggle("mil", a.is_military === true);
@@ -247,11 +254,11 @@ function clearSelection() {
 async function selectAircraft(hex) {
   if (S.selected && S.selected.hex === hex) return;
   S.selected = { hex, pts: [], mil: S.snap.aircraft.some((x) => x.hex === hex && x.is_military === true) };
+  resetHistPath(); // switching aircraft drops the previous one's drawn history path
   rebuildSelectedSegments();
   renderSpotlight();
   const seq = ++S.trackFetchSeq;
   const fseq = ++S.flightsFetchSeq;
-  resetHistPath(); // switching aircraft drops the previous one's drawn history path
   renderFlights(null); // clear any prior selection's list immediately
   fetch(`/flights/${encodeURIComponent(hex)}`, { cache: "no-store" })
     .then((r) => r.json())

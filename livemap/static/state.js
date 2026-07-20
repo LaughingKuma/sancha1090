@@ -16,6 +16,7 @@ export const S = {
   histMarkers: [], // journey endpoints: hollow dot at the start, filled at the end
   histCrumbs: [], // orphan fixes (no segment either side) as small slate dots — keeps a sparse path legible
   histFlightId: null, // flight_id (decimal string) of the drawn sighting; null = none drawn
+  histProvisional: false, // drawn sighting's path is serve-time fused, not yet settled in the mart
   trackFetchSeq: 0,
   flightsFetchSeq: 0,
   pathFetchSeq: 0, // orphans an in-flight /path fetch on a newer click or deselect

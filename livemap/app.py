@@ -102,13 +102,63 @@ PATH_QUERY = f"""
     ORDER BY ts
 """
 
-# Cheap authorization lookup runs on every /path click, including geometry-cache hits. This closes
-# both stale-LADD and stale-flight-id windows without giving up the expensive trajectory cache.
+# Per-click authorization (also on geometry-cache hits): closes stale-LADD/stale-id windows without giving
+# up the geometry cache; the window + start day ride along for the provisional arm (one execution).
 PATH_AUTH_QUERY = f"""
-    SELECT lower(icao24), callsign, is_ladd
+    SELECT lower(icao24), callsign, is_ladd,
+           toUnixTimestamp(start_time), toUnixTimestamp(end_time), toDate(start_time)
     FROM {CH_DB}.fct_flights_reconciled
     WHERE flight_id = {{fid:UInt64}}
     LIMIT 1
+"""
+
+# Overlapping same-hex windows contest fixes in-process (mart stage-1 rule); deliberately is_ladd-blind — a
+# suppressed neighbor still wins its own fixes away. ov_lo/ov_hi pre-bake ±pad on both windows (2·pad).
+PATH_COMPETITOR_QUERY = f"""
+    SELECT flight_id, toUnixTimestamp(start_time), toUnixTimestamp(end_time)
+    FROM {CH_DB}.fct_flights_reconciled
+    WHERE lower(icao24) = {{hex:String}} AND flight_id != {{fid:UInt64}}
+      AND start_time <= toDateTime({{ov_hi:Int64}}) AND end_time >= toDateTime({{ov_lo:Int64}})
+"""
+
+# The three bronze scans mirror fct_flight_path's fixes CTEs (timestamp choice, units, sentinels) with
+# physical leading-key predicates; uniform projection (ts_s, lat, lon, alt_ft, on_ground, gs_kt, track_deg).
+PROVISIONAL_ADSB_QUERY = """
+    SELECT toUInt32(floor(assumeNotNull(capture_ts))), lat, lon,
+           if(alt_baro = 'ground', 0, toFloat64OrNull(alt_baro)),
+           toUInt8(coalesce(alt_baro, '') = 'ground'), gs, track
+    FROM bronze.adsb_states
+    WHERE capture_date BETWEEN {day_lo:Date} AND {day_hi:Date}
+      AND lower(hex) = {hex:String}
+      AND capture_ts IS NOT NULL AND lat IS NOT NULL AND lon IS NOT NULL
+      AND capture_ts >= {win_lo:Int64} AND capture_ts < {win_hi:Int64} + 1
+"""
+
+PROVISIONAL_ADSBLOL_QUERY = """
+    SELECT toUnixTimestamp(toDateTime(assumeNotNull(ts), 'UTC')), lat, lon, alt_ft,
+           toUInt8(coalesce(on_ground, false)), gs_kt, track_deg
+    FROM bronze.adsblol_flight_paths
+    WHERE trace_day BETWEEN {halo_lo:Date} AND {halo_hi:Date}
+      AND lower(icao24) = {hex:String}
+      AND ts IS NOT NULL AND lat IS NOT NULL AND lon IS NOT NULL
+      AND ts >= toDateTime64({win_lo:Int64}, 6, 'UTC') AND ts < toDateTime64({win_hi:Int64} + 1, 6, 'UTC')
+"""
+
+# snapshot_date halo ±1 AND the broad snapshot_time range (the primary key LEADS with snapshot_time; the
+# 10,300 s skew tail rules out fixed slack). The event-time clip does the precision work.
+PROVISIONAL_OPENSKY_QUERY = """
+    SELECT toUnixTimestamp(toDateTime(assumeNotNull(coalesce(time_position, snapshot_time)), 'UTC')),
+           latitude, longitude, baro_altitude * 3.28084,
+           toUInt8(coalesce(on_ground, false)), velocity * 1.94384, true_track
+    FROM bronze.opensky_states
+    WHERE snapshot_date BETWEEN {halo_lo:Date} AND {halo_hi:Date}
+      AND snapshot_time >= toDateTime64({broad_lo:Int64}, 6, 'UTC')
+      AND snapshot_time < toDateTime64({broad_hi:Int64}, 6, 'UTC')
+      AND lower(icao24) = {hex:String}
+      AND coalesce(time_position, snapshot_time) IS NOT NULL
+      AND latitude IS NOT NULL AND longitude IS NOT NULL
+      AND toDateTime(assumeNotNull(coalesce(time_position, snapshot_time)), 'UTC')
+          BETWEEN toDateTime({win_lo:Int64}, 'UTC') AND toDateTime({win_hi:Int64}, 'UTC')
 """
 
 @asynccontextmanager
@@ -190,6 +240,33 @@ try:
 except ValueError:
     PATH_CACHE_MAX = 256
 UINT64_MAX = 2**64 - 1
+
+# Provisional fallback (rung 2): flights newer than the mart's built head get a serve-time fused path.
+# 600 s mirrors dbt path_window_pad_min: 10 — mart windows are observation clips, 5.97% of path rows are pad-only.
+PATH_WINDOW_PAD_S = 600
+PATH_HEAD_QUERY = f"SELECT max(day_key) FROM {CH_DB}.fct_flight_path"
+PATH_HEAD_TTL_S = float(os.environ.get("LIVEMAP_PATH_HEAD_TTL_S", "60"))
+# None = never loaded (callers fail closed); a failed refresh keeps last-good — the head only ever advances,
+# so staleness is bounded and harmless in the historical direction.
+_path_head: dict = {"expiry": 0.0, "head": None}
+
+
+def _path_response(flight_id: str, points, provisional: bool) -> JSONResponse:
+    # no-store on EVERY branch: a future CF rule or edge default must never cache geometry past a LADD flip
+    return JSONResponse(
+        {"flight_id": flight_id, "points": points, "provisional": provisional},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _path_cache_put(fid: int, points, now: float) -> None:
+    _path_cache[fid] = (now + PATH_CACHE_TTL_S, points)
+    if len(_path_cache) > PATH_CACHE_MAX:
+        # entries only age out on same-key hits, so a many-flight sweep would grow the dict unboundedly
+        for k in [k for k, v in _path_cache.items() if v[0] <= now]:
+            del _path_cache[k]
+        while len(_path_cache) > PATH_CACHE_MAX:
+            del _path_cache[min(_path_cache, key=lambda k: _path_cache[k][0])]
 
 
 def _rw_rows(sql, params=None, cursor_factory=None):
@@ -346,8 +423,101 @@ def _fetch_path_auth(flight_id: str):
         client.close()
     if not res.result_rows:
         return None
-    icao24, callsign, is_ladd = res.result_rows[0]
-    return icao24, callsign, bool(is_ladd)
+    icao24, callsign, is_ladd, start_s, end_s, start_day = res.result_rows[0]
+    return icao24, callsign, bool(is_ladd), start_s, end_s, start_day
+
+
+def _fetch_path_head():
+    client = _ch_client()
+    try:
+        res = client.query(PATH_HEAD_QUERY)
+    finally:
+        client.close()
+    head = res.result_rows[0][0] if res.result_rows else None
+    # empty mart (max → NULL): everything is post-head — the fallback serves until the first build lands
+    return head or datetime.date(1970, 1, 1)
+
+
+def _get_path_head(now):
+    if _path_head["head"] is not None and _path_head["expiry"] > now:
+        return _path_head["head"]
+    try:
+        head = _fetch_path_head()
+    except Exception as exc:
+        print(f"livemap path head fetch failed: {type(exc).__name__}: {exc}", flush=True)
+        return _path_head["head"]
+    _path_head["expiry"] = now + PATH_HEAD_TTL_S
+    _path_head["head"] = head
+    return head
+
+
+def _contest_keep(ts, fid, start_s, end_s, competitors) -> bool:
+    # Mart stage-1 in-process: each fix goes to the nearest unpadded-window midpoint among PADDED windows
+    # containing it, flight_id tiebreak — a total order, so no ordering ambiguity can flip a winner.
+    best = (abs(ts - (start_s + end_s) // 2), fid)
+    for cfid, cs, ce in competitors:
+        if cs - PATH_WINDOW_PAD_S <= ts <= ce + PATH_WINDOW_PAD_S:
+            cand = (abs(ts - (cs + ce) // 2), cfid)
+            if cand < best:
+                best = cand
+    return best[1] == fid
+
+
+def _fuse_points(rows) -> list:
+    # Mart stage-2: one row per whole second by src_rank then full-tuple total order, NULLS LAST like CH —
+    # a naive tuple sort mixing None and float raises, so nullable fields sort as (is None, value).
+    def key(r):
+        ts, rank, lat, lon, alt, gs, trk, og, _src = r
+        return (ts, rank, lat, lon, (alt is None, alt), (gs is None, gs), (trk is None, trk), og)
+
+    out, last_ts = [], None
+    for ts, _rank, lat, lon, alt, _gs, _trk, _og, src in sorted(rows, key=key):
+        if ts == last_ts:
+            continue
+        last_ts = ts
+        out.append([lon, lat, ts, alt, src])
+    return out
+
+
+def _fetch_provisional(fid, icao24, start_s, end_s):
+    # Raises on ANY stage failure — the endpoint catches to empty. A partial fusion must never masquerade as
+    # a complete path, and a failed competitor lookup must never read as "zero competitors".
+    win_lo, win_hi = start_s - PATH_WINDOW_PAD_S, end_s + PATH_WINDOW_PAD_S
+    utc = datetime.timezone.utc
+    day_lo = datetime.datetime.fromtimestamp(win_lo, tz=utc).date()
+    day_hi = datetime.datetime.fromtimestamp(win_hi, tz=utc).date()
+    one = datetime.timedelta(days=1)
+
+    def day_epoch(d):
+        return int(datetime.datetime.combine(d, datetime.time(), tzinfo=utc).timestamp())
+
+    client = _ch_client()
+    try:
+        comp = client.query(PATH_COMPETITOR_QUERY, parameters={
+            "hex": icao24, "fid": fid,
+            "ov_lo": start_s - 2 * PATH_WINDOW_PAD_S, "ov_hi": end_s + 2 * PATH_WINDOW_PAD_S,
+        }).result_rows
+        competitors = [(int(c), int(s), int(e)) for c, s, e in comp]
+        window = {"hex": icao24, "win_lo": win_lo, "win_hi": win_hi}
+        rows = []
+        for src, rank, query, params in (
+            ("adsb", 1, PROVISIONAL_ADSB_QUERY, {"day_lo": day_lo, "day_hi": day_hi}),
+            ("adsblol", 2, PROVISIONAL_ADSBLOL_QUERY, {"halo_lo": day_lo - one, "halo_hi": day_hi + one}),
+            ("opensky", 3, PROVISIONAL_OPENSKY_QUERY,
+             {"halo_lo": day_lo - one, "halo_hi": day_hi + one,
+              "broad_lo": day_epoch(day_lo - one), "broad_hi": day_epoch(day_hi + one) + 86400}),
+        ):
+            for ts, lat, lon, alt, og, gs, trk in client.query(query, parameters={**window, **params}).result_rows:
+                # defensive re-clip + null-geometry drop: the fusion contract owns them, not just the scans
+                if ts is None or lat is None or lon is None:
+                    continue
+                ts = int(ts)
+                if ts < win_lo or ts > win_hi:
+                    continue
+                rows.append((ts, rank, lat, lon, alt, gs, trk, int(og or 0), src))
+    finally:
+        client.close()
+    return _fuse_points([r for r in rows if _contest_keep(r[0], fid, start_s, end_s, competitors)])
 
 
 def _is_ladd_suppressed(hex_, callsign, mv_is_ladd, suppress) -> bool:
@@ -502,6 +672,9 @@ if PUBLIC_MODE:
             # s-maxage=1: with a dashboard Cache Rule making /aircraft cache-eligible (Cloudflare doesn't
             # cache JSON by default), the edge absorbs the snapshot fan-out; browsers still poll ~live.
             resp.headers["Cache-Control"] = "public, s-maxage=1"
+        elif path.startswith("/path/"):
+            # rate-limit 429s bypass the endpoint's envelope — keep the every-response no-store belt intact
+            resp.headers.setdefault("Cache-Control", "no-store")
         return resp
 
 
@@ -575,38 +748,56 @@ async def flights(hex: str) -> JSONResponse:
 @app.get("/path/{flight_id}")
 async def path(flight_id: str) -> JSONResponse:
     # Suppressed / unknown / missing-table / CH-down all return the same empty shape — never 404/500, no
-    # privacy oracle (mirrors /flights: never raise).
+    # privacy oracle; "provisional" rides every response so the flag itself leaks nothing.
     if not _valid_flight_id(flight_id):
-        return JSONResponse({"flight_id": flight_id, "points": []})
+        return _path_response(flight_id, [], False)
     suppress = _ladd_suppress
     if suppress is None:
-        return JSONResponse({"flight_id": flight_id, "points": []})
+        return _path_response(flight_id, [], False)
     try:
         auth = await asyncio.to_thread(_fetch_path_auth, flight_id)
     except Exception as exc:
         print(f"livemap path auth failed: {type(exc).__name__}: {exc}", flush=True)
-        return JSONResponse({"flight_id": flight_id, "points": []})
-    if auth is None or _is_ladd_suppressed(
-        auth[0], auth[1], mv_is_ladd=auth[2], suppress=suppress
-    ):
-        return JSONResponse({"flight_id": flight_id, "points": []})
+        return _path_response(flight_id, [], False)
+    if auth is None:
+        return _path_response(flight_id, [], False)
+    icao24, callsign, mart_ladd, start_s, end_s, start_day = auth
+    if _is_ladd_suppressed(icao24, callsign, mv_is_ladd=mart_ladd, suppress=suppress):
+        return _path_response(flight_id, [], False)
+    fid = int(flight_id)  # canonical cache key: leading-zero aliases must not mint distinct entries
     now = time.time()
-    hit = _path_cache.get(flight_id)
-    if hit and hit[0] > now:
-        return JSONResponse({"flight_id": flight_id, "points": hit[1]})
+    hit = _path_cache.get(fid)
+    cached_empty = bool(hit) and hit[0] > now and not hit[1]
+    if hit and hit[0] > now and hit[1]:
+        return _path_response(flight_id, hit[1], False)
+    if not cached_empty:
+        try:
+            points = await asyncio.to_thread(_fetch_path, flight_id)
+        except Exception as exc:
+            print(f"livemap path fetch failed: {type(exc).__name__}: {exc}", flush=True)
+            return _path_response(flight_id, [], False)
+        if points:
+            _path_cache_put(fid, points, now)  # immutable settled-day history: cache non-empty successes
+            return _path_response(flight_id, points, False)
+    # settled empty → eligibility gate: an empty cache HIT classifies-and-continues, it never short-circuits
+    head = await asyncio.to_thread(_get_path_head, now)
+    if head is None or start_day is None:  # cold head fetch failed / windowless spine row → fail closed
+        return _path_response(flight_id, [], False)
+    if start_day <= head:
+        # historical pathless keeps today's behavior; the empty is cacheable only now that it's classified
+        if not cached_empty:
+            _path_cache_put(fid, [], now)
+        return _path_response(flight_id, [], False)
+    if start_s is None or end_s is None:
+        return _path_response(flight_id, [], False)
     try:
-        points = await asyncio.to_thread(_fetch_path, flight_id)
-        _path_cache[flight_id] = (now + PATH_CACHE_TTL_S, points)  # immutable settled-day history: cache successes
-        if len(_path_cache) > PATH_CACHE_MAX:
-            # entries only age out on same-key hits, so a many-flight sweep would grow the dict unboundedly
-            for k in [k for k, v in _path_cache.items() if v[0] <= now]:
-                del _path_cache[k]
-            while len(_path_cache) > PATH_CACHE_MAX:
-                del _path_cache[min(_path_cache, key=lambda k: _path_cache[k][0])]
+        points = await asyncio.to_thread(_fetch_provisional, fid, icao24, start_s, end_s)
     except Exception as exc:
-        print(f"livemap path fetch failed: {type(exc).__name__}: {exc}", flush=True)
-        points = []
-    return JSONResponse({"flight_id": flight_id, "points": points})
+        print(f"livemap provisional path failed: {type(exc).__name__}: {exc}", flush=True)
+        return _path_response(flight_id, [], False)
+    # bypasses _path_cache: bronze grows all day and the flight settles within days — a 900 s entry is
+    # wrong in both directions and the recompute is cheap (~114 ms worst-case measured)
+    return _path_response(flight_id, points, True)
 
 
 @app.get("/history")

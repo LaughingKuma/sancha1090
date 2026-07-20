@@ -241,6 +241,18 @@ on click, and the antenna's measured coverage outline. Those accumulated-history
 computed in the ClickHouse batch lane and shipped to the map, so the hot path stays a thin
 120-second window.
 
+`/path` itself follows a three-rung freshness ladder. Live position always comes from the
+120-second RisingWave window above. A click on a flight that reconciled after
+`fct_flight_path`'s own settled build head gets a provisional trajectory instead: the endpoint
+fuses one straight from the same three bronze sources at serve time (rooftop > adsb.lol >
+OpenSky, the mart's own ±10-minute window pad and nearest-midpoint contest against overlapping
+same-hex flights), returned with `"provisional": true` and a PROVISIONAL badge on the card.
+Once the mart's daily settlement build reaches that flight's start day, the same click resolves
+to the settled, mart-served path instead — a flight with no trace at all still returns an empty
+path either way. Every `/path` response, provisional or settled, carries `Cache-Control:
+no-store`, and the livemap's LADD suppression (mart flag plus the live hex and callsign sets)
+guards both arms identically.
+
 ### Public deployment (Cloudflare Tunnel)
 
 The map can be exposed to the public web without opening a single router port. A dedicated
@@ -432,6 +444,9 @@ This project stands on three community projects that choose to keep aviation dat
   rooftop over adsb.lol over OpenSky wherever more than one source saw the same second. It
   builds in replaceable daily partitions after a settlement lag, with a rolling repair window
   that absorbs late source loads and recent reconciled-flight re-keys without row mutations.
+  The livemap's `/path` endpoint applies that identical fusion, window pad, and overlap contest
+  at serve time for a flight whose start day hasn't reached the mart's settlement build yet,
+  marking that response `provisional: true` until the mart catches up and takes over.
 - **[Virtual Radar Server standing data](https://github.com/vradarserver/standing-data)**
   is the community-curated callsign→route table (consumed via the hourly
   [adsb.lol mirror](https://vrs-standing-data.adsb.lol)) that gives the reconciled mart a

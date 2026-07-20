@@ -52,6 +52,9 @@ const ownerDistinct = (a) => {
   return cleanOwner(own);
 };
 
+// shared with the lost-panel badge sync (interactions.js) — the chip stays one string in one place
+export const PROV_BADGE = '<span class="badge badge-prov" title="full-res path settles in ~1–3 days">PROVISIONAL</span>';
+
 // one builder feeds both the hover card and the spotlight so the two can never drift apart
 export function cardData(a) {
   const rate = verticalRate(a);
@@ -66,7 +69,9 @@ export function cardData(a) {
     badges:
       (a.is_military === true ? '<span class="badge">MIL</span>' : "") +
       (a.is_helicopter ? '<span class="badge">HELI</span>' : "") +
-      (catLabel ? `<span class="badge">${esc(catLabel)}</span>` : ""), // fixed lookup value, escaped as defense-in-depth
+      (catLabel ? `<span class="badge">${esc(catLabel)}</span>` : "") +
+      // scoped to the selected aircraft's drawn path — hover cards for other aircraft can never inherit it
+      (S.selected && a.hex === S.selected.hex && S.histProvisional ? PROV_BADGE : ""),
     state: vdir > 0 ? "▲ CLIMB" : vdir < 0 ? "▼ DESC" : null,
     vs: vsText(rate),
     vsClass: vdir > 0 ? "up" : vdir < 0 ? "dn" : "",

@@ -136,6 +136,7 @@ export function rebuildHistSegments() {
 
 // /path returns [lon, lat, ts_epoch, alt_ft, source]; only geometry + time is used (colour is constant).
 export function setHistPath(rawPoints) {
+  S.histProvisional = false; // geometry replaced/cleared — only the new fetch's response re-arms the flag
   const pts = [];
   for (const [lon, lat, ts] of rawPoints || []) {
     const t = Number(ts);
@@ -150,6 +151,7 @@ export function setHistPath(rawPoints) {
 
 export function clearHistPath() {
   S.histFlightId = null;
+  S.histProvisional = false;
   S.histPts = [];
   S.histSegments = [];
   S.histMarkers = [];

@@ -148,6 +148,16 @@ def test_public_rate_limit_excludes_memory_endpoints(public_app):
     assert all(client.get("/history").status_code == 200 for _ in range(30))
 
 
+def test_public_path_429_carries_no_store(public_app, monkeypatch):
+    monkeypatch.setattr(public_app, "_ladd_suppress", None)   # /path short-circuits to empty, no CH hit
+    client = TestClient(public_app.app)
+    resps = [client.get("/path/42") for _ in range(11)]
+    assert [r.status_code for r in resps[:10]] == [200] * 10
+    assert resps[10].status_code == 429
+    assert resps[10].headers["cache-control"] == "no-store"
+    assert resps[0].headers["cache-control"] == "no-store"   # the endpoint's own envelope, belt-and-suspenders
+
+
 # ---- middleware: private mode is byte-identical (no hardening) ----
 
 def test_private_no_security_headers(private_app):

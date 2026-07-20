@@ -1,3 +1,4 @@
+import datetime
 import importlib.util
 from pathlib import Path
 
@@ -19,7 +20,12 @@ def livemap():
 def allow_path_auth(livemap, monkeypatch):
     original = livemap._fetch_path_auth
     monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)
-    monkeypatch.setattr(livemap, "_fetch_path_auth", lambda _fid: ("abc123", "ANA1", False))
+    monkeypatch.setattr(
+        livemap, "_fetch_path_auth",
+        lambda _fid: ("abc123", "ANA1", False, 1765500000, 1765503600, datetime.date(2026, 6, 1)),
+    )
+    # far-future head classifies every flight historical, preserving today's settled-arm semantics
+    monkeypatch.setattr(livemap, "_path_head", {"expiry": float("inf"), "head": datetime.date(2100, 1, 1)})
     return original
 
 
@@ -38,6 +44,8 @@ def test_path_auth_query_shape(livemap):
     assert f"{livemap.CH_DB}.fct_flights_reconciled" in q
     assert "{fid:UInt64}" in q
     assert "icao24" in q and "callsign" in q and "is_ladd" in q
+    assert "toUnixTimestamp(start_time)" in q and "toUnixTimestamp(end_time)" in q
+    assert "toDate(start_time)" in q
 
 
 def test_valid_flight_id_accepts_uint64_digits(livemap):
@@ -69,7 +77,7 @@ def test_path_invalid_id_returns_empty_without_query(livemap, monkeypatch):
     monkeypatch.setattr(livemap, "_fetch_path", boom)
     r = TestClient(livemap.app).get("/path/notanumber")
     assert r.status_code == 200
-    assert r.json() == {"flight_id": "notanumber", "points": []}
+    assert r.json() == {"flight_id": "notanumber", "points": [], "provisional": False}
 
 
 def test_path_huge_digit_id_returns_empty_200(livemap, monkeypatch):
@@ -82,7 +90,7 @@ def test_path_huge_digit_id_returns_empty_200(livemap, monkeypatch):
     big = "9" * 5000
     r = TestClient(livemap.app).get(f"/path/{big}")
     assert r.status_code == 200
-    assert r.json() == {"flight_id": big, "points": []}
+    assert r.json() == {"flight_id": big, "points": [], "provisional": False}
 
 
 def test_fetch_path_shapes_points(livemap, monkeypatch):
@@ -109,7 +117,7 @@ def test_fetch_path_shapes_points(livemap, monkeypatch):
 
 def test_fetch_path_auth_shapes_identity(livemap, monkeypatch, allow_path_auth):
     class FakeRes:
-        result_rows = [("abc123", "ANA1 ", 1)]
+        result_rows = [("abc123", "ANA1 ", 1, 1765500000, 1765503600, datetime.date(2026, 6, 1))]
 
     class FakeClient:
         def query(self, sql, parameters=None):
@@ -121,7 +129,7 @@ def test_fetch_path_auth_shapes_identity(livemap, monkeypatch, allow_path_auth):
             pass
 
     monkeypatch.setattr(livemap, "_ch_client", lambda: FakeClient())
-    assert allow_path_auth("42") == ("abc123", "ANA1 ", True)
+    assert allow_path_auth("42") == ("abc123", "ANA1 ", True, 1765500000, 1765503600, datetime.date(2026, 6, 1))
 
 
 def test_path_points_passthrough(livemap, monkeypatch):
@@ -129,7 +137,7 @@ def test_path_points_passthrough(livemap, monkeypatch):
     pts = [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
     monkeypatch.setattr(livemap, "_fetch_path", lambda _fid: pts)
     j = TestClient(livemap.app).get("/path/42").json()
-    assert j == {"flight_id": "42", "points": pts}
+    assert j == {"flight_id": "42", "points": pts, "provisional": False}
 
 
 def test_path_ladd_suppressed_returns_empty(livemap, monkeypatch):
@@ -147,13 +155,16 @@ def test_path_ladd_suppressed_returns_empty(livemap, monkeypatch):
     )
     r = TestClient(livemap.app).get("/path/42")
     assert r.status_code == 200
-    assert r.json() == {"flight_id": "42", "points": []}
+    assert r.json() == {"flight_id": "42", "points": [], "provisional": False}
 
 
 def test_path_mart_ladd_flag_suppresses_cached_geometry(livemap, monkeypatch):
     pts = [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
-    monkeypatch.setattr(livemap, "_path_cache", {"42": (float("inf"), pts)})
-    monkeypatch.setattr(livemap, "_fetch_path_auth", lambda _fid: ("abc123", "ANA1", True))
+    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), pts)})
+    monkeypatch.setattr(
+        livemap, "_fetch_path_auth",
+        lambda _fid: ("abc123", "ANA1", True, 1765500000, 1765503600, datetime.date(2026, 6, 1)),
+    )
     assert TestClient(livemap.app).get("/path/42").json()["points"] == []
 
 
@@ -169,14 +180,14 @@ def test_path_unloaded_ladd_state_fails_closed_before_query(livemap, monkeypatch
 
 def test_path_missing_auth_row_suppresses_cached_geometry(livemap, monkeypatch):
     pts = [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
-    monkeypatch.setattr(livemap, "_path_cache", {"42": (float("inf"), pts)})
+    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), pts)})
     monkeypatch.setattr(livemap, "_fetch_path_auth", lambda _fid: None)
     assert TestClient(livemap.app).get("/path/42").json()["points"] == []
 
 
 def test_path_auth_failure_suppresses_cached_geometry(livemap, monkeypatch):
     pts = [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
-    monkeypatch.setattr(livemap, "_path_cache", {"42": (float("inf"), pts)})
+    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), pts)})
     monkeypatch.setattr(
         livemap,
         "_fetch_path_auth",
@@ -194,7 +205,7 @@ def test_path_ch_failure_returns_empty_200(livemap, monkeypatch):
     monkeypatch.setattr(livemap, "_fetch_path", boom)
     r = TestClient(livemap.app).get("/path/42")
     assert r.status_code == 200
-    assert r.json() == {"flight_id": "42", "points": []}
+    assert r.json() == {"flight_id": "42", "points": [], "provisional": False}
 
 
 def test_path_missing_table_returns_empty_200(livemap, monkeypatch):
@@ -207,7 +218,7 @@ def test_path_missing_table_returns_empty_200(livemap, monkeypatch):
     monkeypatch.setattr(livemap, "_fetch_path", missing)
     r = TestClient(livemap.app).get("/path/42")
     assert r.status_code == 200
-    assert r.json() == {"flight_id": "42", "points": []}
+    assert r.json() == {"flight_id": "42", "points": [], "provisional": False}
 
 
 def test_path_cached_after_first_call(livemap, monkeypatch):
@@ -220,7 +231,7 @@ def test_path_cached_after_first_call(livemap, monkeypatch):
 
     def authorize(_fid):
         calls["auth"] += 1
-        return "abc123", "ANA1", False
+        return "abc123", "ANA1", False, 1765500000, 1765503600, datetime.date(2026, 6, 1)
 
     monkeypatch.setattr(livemap, "_fetch_path", once)
     monkeypatch.setattr(livemap, "_fetch_path_auth", authorize)
@@ -266,3 +277,33 @@ def test_path_query_runs_against_live_ch(livemap, ch_cur):
     assert tss == sorted(tss)                  # ascending (the ORDER BY ts holds)
     ch_cur.execute(livemap.PATH_AUTH_QUERY, {"fid": int(rows[0][0])})
     assert len(ch_cur.fetchall()) == 1
+
+
+def test_path_no_store_on_every_branch(livemap, monkeypatch):
+    # tunnel checks can't prove early returns — every branch must assert no-store itself
+    monkeypatch.setattr(livemap, "_path_cache", {})
+    c = TestClient(livemap.app)
+    assert c.get("/path/notanumber").headers["cache-control"] == "no-store"          # malformed
+    pts = [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
+    monkeypatch.setattr(livemap, "_fetch_path", lambda _fid: pts)
+    assert c.get("/path/42").headers["cache-control"] == "no-store"                  # settled
+    monkeypatch.setattr(livemap, "_fetch_path", lambda _fid: (_ for _ in ()).throw(RuntimeError("down")))
+    assert c.get("/path/43").headers["cache-control"] == "no-store"                  # CH error
+    monkeypatch.setattr(livemap, "_fetch_path_auth", lambda _fid: None)
+    assert c.get("/path/44").headers["cache-control"] == "no-store"                  # unknown
+    monkeypatch.setattr(livemap, "_ladd_suppress", None)
+    assert c.get("/path/45").headers["cache-control"] == "no-store"                  # fail-closed
+
+
+def test_path_canonical_cache_key(livemap, monkeypatch):
+    monkeypatch.setattr(livemap, "_path_cache", {})
+    calls = {"n": 0}
+    def once(_fid):
+        calls["n"] += 1
+        return [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
+    monkeypatch.setattr(livemap, "_fetch_path", once)
+    c = TestClient(livemap.app)
+    c.get("/path/42")
+    c.get("/path/042")               # leading-zero alias must hit the same settled entry
+    assert calls["n"] == 1
+    assert list(livemap._path_cache) == [42]
