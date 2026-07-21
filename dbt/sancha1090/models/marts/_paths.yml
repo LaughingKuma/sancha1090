@@ -2,7 +2,7 @@ version: 2
 
 models:
   - name: fct_flight_path
-    description: "Fused per-second trajectory per reconciled flight (grain: flight_id, ts): priority union of rooftop ADS-B > adsb.lol full trace > OpenSky states, keyed to fct_flights_reconciled.flight_id and honest about gaps. Incremental daily partitions are replaced atomically after a three-day settlement lag, including a five-day rolling repair window; an orphaned historical partition is repaired first if later spine churn re-keys it. No LADD flag: serving authorizes against fct_flights_reconciled plus the current open LADD identity set."
+    description: "Fused per-second trajectory per reconciled flight (grain: flight_id, ts): priority union of rooftop ADS-B > adsb.lol full trace > OpenSky states, keyed to fct_flights_reconciled.flight_id and honest about gaps. Incremental daily partitions are replaced atomically after the configured settlement lag (path_settlement_lag_days), including a five-day rolling repair window; orphaned historical partitions are batch-repaired first (oldest contiguous run) if later spine churn re-keys them. No LADD flag: serving authorizes against fct_flights_reconciled plus the current open LADD identity set."
     columns:
       - name: flight_id
         description: "fct_flights_reconciled.flight_id this fix belongs to; a fix inside two fused windows is assigned to exactly one flight (nearest window midpoint)."
@@ -35,7 +35,7 @@ models:
               arguments:
                 values: ['adsb', 'adsblol', 'opensky']
       - name: day_key
-        description: "toDate(flight start_time), the daily partition and incremental watermark key. It is stable for one flight_id; replacing the whole day also removes an old id when upstream re-anchors the same physical flight. A start day first builds at max(adsblol trace_day)-3, and the newest five eligible daily partitions are repaired whenever that watermark advances."
+        description: "toDate(flight start_time), the daily partition and incremental watermark key. It is stable for one flight_id; replacing the whole day also removes an old id when upstream re-anchors the same physical flight. A start day first builds at max(adsblol trace_day) - path_settlement_lag_days, and the newest five eligible daily partitions are repaired whenever that watermark advances (a pending orphan batch takes precedence for the run)."
 
   - name: fct_flight_path_summary
     description: "Per-flight QA companion to fct_flight_path (grain: flight_id): point counts, per-source split, largest coverage gap, and observed_fraction vs the unpadded reconciled window. Inner-joined to fct_flights_reconciled; assert_flight_path_reconciled_fk separately fails if the path mart contains an orphan hidden by that join."

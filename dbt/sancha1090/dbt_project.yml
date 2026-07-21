@@ -85,7 +85,7 @@ vars:
   fused_envelope_speed_kmh: 550   # opensky_flights window vs O/D distance sanity floor
   jet_min_runway_ft: 4500  # below this a jet airliner cannot operate; shortest scheduled-jet field in scope ~6,500 ft (RJKA)
   path_window_pad_min: 10  # fct_flight_path: pad each reconciled window this many min per side (mart windows are observation clips)
-  path_settlement_lag_days: 3  # latest trace_day minus this lag: waits through the final D-2 OpenSky anchor window before a start day first builds
+  path_settlement_lag_days: 1  # latest trace_day minus this lag: the 14:30 UTC OpenSky anchor waves land AFTER a start day first builds BY DESIGN -- fct_flight_path's contiguous orphan batch owns the stale-partition cleanup
   path_build_chunk_days: 5  # daily partitions per run: bounds catch-up memory and is also the rolling repair window when the source watermark advances
   # Observation box, mirrors include/regions.py 'japan' (kept in sync by hand). Single source of
   # truth for the stg_states geo-filter, the mart's box_observed guard, and the Finding-2

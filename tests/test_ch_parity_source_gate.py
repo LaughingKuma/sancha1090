@@ -177,7 +177,7 @@ def test_path_coverage_gate_green_when_fresh_and_covered():
 
 
 def test_path_coverage_gate_reds_on_stalled_mart():
-    # 7 days > the 6.5-day tolerance (healthy worst case 5d + build phase, + one 24h publish slip).
+    # 7 days > the 4.5-day tolerance (lag-1 healthy worst case 3d3h, + one tolerated 24h publish slip).
     with pytest.raises(RuntimeError, match="path coverage gate FAILED"):
         p.run_path_coverage_gate(ch_query=_path_fake(_NOW, _NOW - 7 * 86400, _PATH_ROWS_OK))
 
@@ -185,6 +185,7 @@ def test_path_coverage_gate_reds_on_stalled_mart():
 def test_path_coverage_freshness_exact_boundary():
     # fresh()'s comparator is (ref - ch) <= max_lag_s, so exactly at the tolerance still passes;
     # one second further stale trips it. Healthy share rows so only freshness varies.
+    assert p._PATH_FRESHNESS_LAG_TOL_S == int(4.5 * 86400)
     tol = p._PATH_FRESHNESS_LAG_TOL_S
     out = p.run_path_coverage_gate(ch_query=_path_fake(_NOW, _NOW - tol, _PATH_ROWS_OK))
     assert out["all_ok"]

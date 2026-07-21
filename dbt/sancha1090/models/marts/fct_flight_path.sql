@@ -29,9 +29,13 @@
 -- Fused per-second trajectory per reconciled flight: priority union rooftop(adsb) > adsblol > opensky.
 -- Daily partitions are replaced atomically, not appended. START day remains the partition key because it is
 -- stable for one flight_id; replacement is what also removes an OLD id when the same physical flight re-anchors.
--- A new day becomes eligible only after the final D-2 OpenSky window can have landed: max(trace_day)-3. Whenever
--- that high-water mark advances, the newest path_build_chunk_days partitions are rebuilt, so late path loads and
--- recent spine churn self-heal. During a historical catch-up, the same bounded chunk size advances oldest-first.
+-- A new day becomes eligible at max(trace_day) - path_settlement_lag_days; under lag 1 the 14:30 UTC OpenSky
+-- anchor waves land AFTER their days first build BY DESIGN, and the oldest-contiguous orphan batch repairs the
+-- re-keyed days in the same run that rebuilt the spine, before dbt test gates. Whenever the high-water mark
+-- advances, the newest path_build_chunk_days partitions are rebuilt, so late path loads and recent spine churn
+-- self-heal. During a historical catch-up, the same bounded chunk size advances oldest-first.
+-- Non-contiguous remainders red the FK gate until they drain on later runs; an adjacent-day re-key outside
+-- the nominated set waits for that day's own rebuild.
 -- LIMIT BY sorts in memory and does not spill; five dense days fit below the 16 GB query backstop.
 -- Operators: changing the partition key from the pre-v6.25 monthly layout requires one paused --full-refresh.
 -- An unfixable orphan partition (no current-spine start; stays red on assert_flight_path_reconciled_fk) is
@@ -66,26 +70,29 @@ chunk_days as (
 path_state as (
     select coalesce(max(day_key), toDate('1970-01-01')) as built_hi from {{ this }}
 ),
-orphan_day as (
-    -- Historical reconciler/backfill churn can re-key an old physical flight. Repair one isolated day first;
-    -- mixing it with today's rolling window would widen chunk_bounds across the intervening history.
-    -- Skip a day no current-spine flight starts: its rebuild stages zero rows, so insert_overwrite never
-    -- REPLACEs the partition and the same day is re-nominated forever, stalling the watermark. Such a day is
-    -- left red on assert_flight_path_reconciled_fk for a manual partition drop (see header). This does NOT fix
-    -- an adjacent-day re-key (the re-keyed flight's new id in an already-built day outside the repair window
-    -- stays missing until that day rebuilds), nor a rebuild that yields zero rows despite current starts.
-    select min(p.day_key) as day
+stale_days as (
+    -- Lag-1 anchor waves stale up to two built days at once: nominate day-grain DISTINCT so duplicate path
+    -- rows never consume the cap; a no-current-start day skips nomination (zero-row rebuild never REPLACEs).
+    select distinct p.day_key as day
     from {{ this }} p
     left anti join {{ ref('fct_flights_reconciled') }} r on r.flight_id = p.flight_id
     where p.day_key in (select toDate(start_time) from {{ ref('fct_flights_reconciled') }})
-    having count() > 0
+),
+orphan_days as (
+    -- Oldest contiguous run only, capped: the wave's adjacent days repair in ONE run before dbt_test_ch;
+    -- non-contiguous days would widen chunk_bounds across the gap, so remainders drain on later runs.
+    select day
+    from (select day, row_number() over (order by day) as rn, min(day) over () as day0 from stale_days)
+    where dateDiff('day', day0, day) = rn - 1
+    order by day
+    limit {{ var('path_build_chunk_days') }}
 ),
 forward_days as (
     select e.day
     from eligible_days e
     cross join eligible_state s
     cross join path_state p
-    where not exists (select 1 from orphan_day)
+    where not exists (select 1 from orphan_days)
       and s.eligible_hi > p.built_hi
       and (
         -- Large gap = bounded oldest-first catch-up. Near head = replace the full rolling repair window.
@@ -98,7 +105,7 @@ forward_days as (
     limit {{ var('path_build_chunk_days') }}
 ),
 chunk_days as (
-    select day from orphan_day
+    select day from orphan_days
     union all
     select day from forward_days
 ),

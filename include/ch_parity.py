@@ -284,10 +284,11 @@ def run_source_gate(*, ch_query=None, serving_query=None) -> dict:
     return summary
 
 
-# Rung 1 trajectory-coverage alarm. day_key is a midnight epoch and the head only advances after the
-# 03:00 UTC trace load: healthy worst case 5d + ~3h build phase + one tolerated 24h publish slip = 6d3h,
-# rounded up to 6.5d as explicit load/build-jitter headroom. A stall reds here; share owns value regressions.
-_PATH_FRESHNESS_LAG_TOL_S = int(6.5 * 86400)
+# Trajectory-coverage alarm (rung 1; re-derived rung 3): day_key is a midnight epoch and the head advances
+# after the 03:00 UTC trace load -- lag-1 worst case (1 settlement + 1 cadence + 1 self)d + ~3h build + one
+# tolerated 24h publish slip -> 4.5d. A stall reds here; share owns value regressions AND is the only alarm
+# for an interior missed trace day (freshness stays green when max(trace_day) advances past a hole).
+_PATH_FRESHNESS_LAG_TOL_S = int(4.5 * 86400)
 # Healthy days measure 84-96% of reconciled flights with >=1 adsblol fix; the starved cliff was ~60%.
 # 75 splits the bands with ~9pt margin each side. Low-flight days are skipped-but-reported, never silent.
 _PATH_ADSBLOL_SHARE_FLOOR = 0.75
