@@ -19,7 +19,7 @@ EXPECTED_DAGS = {
         "task_ids": {"fetch_region", "summarize"},
     },
     "ingest_adsb": {
-        "schedule": "5 * * * *",
+        "schedule": "10 * * * *",
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {"list_remote_bundles", "select_new", "validate_and_record", "summarize_emit_asset"},
@@ -115,6 +115,12 @@ EXPECTED_DAGS = {
     },
     "ingest_aircraft_db": {
         "schedule": "0 17 * * 0",
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"download_and_land", "load_to_clickhouse"},
+    },
+    "ingest_adsbx_db": {
+        "schedule": "30 17 * * 0",
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {"download_and_land", "load_to_clickhouse"},

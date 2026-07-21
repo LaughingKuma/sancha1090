@@ -468,6 +468,10 @@ And the open reference datasets that decide how an aircraft is drawn, not whethe
   drives the registration-country flags.
 - **[OurAirports](https://ourairports.com/data/)**: airport names, coordinates, and
   scheduled-service classification.
+- **[ADSBExchange basic-ac-db](https://www.adsbexchange.com/data/)**: a daily-updated public
+  snapshot, ingested weekly, of registration, type, manufacturer, model, and owner that fills
+  the blanks the OpenSky registry leaves — mostly typecode, closing a blind spot in the
+  jet-airliner runway feasibility gate above.
 
 ## License & data attribution
 
@@ -485,4 +489,5 @@ cleanup cross-referenced against [Wikidata](https://www.wikidata.org)
 ([CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)); aircraft type
 designators from ICAO Doc 8643; the ICAO 24-bit address → country table from
 [tar1090](https://github.com/wiedehopf/tar1090); airport data from
-[OurAirports](https://ourairports.com/data/), released to the public domain.
+[OurAirports](https://ourairports.com/data/), released to the public domain; aircraft identity
+data © ADSBExchange, basic-ac-db public download.

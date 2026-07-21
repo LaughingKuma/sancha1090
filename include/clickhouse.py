@@ -422,6 +422,56 @@ def backfill_aircraft_db() -> dict:
         return {"ok": False, "rows": 0}
 
 
+_ADSBX_DB_PREFIX = "bronze/adsbx_db_raw"
+# '' -> NULL for string cols so registry joins never see empty-string keys. year/faa_pia/faa_ladd/mil are
+# typed by the ingest DAG's casts (source ships year as string, flags as bool); structure= matches that
+_ADSBX_DB_STR_COLS = ("icao24", "registration", "icaotype", "short_type", "manufacturer", "model", "ownop")
+# Explicit structure= so an empty/fresh glob returns 0 rows instead of CANNOT_EXTRACT_TABLE_STRUCTURE (636).
+_ADSBX_DB_S3_STRUCTURE = (
+    "icao24 Nullable(String), registration Nullable(String), icaotype Nullable(String), "
+    "short_type Nullable(String), year Nullable(UInt16), manufacturer Nullable(String), "
+    "model Nullable(String), ownop Nullable(String), faa_pia Nullable(UInt8), "
+    "faa_ladd Nullable(UInt8), mil Nullable(UInt8), as_of_date Nullable(String), ingested_at Nullable(String)"
+)
+
+
+def backfill_adsbx_db() -> dict:
+    # Staging + atomic EXCHANGE only if non-empty: a failed or empty reload keeps the last-good
+    # snapshot serving (mirrors backfill_aircraft_db).
+    nulled = ", ".join(f"nullIf({c}, '')" for c in _ADSBX_DB_STR_COLS)
+    stage = f"{_CH_DB}.adsbx_aircraft_db_reload"
+    sql = (
+        f"INSERT INTO {stage} "
+        f"(icao24, registration, icaotype, short_type, manufacturer, model, ownop, "
+        f"year, faa_pia, faa_ladd, mil, as_of_date, ingested_at, committed_at) "
+        f"SELECT {nulled}, year, faa_pia, faa_ladd, mil, toDateOrNull(as_of_date), "
+        f"parseDateTime64BestEffortOrNull(ingested_at), parseDateTime64BestEffortOrNull(ingested_at) "
+        f"FROM s3({_GARAGE_COLLECTION}, filename='{_ADSBX_DB_PREFIX}/**/*.parquet', format='Parquet', "
+        f"structure='{_ADSBX_DB_S3_STRUCTURE}')"
+    )
+    # Inline guard (not _safe): keep the {ok, rows} shape on both paths so callers never KeyError on failure.
+    try:
+        client = ch_client()
+        try:
+            client.command(f"CREATE TABLE IF NOT EXISTS {stage} AS {_CH_DB}.adsbx_aircraft_db")
+            client.command(f"TRUNCATE TABLE {stage}")
+            client.command(sql)
+            rows = client.query(f"SELECT count() FROM {stage}").result_rows[0][0]
+            if int(rows) == 0:
+                # Empty glob = fresh deploy before any snapshot has landed: success no-op — keep the
+                # existing table and DON'T clobber it with an empty reload.
+                log.warning("CH adsbx_aircraft_db reload produced 0 rows — keeping the existing table")
+                return {"ok": True, "rows": 0, "skipped": True}
+            # EXCHANGE is atomic on the Atomic database engine (bronze): readers see old-or-new, never empty.
+            client.command(f"EXCHANGE TABLES {_CH_DB}.adsbx_aircraft_db AND {stage}")
+        finally:
+            client.close()
+        return {"ok": True, "rows": int(rows)}
+    except Exception:
+        log.exception("CH adsbx_aircraft_db load failed (non-fatal)")
+        return {"ok": False, "rows": 0}
+
+
 def transform_adsblol_frame(df):
     # Reuse the shared states transform, re-attaching `source` (transform_states_frame drops it to the state cols).
     from include import bronze_transforms as bt

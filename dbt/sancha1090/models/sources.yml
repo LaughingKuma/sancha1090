@@ -42,6 +42,8 @@ sources:
           - name: icao24
             tests:
               - not_null
+      - name: adsbx_aircraft_db
+        description: "ADSBExchange basic-ac-db weekly snapshots (registry type/identity fill). Intentionally optional pre-deploy: no source tests (they query the relation directly); dim_aircraft_registry's deploy-order guard skips the fill when the table is absent. ownop is the FAA registrant, never the operator."
       - name: adsblol_states
         description: "Backfilled pre-pipeline state snapshots (adsb.lol globe_history, ODbL); Japan-wide box, 12-min snapshot tier, provenance in `source`"
         tags: ['adsblol']

@@ -220,6 +220,22 @@ PARTITION BY toYYYYMM(as_of_date)
 ORDER BY icao24
 SETTINGS allow_nullable_key = 1;
 
+-- bronze.adsbx_aircraft_db — ADSBExchange basic-ac-db weekly snapshots: type/identity fill for
+-- dim_aircraft_registry blanks. ownop = FAA registrant (owner-shaped only); faa_* / mil land unconsumed.
+CREATE TABLE IF NOT EXISTS bronze.adsbx_aircraft_db
+(
+    icao24 Nullable(String), registration Nullable(String), icaotype Nullable(String),
+    short_type Nullable(String), year Nullable(UInt16),
+    manufacturer Nullable(String), model Nullable(String), ownop Nullable(String),
+    faa_pia Nullable(UInt8), faa_ladd Nullable(UInt8), mil Nullable(UInt8),
+    as_of_date Nullable(Date),
+    ingested_at Nullable(DateTime64(6,'UTC')), committed_at Nullable(DateTime64(6,'UTC'))
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(as_of_date)
+ORDER BY icao24
+SETTINGS allow_nullable_key = 1;
+
 -- bronze.swim_flightdata — FAA SWIM TFMData fltdMessage (SP3a). Append log: RMT collapses same-partition exact
 -- replays only; latest-amendment selection is a dbt argMax concern, not the engine. _dedup_fp + ORDER BY EXCLUDE
 -- the volatile receive/flush stamps (source_received_at, ingested_at) or a redelivery wouldn't collapse.

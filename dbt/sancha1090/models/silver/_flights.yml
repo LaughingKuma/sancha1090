@@ -2,7 +2,7 @@ version: 2
 
 models:
   - name: dim_aircraft_registry
-    description: "OpenSky aircraft registry (weekly CSV snapshots), latest as_of_date per airframe; country via ICAO24 block ranges"
+    description: "Aircraft identity registry: OpenSky weekly CSV snapshots, blanks per-column filled from ADSBExchange basic-ac-db when bronze.adsbx_aircraft_db exists (deploy-order guarded); latest as_of_date per airframe; country via ICAO24 block ranges"
     columns:
       - name: icao24
         description: "Lowercase ICAO 24-bit hex; one row per airframe"

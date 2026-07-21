@@ -48,7 +48,8 @@ def maybe_log_stale(results: list[Optional[dict]], now: datetime, logger: loggin
     dag_id="ingest_adsb",
     description="Discover landed ADS-B bronze bundles in Garage, validate, record to Postgres",
     start_date=pendulum.datetime(2026, 5, 1, tz="UTC"),
-    schedule="5 * * * *",
+    # :10, not :05 — the edge's hourly push lands :01-:05; :05 pickup lost a 5s race once (2026-07-21).
+    schedule="10 * * * *",
     catchup=False,
     max_active_runs=1,
     default_args={
