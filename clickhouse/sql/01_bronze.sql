@@ -270,3 +270,47 @@ PARTITION BY toYYYYMM(swim_date)
 ORDER BY (msg_timestamp, acid, _dedup_fp)
 PRIMARY KEY (msg_timestamp, acid)
 SETTINGS allow_nullable_key = 1, fsync_after_insert = 1, fsync_part_directory = 1;
+
+-- Estimated-path serving exhaust (design 2026-07-21 §7): append-only, never enters silver/gold.
+-- One kind='request' header row per estimate + one row per emitted segment.
+CREATE TABLE IF NOT EXISTS bronze.path_estimates (
+  estimate_id        UUID,
+  producer           LowCardinality(String),
+  flight_id          Nullable(UInt64),
+  icao24             LowCardinality(String),
+  subject_key        String MATERIALIZED if(flight_id IS NULL,
+                       concat('h:', icao24), concat('f:', toString(flight_id))),
+  computed_at        DateTime64(3, 'UTC'),
+  method_version     LowCardinality(String),
+  config_hash        UInt64,
+  wind_source        LowCardinality(String),
+  wind_mode          LowCardinality(String),
+  wind_model         LowCardinality(String),
+  wind_run_at        Nullable(DateTime),
+  wind_generation    String,
+  wind_samples       Array(Tuple(seg_idx UInt8, lat Float64, lon Float64,
+                                 alt_ft Float64, ts UInt32,
+                                 u_kt Float64, v_kt Float64, gen String)),
+  input_provisional  UInt8,
+  input_as_of        DateTime,
+  anchor_ts          Nullable(DateTime),
+  input_first_ts     Nullable(DateTime),
+  input_last_ts      Nullable(DateTime),
+  input_fingerprint  UInt64,
+  seg_idx            UInt8,
+  kind               LowCardinality(String),
+  points             Array(Tuple(ts UInt32, lat Float64, lon Float64, alt_ft Nullable(Float64))),
+  gs_entry_kt        Nullable(Float32),
+  gs_exit_kt         Nullable(Float32),
+  tas_carried_kt     Nullable(Float32),
+  capped             UInt8,
+  uncertainty_bin    LowCardinality(String),
+  uncertainty_p50_km Nullable(Float32),
+  uncertainty_p90_km Nullable(Float32),
+  skips              Array(Tuple(kind LowCardinality(String),
+                                 reason LowCardinality(String))),
+  meta_json          String
+) ENGINE = MergeTree
+  PARTITION BY toYYYYMM(computed_at)
+  ORDER BY (subject_key, computed_at, estimate_id, seg_idx)
+  TTL toDateTime(computed_at) + INTERVAL 24 MONTH;

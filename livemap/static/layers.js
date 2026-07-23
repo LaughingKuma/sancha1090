@@ -1,10 +1,12 @@
-import { S, serverNow } from "./state.js";
-import { RING_NM, AIRPORTS, RUNWAY_PATHS, RUNWAY_ENDS, AMBER, MIL, TEAL, HISTORY } from "./constants.js";
-import { SIL, CHEV_UP, CHEV_DOWN, zoomMult } from "./silhouettes.js";
-import { LABEL_ZOOM, LABEL_MAX, labelText, shadowPx, SHADOW_DIR } from "./altitude.js";
-import { frameData, metresBetween } from "./motion.js";
-import { emergencyOf } from "./telemetry.js";
-import { map, overlay } from "./mapsetup.js";
+import { S, serverNow } from "./state.js?v=6.34";
+import {
+  RING_NM, AIRPORTS, RUNWAY_PATHS, RUNWAY_ENDS, AMBER, MIL, TEAL, HISTORY, ESTIMATE,
+} from "./constants.js?v=6.34";
+import { SIL, CHEV_UP, CHEV_DOWN, zoomMult } from "./silhouettes.js?v=6.34";
+import { LABEL_ZOOM, LABEL_MAX, labelText, shadowPx, SHADOW_DIR } from "./altitude.js?v=6.34";
+import { frameData, metresBetween } from "./motion.js?v=6.34";
+import { emergencyOf } from "./telemetry.js?v=6.34";
+import { map, overlay } from "./mapsetup.js?v=6.34";
 
 const { IconLayer, ScatterplotLayer, PolygonLayer, PathLayer, TextLayer, PathStyleExtension } = deck;
 
@@ -163,6 +165,22 @@ function buildLayers() {
       capRounded: true,
       getDashArray: [4, 6], // longer dash than any live layer — dotted-ghost reading, never confused with a wake
       wrapLongitude: true, // a dateline-crossing segment (adjacent fixes at ±179.9°) must wrap the short way
+      extensions: [new PathStyleExtension({ dash: true })],
+      parameters: { depthTest: false },
+    }),
+    // requested estimate overlay — dashed like the history ghost but a distinct hue + tighter dash,
+    // so "estimated" reads as its own class next to the recorded slate path (§9)
+    new PathLayer({
+      id: "estimate-path",
+      data: S.estSegments,
+      getPath: (d) => d.path,
+      getColor: [...ESTIMATE, 120],
+      getWidth: 2,
+      widthUnits: "pixels",
+      capRounded: true,
+      getDashArray: [2, 3],
+      wrapLongitude: true,
+      pickable: true,
       extensions: [new PathStyleExtension({ dash: true })],
       parameters: { depthTest: false },
     }),

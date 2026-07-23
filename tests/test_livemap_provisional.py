@@ -29,7 +29,7 @@ def base(livemap, monkeypatch):
         livemap, "_fetch_path_auth",
         lambda _fid: ("abc123", "ANA1", False, START_S, END_S, START_DAY),
     )
-    monkeypatch.setattr(livemap, "_fetch_path", lambda _fid: [])
+    monkeypatch.setattr(livemap, "_fetch_path_rich", lambda _fid: [])
     monkeypatch.setattr(livemap, "_path_head", {"expiry": float("inf"), "head": HEAD_BEFORE})
     monkeypatch.setattr(
         livemap, "_fetch_provisional",
@@ -80,10 +80,10 @@ def test_expired_head_refresh_failure_keeps_last_good(livemap, monkeypatch):
 
 def test_empty_cache_hit_does_not_short_circuit_the_gate(livemap, monkeypatch):
     # rev 6: classify-and-continue — a cached empty must reach the eligibility check, not return at the cache
-    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), [])})
+    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), [], 123.0)})
     monkeypatch.setattr(livemap, "_path_head", {"expiry": float("inf"), "head": HEAD_AFTER})
     monkeypatch.setattr(
-        livemap, "_fetch_path",
+        livemap, "_fetch_path_rich",
         lambda _fid: (_ for _ in ()).throw(AssertionError("settled must not re-run on an unexpired hit")),
     )
     assert _get(livemap).json() == {"flight_id": "42", "points": [], "provisional": False}
@@ -103,8 +103,8 @@ def test_fuse_priority_per_second(livemap):
         (101, 3, 35.2, 139.2, None, None, None, 0, "opensky"),
     ]
     assert livemap._fuse_points(rows) == [
-        [139.1, 35.1, 100, 1100.0, "adsb"],
-        [139.2, 35.2, 101, None, "opensky"],
+        (100, 35.1, 139.1, 1100.0, 0, 410.0, 91.0, "adsb"),
+        (101, 35.2, 139.2, None, 0, None, None, "opensky"),
     ]
 
 
@@ -131,7 +131,7 @@ def test_fuse_output_strictly_ascending(livemap):
         (100, 1, 35.1, 139.1, 1.0, 2.0, 3.0, 0, "adsb"),
         (200, 2, 35.2, 139.2, 4.0, 5.0, 6.0, 1, "adsblol"),
     ]
-    tss = [p[2] for p in livemap._fuse_points(rows)]
+    tss = [p[0] for p in livemap._fuse_points(rows)]
     assert tss == sorted(tss) == [100, 200, 300]
 
 
@@ -157,11 +157,12 @@ def test_contest_flight_id_tiebreak_is_total(livemap):
     assert livemap._contest_keep(600, 42, 0, 1000, comp_hi) is True   # 42 < 99 → we win the tie
 
 
+RICH_PTS = [(1765500100, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb")]
 PTS = [[139.7, 35.6, 1765500100, 38000.0, "adsb"]]
 
 
 def test_post_head_serves_provisional(livemap, monkeypatch):
-    monkeypatch.setattr(livemap, "_fetch_provisional", lambda *_a: PTS)
+    monkeypatch.setattr(livemap, "_fetch_provisional", lambda *_a: RICH_PTS)
     r = _get(livemap)
     assert r.status_code == 200
     assert r.json() == {"flight_id": "42", "points": PTS, "provisional": True}
@@ -172,7 +173,7 @@ def test_provisional_bypasses_path_cache(livemap, monkeypatch):
     calls = {"n": 0}
     def fetch(*_a):
         calls["n"] += 1
-        return PTS
+        return RICH_PTS
     monkeypatch.setattr(livemap, "_fetch_provisional", fetch)
     c = TestClient(livemap.app)
     c.get("/path/42")
@@ -182,8 +183,8 @@ def test_provisional_bypasses_path_cache(livemap, monkeypatch):
 
 
 def test_seeded_empty_cache_entry_does_not_suppress_fallback(livemap, monkeypatch):
-    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), [])})
-    monkeypatch.setattr(livemap, "_fetch_provisional", lambda *_a: PTS)
+    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), [], 123.0)})
+    monkeypatch.setattr(livemap, "_fetch_provisional", lambda *_a: RICH_PTS)
     assert _get(livemap).json()["provisional"] is True
 
 
@@ -275,8 +276,12 @@ def test_fetch_provisional_clips_fuses_and_contests(livemap, monkeypatch, base):
                                          (pad_only, 35.5, 139.5, None, 0, None, None)]),
         ("bronze.opensky_states", [(START_S + 20, None, 139.8, 12000.0, 0, 300.0, 45.0)]),  # null geometry
     ]))
-    out = base(42, "abc123", START_S, END_S)
-    assert out == [
+    rich = base(42, "abc123", START_S, END_S)
+    assert rich == [
+        (pad_only, 35.5, 139.5, None, 0, None, None, "adsblol"),
+        (START_S + 10, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb"),
+    ]
+    assert livemap._lean_points(rich) == [
         [139.5, 35.5, pad_only, None, "adsblol"],           # pad-only fix kept
         [139.7, 35.6, START_S + 10, 38000.0, "adsb"],       # rooftop outranks adsblol on the shared second
     ]                                                        # outside-pad and null-geometry rows dropped

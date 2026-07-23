@@ -27,6 +27,11 @@ Cheap aggregates skip the rebuild cycle entirely: `AggregatingMergeTree` views u
 insert and serve through merge-aware views. Every served value is re-checked hourly against
 bronze by the `ch_serving_parity` gate.
 
+`bronze.path_estimates` sits outside that mart flow as append-only serving exhaust. Each
+recorded computation keeps one request row plus one row per emitted segment for 24 months,
+including a request row for logged non-results. The livemap writes it through the INSERT-only
+`livemap_writer` identity; it never enters silver or gold marts.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/architecture-dark.svg">
@@ -239,7 +244,8 @@ carrying airline, registration, and owner identity, click-to-select 30-minute tr
 a recent-flights drill-down per airframe that draws each flight's own fused historical path
 on click, and the antenna's measured coverage outline. Those accumulated-history features are
 computed in the ClickHouse batch lane and shipped to the map, so the hot path stays a thin
-120-second window.
+120-second window. On settled historical flights, the spotlight also exposes an explicit
+`[show estimated path]` button.
 
 `/path` itself follows a three-rung freshness ladder. Live position always comes from the
 120-second RisingWave window above. A click on a flight that reconciled after
@@ -252,6 +258,15 @@ to the settled, mart-served path instead — a flight with no trace at all still
 path either way. Every `/path` response, provisional or settled, carries `Cache-Control:
 no-store`, and the livemap's LADD suppression (mart flag plus the live hex and callsign sets)
 guards both arms identically.
+
+`GET /path/{flight_id}/estimate` runs the pure estimator over settled inputs only, drawing
+great-circle gap bridges and endpoint extensions plus capped dead-reckoning as a violet dashed
+overlay. Each segment carries a harness-derived p50/p90 uncertainty band; its hover reads
+`ESTIMATED · ±p50–p90 km (bin)` — or `≥` when the longest-gap bin serves its floor values
+rather than calibrated percentiles. Provisional inputs are denied rather than drawn, and the
+endpoint inherits `/path`'s privacy posture whole: LADD authorization re-runs on every cache
+hit, and suppressed, unknown, and errored flights all return the same byte-identical
+fail-closed empty response.
 
 ### Public deployment (Cloudflare Tunnel)
 

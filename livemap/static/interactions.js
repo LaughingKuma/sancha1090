@@ -1,11 +1,12 @@
-import { S } from "./state.js";
-import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js";
-import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js";
-import { map, overlay } from "./mapsetup.js";
+import { S } from "./state.js?v=6.34";
+import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.34";
+import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.34";
+import { map, overlay } from "./mapsetup.js?v=6.34";
 
 // Spotlight panel (v5.6) — pure reader of S.selected + S.snap.
 const spEl = (id) => document.getElementById(id);
 const spotlightEl = spEl("spotlight");
+const estButtonEl = spEl("sp-est");
 
 // "Where else has it been" — recent flights from CH; rows are DOM nodes with textContent
 // (codes/callsigns/airport names are attacker-transmittable, so never innerHTML).
@@ -49,6 +50,47 @@ function showRouteHint(route, text) {
   hintLive.textContent = text; // announce once to assistive tech
   hintTimer = setTimeout(restoreHint, 2000); // transient — the row returns to its route after a beat
 }
+function updateEstButton() {
+  const drawn = S.estSubjectKey === "f:" + S.histFlightId;
+  estButtonEl.hidden = !(S.histFlightId && !S.histProvisional && S.histPathN > 0);
+  estButtonEl.setAttribute("aria-pressed", String(drawn));
+  estButtonEl.textContent = drawn ? "hide estimated path" : "show estimated path";
+}
+export function clearEstimate() {
+  S.estFetchSeq++; // increment, never reset — a stale response must not beat a newer selection
+  S.estPendingFid = null;
+  S.estSegments = [];
+  S.estSubjectKey = null;
+  updateEstButton();
+}
+function fetchEstimate(fid) {
+  const seq = ++S.estFetchSeq;
+  S.estPendingFid = fid;
+  fetch(`/path/${encodeURIComponent(fid)}/estimate`, { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null)) // a 429/5xx envelope is not an estimate
+    .then((j) => {
+      if (seq !== S.estFetchSeq) return; // superseded by a newer pick or clear
+      S.estPendingFid = null;
+      if (!j) return;
+      S.estSegments = (j.segments || []).map((s) => ({
+        path: s.points.map((p) => [p[0], p[1]]),
+        kind: s.kind,
+        band: s.meta.uncertainty,
+      }));
+      // the subject key means "an estimate is DRAWN" — set only when segments actually installed
+      S.estSubjectKey = S.estSegments.length ? `f:${fid}` : null;
+      if (S.estSegments.length === 0 && j.skips && j.skips.length) {
+        const live = activeRow ? activeRow.querySelector(".ff-route") : null;
+        if (live) showRouteHint(live, `no estimate · ${j.skips[0].reason}`);
+      }
+      renderSpotlight();
+      updateEstButton();
+    })
+    .catch(() => {})
+    .finally(() => {
+      if (seq === S.estFetchSeq) S.estPendingFid = null;
+    });
+}
 // A path far from the current view must visibly do something — frame the whole journey unless both ends are
 // already on-screen. Endpoints, not a point-count fraction: dense per-second approach fixes cluster at one end
 // and would fool a fraction test into thinking a trans-ocean flight is "mostly in view".
@@ -70,20 +112,30 @@ function maybeFitHistPath(pts) {
 }
 // Clicking a recent-sightings row draws that historical flight's fused path; clicking it again clears it.
 function selectSighting(fid, li, route) {
+  clearEstimate();
   const seq = ++S.pathFetchSeq; // any click supersedes an in-flight fetch — including a toggle-off re-click
   restoreHint(); // drop any lingering row hint (no-path / sparse) from a prior pick
-  if (S.histFlightId === fid) { clearHistPath(); clearActiveRow(); renderSpotlight(); return; } // re-click the drawn row → toggle off
+  if (S.histFlightId === fid) {
+    clearHistPath();
+    S.histPathN = 0;
+    updateEstButton();
+    clearActiveRow();
+    renderSpotlight();
+    return;
+  } // re-click the drawn row → toggle off
   clearActiveRow();
   activeRow = li;
   li.classList.add("ff-active");
   li.setAttribute("aria-pressed", "true");
   S.histFlightId = fid; // claim active now so a re-click toggles even before the fetch resolves
-  setHistPath([]);      // drop any prior path immediately; the fetch fills it back in
+  S.histPathN = setHistPath([]); // drop any prior path immediately; the fetch fills it back in
+  updateEstButton();
   fetch(`/path/${encodeURIComponent(fid)}`, { cache: "no-store" })
     .then((r) => r.json())
     .then((j) => {
       if (seq !== S.pathFetchSeq) return; // a newer pick or a deselect superseded this fetch
       const n = setHistPath(j.points);
+      S.histPathN = n;
       S.histProvisional = !!j.provisional && n > 0; // empty provisional draws nothing — no badge either
       renderSpotlight(); // sp-badges re-renders from cardData — show/drop the chip now, not next tick
       // a re-render (expand) between click and callback detaches the captured route node — resolve the live one
@@ -100,9 +152,12 @@ function selectSighting(fid, li, route) {
 }
 // A deselect or a switch to another aircraft drops the drawn history path with the selection.
 function resetHistPath() {
+  clearEstimate();
   S.pathFetchSeq++; // orphan any in-flight /path fetch
   restoreHint();
   clearHistPath();
+  S.histPathN = 0;
+  updateEstButton();
   clearActiveRow();
 }
 
@@ -163,6 +218,7 @@ function renderFlights(list, expanded = false) {
 export function renderSpotlight() {
   if (!S.selected) {
     spotlightEl.hidden = true;
+    updateEstButton();
     return;
   }
   const a = S.snap.aircraft.find((x) => x.hex === S.selected.hex);
@@ -180,6 +236,7 @@ export function renderSpotlight() {
     const badges = spEl("sp-badges");
     if (!S.histProvisional) badges.querySelector(".badge-prov")?.remove();
     else if (!badges.querySelector(".badge-prov")) badges.insertAdjacentHTML("beforeend", PROV_BADGE);
+    updateEstButton();
     return;
   }
   spotlightEl.classList.toggle("mil", a.is_military === true);
@@ -234,7 +291,15 @@ export function renderSpotlight() {
   } else {
     spEl("sp-track").textContent = "track —";
   }
+  updateEstButton();
 }
+estButtonEl.addEventListener("click", () => {
+  if (S.estSubjectKey === "f:" + S.histFlightId) clearEstimate();
+  else if (S.estPendingFid === S.histFlightId) clearEstimate();
+  else if (S.histFlightId) fetchEstimate(S.histFlightId);
+  renderSpotlight();
+  updateEstButton();
+});
 spEl("sp-close").addEventListener("click", clearSelection);
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") clearSelection();
@@ -314,11 +379,23 @@ function pickHover() {
   hoverRaf = 0;
   const e = lastMove;
   if (!e) return; // hidden (mouseout/dragstart) between scheduling this frame and its running
-  const pick = overlay._deck?.pickObject({ x: e.point.x, y: e.point.y, radius: 4, layerIds: ["planes"] });
-  const card = pick && pick.object ? hoverCardHTML(pick.object.a) : null;
-  if (!card) return hideHover();
-  hoverEl.className = card.emerg ? "ac-tip emerg" : "ac-tip";
-  hoverEl.innerHTML = card.html;
+  const pick = overlay._deck?.pickObject({
+    x: e.point.x, y: e.point.y, radius: 4, layerIds: ["planes", "estimate-path"],
+  });
+  if (!pick || !pick.object) return hideHover();
+  if (pick.layer?.id === "planes") {
+    const card = hoverCardHTML(pick.object.a);
+    if (!card) return hideHover();
+    hoverEl.className = card.emerg ? "ac-tip emerg" : "ac-tip";
+    hoverEl.innerHTML = card.html;
+  } else if (pick.layer?.id === "estimate-path") {
+    const d = pick.object;
+    const label = document.createElement("div");
+    label.className = "model";
+    label.textContent = `ESTIMATED · ${d.band.floor ? "≥" : "±"}${d.band.p50_km}–${d.band.p90_km} km (${d.band.bin})`;
+    hoverEl.className = "ac-tip";
+    hoverEl.replaceChildren(label);
+  } else return hideHover();
   hoverEl.hidden = false;
   placeHover(e.originalEvent.clientX, e.originalEvent.clientY);
 }

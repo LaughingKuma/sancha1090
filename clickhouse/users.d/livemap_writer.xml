@@ -1,0 +1,17 @@
+<clickhouse>
+    <!-- INSERT-only via an EXPLICIT grants block so the user never inherits the stack's broad legacy
+         defaults (design §4); password via from_env — same no-secrets-in-config discipline as superset_ro. -->
+    <users>
+        <livemap_writer>
+            <password from_env="CH_LIVEMAP_WRITER_PASSWORD"/>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <grants>
+                <query>GRANT INSERT ON bronze.path_estimates</query>
+            </grants>
+        </livemap_writer>
+    </users>
+</clickhouse>

@@ -74,6 +74,8 @@ x-airflow-common:
     - ./clickhouse:/opt/airflow/clickhouse:ro
     # ro: exposes this file to the bootstrap-consistency test so it can be checked against ch_setup_marts.sh
     - ./docker-compose.yml:/opt/airflow/docker-compose.yml:ro
+    # Static config contracts need the public example without exposing the real .env.
+    - ./.env.example:/opt/airflow/.env.example:ro
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres-airflow:
@@ -203,6 +205,10 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    environment:
+      <<: *airflow-common-env
+      # PR-2 behavioral identity tests only — NOT in the shared anchor (apiserver/dag-processor stay secret-free)
+      CH_LIVEMAP_WRITER_PASSWORD: ${CH_LIVEMAP_WRITER_PASSWORD:-}
     healthcheck:
       test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
       interval: 30s
@@ -393,6 +399,8 @@ services:
       CH_S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
       # P5: the read-only superset_ro user's password, read by clickhouse/users.d/superset_ro.xml via from_env.
       CH_SUPERSET_PASSWORD: ${CH_SUPERSET_PASSWORD:?CH_SUPERSET_PASSWORD must be set in .env}
+      # PR-2: INSERT-only estimate-log writer's password, read by clickhouse/users.d/livemap_writer.xml via from_env.
+      CH_LIVEMAP_WRITER_PASSWORD: ${CH_LIVEMAP_WRITER_PASSWORD:?CH_LIVEMAP_WRITER_PASSWORD must be set in .env}
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
     volumes:
@@ -493,6 +501,9 @@ services:
       LIVEMAP_CH_USER: superset_ro
       LIVEMAP_CH_PASSWORD: ${CH_SUPERSET_PASSWORD:?CH_SUPERSET_PASSWORD must be set in .env}
       LIVEMAP_CH_DB: ${LIVEMAP_CH_DB:-gold_ch}
+      # PR-2 estimate-log writer identity (INSERT-only; reads stay on superset_ro above)
+      LIVEMAP_CH_WRITER_USER: livemap_writer
+      LIVEMAP_CH_WRITER_PASSWORD: ${CH_LIVEMAP_WRITER_PASSWORD:?CH_LIVEMAP_WRITER_PASSWORD must be set in .env}
     volumes:
       # static stays baked into the image for releases; the bind-mount serves edits live so
       # frontend tweaks don't force the rebuild+restart that used to blank trails for 30 min
@@ -530,6 +541,9 @@ services:
       LIVEMAP_CH_USER: superset_ro
       LIVEMAP_CH_PASSWORD: ${CH_SUPERSET_PASSWORD:?CH_SUPERSET_PASSWORD must be set in .env}
       LIVEMAP_CH_DB: ${LIVEMAP_CH_DB:-gold_ch}
+      # PR-2 estimate-log writer identity (INSERT-only; reads stay on superset_ro above)
+      LIVEMAP_CH_WRITER_USER: livemap_writer
+      LIVEMAP_CH_WRITER_PASSWORD: ${CH_LIVEMAP_WRITER_PASSWORD:?CH_LIVEMAP_WRITER_PASSWORD must be set in .env}
     volumes:
       - ./livemap/static:/app/static:ro
     # default keeps RW/CH reachable; edge is the tunnel-only network shared with cloudflared. Listing

@@ -46,6 +46,8 @@ export const TEAL = [78, 162, 174];
 // Historical fused path (fct_flight_path click-through): a muted cool slate — deliberately outside the live
 // amber/altitude language AND the teal furniture, so a past journey reads as its own class at a glance.
 export const HISTORY = [150, 172, 210];
+// Estimated (synthesized) path — violet: unmistakably not a recording, next to the slate history ghost.
+export const ESTIMATE = [176, 138, 230];
 export const KT_TO_MS = 0.514444;
 // Beyond this the projection outruns reality (turns, descents) — cap the lead here.
 export const MAX_DR_S = 15;

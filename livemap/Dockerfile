@@ -7,7 +7,7 @@ RUN useradd --create-home --shell /usr/sbin/nologin appuser
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py estimator.py est_serving.py ./
 COPY static ./static
 RUN chown -R appuser:appuser /app
 USER appuser

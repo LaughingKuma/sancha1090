@@ -72,9 +72,9 @@ def test_valid_flight_id_rejects_huge_without_raising(livemap):
 def test_path_invalid_id_returns_empty_without_query(livemap, monkeypatch):
     # a bad id must short-circuit to empty before any CH call — never a 404/500
     def boom(_fid):
-        raise AssertionError("_fetch_path must not run for an invalid id")
+        raise AssertionError("_fetch_path_rich must not run for an invalid id")
 
-    monkeypatch.setattr(livemap, "_fetch_path", boom)
+    monkeypatch.setattr(livemap, "_fetch_path_rich", boom)
     r = TestClient(livemap.app).get("/path/notanumber")
     assert r.status_code == 200
     assert r.json() == {"flight_id": "notanumber", "points": [], "provisional": False}
@@ -84,20 +84,22 @@ def test_path_huge_digit_id_returns_empty_200(livemap, monkeypatch):
     # _valid_flight_id runs OUTSIDE the endpoint try/except, so a 5000-digit id (which int() would ValueError on)
     # must be rejected by the length guard as empty 200 — never a 500, and never a CH call.
     def boom(_fid):
-        raise AssertionError("_fetch_path must not run for an oversized id")
+        raise AssertionError("_fetch_path_rich must not run for an oversized id")
 
-    monkeypatch.setattr(livemap, "_fetch_path", boom)
+    monkeypatch.setattr(livemap, "_fetch_path_rich", boom)
     big = "9" * 5000
     r = TestClient(livemap.app).get(f"/path/{big}")
     assert r.status_code == 200
     assert r.json() == {"flight_id": big, "points": [], "provisional": False}
 
 
-def test_fetch_path_shapes_points(livemap, monkeypatch):
-    # CH projects (ts_epoch, lon, lat, alt_ft, source); the payload reorders to [lon, lat, ts, alt, source]
+def test_fetch_path_rich_shapes_points(livemap, monkeypatch):
+    # Motion fields must survive the warehouse read while the established wire remains projected from it.
     class FakeRes:
-        result_rows = [(1765500000, 139.7, 35.6, 38000.0, "adsb"),
-                       (1765500002, 139.8, 35.7, None, "adsblol")]
+        result_rows = [
+            (1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb"),
+            (1765500002, 35.7, 139.8, None, 1, None, None, "adsblol"),
+        ]
 
     class FakeClient:
         def query(self, _sql, parameters=None):
@@ -108,8 +110,12 @@ def test_fetch_path_shapes_points(livemap, monkeypatch):
             pass
 
     monkeypatch.setattr(livemap, "_ch_client", lambda: FakeClient())
-    out = livemap._fetch_path("42")
-    assert out == [
+    rich = livemap._fetch_path_rich("42")
+    assert rich == [
+        (1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb"),
+        (1765500002, 35.7, 139.8, None, 1, None, None, "adsblol"),
+    ]
+    assert livemap._lean_points(rich) == [
         [139.7, 35.6, 1765500000, 38000.0, "adsb"],
         [139.8, 35.7, 1765500002, None, "adsblol"],
     ]
@@ -134,8 +140,9 @@ def test_fetch_path_auth_shapes_identity(livemap, monkeypatch, allow_path_auth):
 
 def test_path_points_passthrough(livemap, monkeypatch):
     monkeypatch.setattr(livemap, "_path_cache", {})
+    rich = [(1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb")]
     pts = [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
-    monkeypatch.setattr(livemap, "_fetch_path", lambda _fid: pts)
+    monkeypatch.setattr(livemap, "_fetch_path_rich", lambda _fid: rich)
     j = TestClient(livemap.app).get("/path/42").json()
     assert j == {"flight_id": "42", "points": pts, "provisional": False}
 
@@ -150,7 +157,7 @@ def test_path_ladd_suppressed_returns_empty(livemap, monkeypatch):
     )
     monkeypatch.setattr(
         livemap,
-        "_fetch_path",
+        "_fetch_path_rich",
         lambda _fid: (_ for _ in ()).throw(AssertionError("suppressed path must not be fetched")),
     )
     r = TestClient(livemap.app).get("/path/42")
@@ -159,8 +166,8 @@ def test_path_ladd_suppressed_returns_empty(livemap, monkeypatch):
 
 
 def test_path_mart_ladd_flag_suppresses_cached_geometry(livemap, monkeypatch):
-    pts = [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
-    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), pts)})
+    rich = [(1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb")]
+    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), rich, 123.0)})
     monkeypatch.setattr(
         livemap, "_fetch_path_auth",
         lambda _fid: ("abc123", "ANA1", True, 1765500000, 1765503600, datetime.date(2026, 6, 1)),
@@ -179,15 +186,15 @@ def test_path_unloaded_ladd_state_fails_closed_before_query(livemap, monkeypatch
 
 
 def test_path_missing_auth_row_suppresses_cached_geometry(livemap, monkeypatch):
-    pts = [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
-    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), pts)})
+    rich = [(1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb")]
+    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), rich, 123.0)})
     monkeypatch.setattr(livemap, "_fetch_path_auth", lambda _fid: None)
     assert TestClient(livemap.app).get("/path/42").json()["points"] == []
 
 
 def test_path_auth_failure_suppresses_cached_geometry(livemap, monkeypatch):
-    pts = [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
-    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), pts)})
+    rich = [(1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb")]
+    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), rich, 123.0)})
     monkeypatch.setattr(
         livemap,
         "_fetch_path_auth",
@@ -202,7 +209,7 @@ def test_path_ch_failure_returns_empty_200(livemap, monkeypatch):
     def boom(_fid):
         raise RuntimeError("ch down")
 
-    monkeypatch.setattr(livemap, "_fetch_path", boom)
+    monkeypatch.setattr(livemap, "_fetch_path_rich", boom)
     r = TestClient(livemap.app).get("/path/42")
     assert r.status_code == 200
     assert r.json() == {"flight_id": "42", "points": [], "provisional": False}
@@ -215,7 +222,7 @@ def test_path_missing_table_returns_empty_200(livemap, monkeypatch):
     def missing(_fid):
         raise RuntimeError("Code: 60. DB::Exception: Table gold_ch.fct_flight_path doesn't exist")
 
-    monkeypatch.setattr(livemap, "_fetch_path", missing)
+    monkeypatch.setattr(livemap, "_fetch_path_rich", missing)
     r = TestClient(livemap.app).get("/path/42")
     assert r.status_code == 200
     assert r.json() == {"flight_id": "42", "points": [], "provisional": False}
@@ -233,7 +240,7 @@ def test_path_cached_after_first_call(livemap, monkeypatch):
         calls["auth"] += 1
         return "abc123", "ANA1", False, 1765500000, 1765503600, datetime.date(2026, 6, 1)
 
-    monkeypatch.setattr(livemap, "_fetch_path", once)
+    monkeypatch.setattr(livemap, "_fetch_path_rich", once)
     monkeypatch.setattr(livemap, "_fetch_path_auth", authorize)
     c = TestClient(livemap.app)
     c.get("/path/42")
@@ -244,7 +251,7 @@ def test_path_cached_after_first_call(livemap, monkeypatch):
 def test_path_cache_bounded(livemap, monkeypatch):
     monkeypatch.setattr(livemap, "_path_cache", {})
     monkeypatch.setattr(livemap, "PATH_CACHE_MAX", 3)
-    monkeypatch.setattr(livemap, "_fetch_path", lambda _fid: [])
+    monkeypatch.setattr(livemap, "_fetch_path_rich", lambda _fid: [])
     c = TestClient(livemap.app)
     for i in range(10):
         c.get(f"/path/{i}")
@@ -255,8 +262,9 @@ def test_path_cache_bounded(livemap, monkeypatch):
 def test_path_zero_cap_disables_cache_but_serves_points(livemap, monkeypatch):
     monkeypatch.setattr(livemap, "_path_cache", {})
     monkeypatch.setattr(livemap, "PATH_CACHE_MAX", 0)
+    rich = [(1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb")]
     pts = [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
-    monkeypatch.setattr(livemap, "_fetch_path", lambda _fid: pts)
+    monkeypatch.setattr(livemap, "_fetch_path_rich", lambda _fid: rich)
     j = TestClient(livemap.app).get("/path/42").json()
     assert j["points"] == pts          # eviction must never clobber a successful fetch
     assert livemap._path_cache == {}   # cap 0 = cache disabled, loop still terminates
@@ -284,10 +292,12 @@ def test_path_no_store_on_every_branch(livemap, monkeypatch):
     monkeypatch.setattr(livemap, "_path_cache", {})
     c = TestClient(livemap.app)
     assert c.get("/path/notanumber").headers["cache-control"] == "no-store"          # malformed
-    pts = [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
-    monkeypatch.setattr(livemap, "_fetch_path", lambda _fid: pts)
+    rich = [(1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb")]
+    monkeypatch.setattr(livemap, "_fetch_path_rich", lambda _fid: rich)
     assert c.get("/path/42").headers["cache-control"] == "no-store"                  # settled
-    monkeypatch.setattr(livemap, "_fetch_path", lambda _fid: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(
+        livemap, "_fetch_path_rich", lambda _fid: (_ for _ in ()).throw(RuntimeError("down"))
+    )
     assert c.get("/path/43").headers["cache-control"] == "no-store"                  # CH error
     monkeypatch.setattr(livemap, "_fetch_path_auth", lambda _fid: None)
     assert c.get("/path/44").headers["cache-control"] == "no-store"                  # unknown
@@ -300,10 +310,66 @@ def test_path_canonical_cache_key(livemap, monkeypatch):
     calls = {"n": 0}
     def once(_fid):
         calls["n"] += 1
-        return [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
-    monkeypatch.setattr(livemap, "_fetch_path", once)
+        return [(1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb")]
+    monkeypatch.setattr(livemap, "_fetch_path_rich", once)
     c = TestClient(livemap.app)
     c.get("/path/42")
     c.get("/path/042")               # leading-zero alias must hit the same settled entry
     assert calls["n"] == 1
     assert list(livemap._path_cache) == [42]
+
+
+def test_rich_loader_settled_points_carry_motion_fields(livemap, monkeypatch):
+    import asyncio
+    rich = [(1765500000, 35.0, 139.0, 35000.0, 0, 450.0, 90.0, "adsb")]
+    monkeypatch.setattr(livemap, "_fetch_path_rich", lambda _fid: rich)
+    got = asyncio.run(livemap._load_path_input("42"))
+    assert got["status"] == "settled"
+    assert got["points"] == rich
+    assert got["auth"][0] == "abc123"
+
+
+def test_rich_loader_denied_on_suppress_none(livemap, monkeypatch):
+    import asyncio
+    monkeypatch.setattr(livemap, "_ladd_suppress", None)
+    assert asyncio.run(livemap._load_path_input("42"))["status"] == "denied"
+
+
+def test_lean_projection_is_the_frozen_wire(livemap):
+    rich = [(100, 35.0, 139.0, None, 0, None, None, "opensky")]
+    assert livemap._lean_points(rich) == [[139.0, 35.0, 100, None, "opensky"]]
+
+
+def test_settled_as_of_is_sampled_after_the_read(livemap, monkeypatch):
+    # §7: input_as_of = read-COMPLETION time; a ticking clock exposes a branch-entry sample as too early
+    import asyncio
+    import itertools
+    ticks = itertools.count(1000.0, 1.0)
+    monkeypatch.setattr(livemap.time, "time", lambda: next(ticks))
+    rich = [(1765500000, 35.0, 139.0, 35000.0, 0, 450.0, 90.0, "adsb")]
+
+    def slow_fetch(_fid):
+        next(ticks)  # the read itself consumes a tick
+        return rich
+
+    monkeypatch.setattr(livemap, "_fetch_path_rich", slow_fetch)
+    monkeypatch.setattr(livemap, "_path_cache", {})
+    got = asyncio.run(livemap._load_path_input("42"))
+    assert got["status"] == "settled"
+    fetch_entry_now = 1000.0
+    assert got["as_of"] > fetch_entry_now + 1.0   # later than branch entry AND the read's own tick
+
+
+def test_cache_hit_preserves_original_read_time(livemap, monkeypatch):
+    import asyncio
+    rich = [(1765500000, 35.0, 139.0, 35000.0, 0, 450.0, 90.0, "adsb")]
+    monkeypatch.setattr(livemap, "_fetch_path_rich", lambda _fid: rich)
+    first = asyncio.run(livemap._load_path_input("42"))
+    monkeypatch.setattr(
+        livemap,
+        "_fetch_path_rich",
+        lambda _fid: (_ for _ in ()).throw(AssertionError("cache miss")),
+    )
+    second = asyncio.run(livemap._load_path_input("42"))
+    assert second["points"] == rich
+    assert second["as_of"] == first["as_of"]   # §7: input_as_of is the READ time, hits included

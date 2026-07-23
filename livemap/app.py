@@ -2,6 +2,7 @@ import asyncio
 import collections
 import contextlib
 import datetime
+import importlib.util
 import json
 import os
 import time
@@ -12,6 +13,19 @@ import psycopg2.extras
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+
+def _load_sibling(name):
+    # file-relative: resolves in the baked image (/app) AND under spec-loaded tests alike
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{name}.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+est = _load_sibling("estimator")
+ess = _load_sibling("est_serving")
 
 # Server-side cache is the whole point: N browser tabs share ONE RW query stream, never N.
 POLL_SECONDS = float(os.environ.get("LIVEMAP_POLL_SECONDS", "1.0"))
@@ -33,6 +47,25 @@ CH_USER = os.environ.get("LIVEMAP_CH_USER", "superset_ro")
 CH_PASSWORD = os.environ.get("LIVEMAP_CH_PASSWORD", "")
 CH_DB = os.environ.get("LIVEMAP_CH_DB", "gold_ch")
 CH_QUERY_TIMEOUT_S = int(os.environ.get("LIVEMAP_CH_QUERY_TIMEOUT_S", "4"))
+CH_WRITER_USER = os.environ.get("LIVEMAP_CH_WRITER_USER", "livemap_writer")
+CH_WRITER_PASSWORD = os.environ.get("LIVEMAP_CH_WRITER_PASSWORD", "")
+
+# Bad logging settings must not prevent the serving process from importing.
+try:
+    EST_FLUSH_S = max(0.5, float(os.environ.get("LIVEMAP_EST_FLUSH_S", "5.0")))
+except ValueError:
+    EST_FLUSH_S = 5.0
+try:
+    EST_LOG_QUEUE_MAX = max(0, int(os.environ.get("LIVEMAP_EST_LOG_QUEUE_MAX", "256")))
+except ValueError:
+    EST_LOG_QUEUE_MAX = 256
+try:
+    EST_FLUSH_MAX_ROWS = max(1, int(os.environ.get("LIVEMAP_EST_FLUSH_MAX_ROWS", "1000")))
+except ValueError:
+    EST_FLUSH_MAX_ROWS = 1000
+
+_est_log_queue = ess.LogQueue(EST_LOG_QUEUE_MAX)
+_est_missing_table_warned = False
 
 # LADD suppression: the live surfaces only need "listed right now" — the OPEN intervals. The mart's
 # window-aware is_ladd covers history. dim_ladd is RMT(_version) so FINAL for current SCD2 state.
@@ -92,7 +125,7 @@ FLIGHTS_QUERY = f"""
 # Historical fused trajectory for one reconciled flight; LADD suppression rides the is_ladd=0 subquery
 # (window-aware) so a listed flight yields zero rows — indistinguishable from no-path, no privacy oracle.
 PATH_QUERY = f"""
-    SELECT toUnixTimestamp(ts), lon, lat, alt_ft, source
+    SELECT toUnixTimestamp(ts), lat, lon, alt_ft, on_ground, gs_kt, track_deg, source
     FROM {CH_DB}.fct_flight_path
     WHERE flight_id = {{fid:UInt64}}
       AND flight_id IN (
@@ -107,6 +140,15 @@ PATH_QUERY = f"""
 PATH_AUTH_QUERY = f"""
     SELECT lower(icao24), callsign, is_ladd,
            toUnixTimestamp(start_time), toUnixTimestamp(end_time), toDate(start_time)
+    FROM {CH_DB}.fct_flights_reconciled
+    WHERE flight_id = {{fid:UInt64}}
+    LIMIT 1
+"""
+
+# O/D + provenance for the estimate arm only (SP2 geo columns); /path never pays this query
+PATH_OD_QUERY = f"""
+    SELECT origin_lat, origin_lon, origin_source, origin_agreement,
+           dest_lat, dest_lon, dest_source, dest_agreement
     FROM {CH_DB}.fct_flights_reconciled
     WHERE flight_id = {{fid:UInt64}}
     LIMIT 1
@@ -163,15 +205,23 @@ PROVISIONAL_OPENSKY_QUERY = """
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # hold a reference so the poller task isn't garbage-collected mid-flight
-    task = asyncio.create_task(_poller())
+    # Strong references keep both background tasks alive for the application's lifetime.
+    tasks = (asyncio.create_task(_poller()), asyncio.create_task(_est_flusher()))
     try:
         yield
     finally:
-        task.cancel()
-        # await the cancellation so shutdown doesn't leave it pending mid-_fetch
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            # settle the cancelled coroutines; a running writer THREAD outlives this await by design —
+            # the locked queue + in-thread accounting keep an overlapping tail drain correct
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        # A normal recreate must not silently discard the queued tail — drain EVERY batch (each
+        # cycle pops ≥1 group, success or drop, so this terminates); a dead CH stays best-effort.
+        with contextlib.suppress(Exception):
+            while _est_log_queue.groups:
+                await _flush_once()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -239,6 +289,13 @@ try:
     PATH_CACHE_MAX = max(0, int(os.environ.get("LIVEMAP_PATH_CACHE_MAX", "256")))
 except ValueError:
     PATH_CACHE_MAX = 256
+
+_est_cache: dict = {}
+EST_CACHE_TTL_S = float(os.environ.get("LIVEMAP_EST_CACHE_TTL_S", "900.0"))
+try:
+    EST_CACHE_MAX = max(0, int(os.environ.get("LIVEMAP_EST_CACHE_MAX", "128")))
+except ValueError:
+    EST_CACHE_MAX = 128
 UINT64_MAX = 2**64 - 1
 
 # Provisional fallback (rung 2): flights newer than the mart's built head get a serve-time fused path.
@@ -260,13 +317,40 @@ def _path_response(flight_id: str, points, provisional: bool) -> JSONResponse:
 
 
 def _path_cache_put(fid: int, points, now: float) -> None:
-    _path_cache[fid] = (now + PATH_CACHE_TTL_S, points)
+    _path_cache[fid] = (now + PATH_CACHE_TTL_S, points, now)
     if len(_path_cache) > PATH_CACHE_MAX:
         # entries only age out on same-key hits, so a many-flight sweep would grow the dict unboundedly
         for k in [k for k, v in _path_cache.items() if v[0] <= now]:
             del _path_cache[k]
         while len(_path_cache) > PATH_CACHE_MAX:
             del _path_cache[min(_path_cache, key=lambda k: _path_cache[k][0])]
+
+
+def _est_cache_put(key, payload, now: float) -> None:
+    _est_cache[key] = (now + EST_CACHE_TTL_S, payload)
+    if len(_est_cache) > EST_CACHE_MAX:
+        # entries only age out on same-key hits, so a many-flight sweep would grow the dict unboundedly
+        for k in [k for k, v in _est_cache.items() if v[0] <= now]:
+            del _est_cache[k]
+        while len(_est_cache) > EST_CACHE_MAX:
+            del _est_cache[min(_est_cache, key=lambda k: _est_cache[k][0])]
+
+
+def _empty_estimate(flight_id, reason, provisional, as_of) -> dict:
+    return ess.build_response(
+        flight_id,
+        est.EstimateResult([], [{"kind": "all", "reason": reason}], []),
+        provisional,
+        as_of,
+    )
+
+
+def _enqueue_estimate_log(rows) -> None:
+    _est_log_queue.put(rows)
+
+
+def _estimate_response(payload) -> JSONResponse:
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
 def _rw_rows(sql, params=None, cursor_factory=None):
@@ -371,6 +455,15 @@ def _ch_client():
     )
 
 
+def _ch_writer_client():
+    import clickhouse_connect
+    return clickhouse_connect.get_client(
+        host=CH_HOST, port=CH_PORT, username=CH_WRITER_USER, password=CH_WRITER_PASSWORD,
+        database="bronze", connect_timeout=3, send_receive_timeout=CH_QUERY_TIMEOUT_S,
+        settings={"max_execution_time": CH_QUERY_TIMEOUT_S},
+    )
+
+
 def _fetch_flights(hex_: str) -> list:
     client = _ch_client()
     try:
@@ -405,14 +498,21 @@ def _valid_flight_id(fid: str) -> bool:
     return len(fid) <= 20 and fid.isascii() and fid.isdigit() and int(fid) <= UINT64_MAX
 
 
-def _fetch_path(flight_id: str) -> list:
+def _fetch_path_rich(flight_id: str) -> list:
     client = _ch_client()
     try:
         res = client.query(PATH_QUERY, parameters={"fid": int(flight_id)})
     finally:
         client.close()
-    # lean array-of-arrays mirroring /track: [lon, lat, ts_epoch, alt_ft, source]
-    return [[lon, lat, ts, alt, source] for ts, lon, lat, alt, source in res.result_rows]
+    return [
+        (int(ts), lat, lon, alt, int(og or 0), gs, trk, src)
+        for ts, lat, lon, alt, og, gs, trk, src in res.result_rows
+    ]
+
+
+def _lean_points(rich) -> list:
+    # the frozen /path wire projects off the rich row — one loader, two consumers (design §4)
+    return [[lon, lat, ts, alt, src] for ts, lat, lon, alt, _og, _gs, _trk, src in rich]
 
 
 def _fetch_path_auth(flight_id: str):
@@ -427,6 +527,20 @@ def _fetch_path_auth(flight_id: str):
     return icao24, callsign, bool(is_ladd), start_s, end_s, start_day
 
 
+def _fetch_od(fid: int):
+    client = _ch_client()
+    try:
+        res = client.query(PATH_OD_QUERY, parameters={"fid": fid})
+    finally:
+        client.close()
+    if not res.result_rows:
+        return est.OD()
+    olat, olon, osrc, oagr, dlat, dlon, dsrc, dagr = res.result_rows[0]
+    origin = est.Endpoint(olat, olon, osrc, oagr) if olat is not None and olon is not None else est.Endpoint()
+    dest = est.Endpoint(dlat, dlon, dsrc, dagr) if dlat is not None and dlon is not None else est.Endpoint()
+    return est.OD(origin=origin, dest=dest)
+
+
 def _fetch_path_head():
     client = _ch_client()
     try:
@@ -438,11 +552,11 @@ def _fetch_path_head():
     return head or datetime.date(1970, 1, 1)
 
 
-def _get_path_head(now):
+async def _get_path_head(now):
     if _path_head["head"] is not None and _path_head["expiry"] > now:
         return _path_head["head"]
     try:
-        head = _fetch_path_head()
+        head = await asyncio.to_thread(_fetch_path_head)
     except Exception as exc:
         print(f"livemap path head fetch failed: {type(exc).__name__}: {exc}", flush=True)
         return _path_head["head"]
@@ -471,11 +585,11 @@ def _fuse_points(rows) -> list:
         return (ts, rank, lat, lon, (alt is None, alt), (gs is None, gs), (trk is None, trk), og)
 
     out, last_ts = [], None
-    for ts, _rank, lat, lon, alt, _gs, _trk, _og, src in sorted(rows, key=key):
+    for ts, _rank, lat, lon, alt, gs, trk, og, src in sorted(rows, key=key):
         if ts == last_ts:
             continue
         last_ts = ts
-        out.append([lon, lat, ts, alt, src])
+        out.append((ts, lat, lon, alt, int(og or 0), gs, trk, src))
     return out
 
 
@@ -558,6 +672,51 @@ def _is_unknown_table_error(exc) -> bool:
         return True
     s = str(exc).lower()
     return "code: 60" in s or "unknown_table" in s or "unknown table" in s or "doesn't exist" in s
+
+
+async def _flush_once() -> None:
+    queue = _est_log_queue
+
+    def insert_rows():
+        # drain + accounting live IN the thread (§4): a shutdown cancel abandons the await, never the
+        # thread — and a pre-start cancel leaves the rows queued for the lifespan tail drain
+        global _est_missing_table_warned
+        rows, ngroups = queue.drain(EST_FLUSH_MAX_ROWS)
+        if not rows:
+            return
+        try:
+            client = _ch_writer_client()
+            try:
+                client.insert(
+                    "path_estimates",
+                    rows,
+                    column_names=ess.INSERT_COLUMNS,
+                    column_type_names=ess.INSERT_TYPES,
+                )
+            finally:
+                # a close failure after a successful INSERT is not data loss — never count it as one
+                with contextlib.suppress(Exception):
+                    client.close()
+        except Exception as exc:
+            queue.record_drop(ngroups)
+            if _is_unknown_table_error(exc):
+                if not _est_missing_table_warned:
+                    print(f"livemap estimate log table absent; dropping estimates: {exc}", flush=True)
+                    _est_missing_table_warned = True
+            else:
+                print(
+                    f"livemap estimate log flush dropped {ngroups} estimates: "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+
+    await asyncio.to_thread(insert_rows)
+
+
+async def _est_flusher() -> None:
+    while True:
+        await asyncio.sleep(EST_FLUSH_S)
+        await _flush_once()
 
 
 def _ladd_missing_table(exc) -> bool:
@@ -745,59 +904,154 @@ async def flights(hex: str) -> JSONResponse:
     return JSONResponse({"hex": hex, "flights": _ladd_filter_flights(rows, suppress)})
 
 
-@app.get("/path/{flight_id}")
-async def path(flight_id: str) -> JSONResponse:
+async def _load_path_input(flight_id: str) -> dict:
     # Suppressed / unknown / missing-table / CH-down all return the same empty shape — never 404/500, no
     # privacy oracle; "provisional" rides every response so the flag itself leaks nothing.
+    def result(status, points, auth, as_of):
+        return {"status": status, "points": points, "auth": auth, "as_of": as_of}
+
     if not _valid_flight_id(flight_id):
-        return _path_response(flight_id, [], False)
+        return result("denied", [], None, time.time())
     suppress = _ladd_suppress
     if suppress is None:
-        return _path_response(flight_id, [], False)
+        return result("denied", [], None, time.time())
     try:
         auth = await asyncio.to_thread(_fetch_path_auth, flight_id)
     except Exception as exc:
         print(f"livemap path auth failed: {type(exc).__name__}: {exc}", flush=True)
-        return _path_response(flight_id, [], False)
+        return result("denied", [], None, time.time())
     if auth is None:
-        return _path_response(flight_id, [], False)
+        return result("denied", [], None, time.time())
     icao24, callsign, mart_ladd, start_s, end_s, start_day = auth
     if _is_ladd_suppressed(icao24, callsign, mv_is_ladd=mart_ladd, suppress=suppress):
-        return _path_response(flight_id, [], False)
+        return result("denied", [], auth, time.time())
     fid = int(flight_id)  # canonical cache key: leading-zero aliases must not mint distinct entries
     now = time.time()
     hit = _path_cache.get(fid)
-    cached_empty = bool(hit) and hit[0] > now and not hit[1]
-    if hit and hit[0] > now and hit[1]:
-        return _path_response(flight_id, hit[1], False)
+    valid_hit = bool(hit) and hit[0] > now
+    cached_empty = valid_hit and not hit[1]
+    input_as_of = hit[2] if valid_hit else now
+    if valid_hit and hit[1]:
+        return result("settled", hit[1], auth, input_as_of)
     if not cached_empty:
         try:
-            points = await asyncio.to_thread(_fetch_path, flight_id)
+            points = await asyncio.to_thread(_fetch_path_rich, flight_id)
         except Exception as exc:
             print(f"livemap path fetch failed: {type(exc).__name__}: {exc}", flush=True)
-            return _path_response(flight_id, [], False)
+            return result("denied", [], auth, now)
+        # §7 audit semantics: input_as_of is READ-COMPLETION time, not branch entry — sample after the fetch
+        input_as_of = time.time()
         if points:
-            _path_cache_put(fid, points, now)  # immutable settled-day history: cache non-empty successes
-            return _path_response(flight_id, points, False)
+            _path_cache_put(fid, points, input_as_of)  # immutable settled-day history: cache non-empty successes
+            return result("settled", points, auth, input_as_of)
     # settled empty → eligibility gate: an empty cache HIT classifies-and-continues, it never short-circuits
-    head = await asyncio.to_thread(_get_path_head, now)
+    head = await _get_path_head(now)
     if head is None or start_day is None:  # cold head fetch failed / windowless spine row → fail closed
-        return _path_response(flight_id, [], False)
+        return result("denied", [], auth, now)
     if start_day <= head:
         # historical pathless keeps today's behavior; the empty is cacheable only now that it's classified
         if not cached_empty:
-            _path_cache_put(fid, [], now)
-        return _path_response(flight_id, [], False)
+            _path_cache_put(fid, [], input_as_of)
+        return result("settled_empty", [], auth, input_as_of)
     if start_s is None or end_s is None:
-        return _path_response(flight_id, [], False)
+        return result("denied", [], auth, now)
     try:
         points = await asyncio.to_thread(_fetch_provisional, fid, icao24, start_s, end_s)
     except Exception as exc:
         print(f"livemap provisional path failed: {type(exc).__name__}: {exc}", flush=True)
-        return _path_response(flight_id, [], False)
+        return result("denied", [], auth, now)
     # bypasses _path_cache: bronze grows all day and the flight settles within days — a 900 s entry is
     # wrong in both directions and the recompute is cheap (~114 ms worst-case measured)
-    return _path_response(flight_id, points, True)
+    return result("provisional", points, auth, time.time())
+
+
+@app.get("/path/{flight_id}")
+async def path(flight_id: str) -> JSONResponse:
+    got = await _load_path_input(flight_id)
+    # provisional rides EVERY provisional-arm response, empty included — the client owns the n>0 logic
+    return _path_response(flight_id, _lean_points(got["points"]), got["status"] == "provisional")
+
+
+@app.get("/path/{flight_id}/estimate")
+async def path_estimate(flight_id: str) -> JSONResponse:
+    got = await _load_path_input(flight_id)
+    if got["status"] == "denied":
+        return _estimate_response(_empty_estimate(flight_id, "no_input", False, 0))
+
+    if got["status"] == "provisional":
+        payload = _empty_estimate(flight_id, "provisional_input", True, int(got["as_of"]))
+        fp = await asyncio.to_thread(ess.input_fingerprint, got["points"], est.OD())
+        _enqueue_estimate_log(
+            ess.build_log_rows(
+                ess.new_estimate_id(),
+                int(flight_id),
+                got["auth"][0],
+                None,
+                payload,
+                got["points"],
+                fp,
+                ess.utcnow(),
+            )
+        )
+        return _estimate_response(payload)
+
+    fid = int(flight_id)
+    if got["status"] == "settled_empty":
+        r = est.estimate([], est.OD())
+        payload = ess.build_response(flight_id, r, False, int(got["as_of"]))
+        fp = ess.input_fingerprint([], est.OD())
+        _enqueue_estimate_log(
+            ess.build_log_rows(
+                ess.new_estimate_id(),
+                fid,
+                got["auth"][0],
+                r,
+                payload,
+                [],
+                fp,
+                ess.utcnow(),
+            )
+        )
+        return _estimate_response(payload)
+
+    try:
+        od = await asyncio.to_thread(_fetch_od, fid)
+    except Exception as exc:
+        print(f"livemap estimate O/D fetch failed: {type(exc).__name__}: {exc}", flush=True)
+        return _estimate_response(_empty_estimate(flight_id, "no_input", False, 0))
+
+    fp = await asyncio.to_thread(ess.input_fingerprint, got["points"], od)
+    key = (fid, fp, ess.METHOD_VERSION)
+    now = time.time()
+    hit = _est_cache.get(key)
+    if hit and hit[0] > now:
+        icao24, callsign, mart_ladd = got["auth"][:3]
+        if _is_ladd_suppressed(
+            icao24,
+            callsign,
+            mv_is_ladd=mart_ladd,
+            suppress=_ladd_suppress,
+        ):
+            return _estimate_response(_empty_estimate(flight_id, "no_input", False, 0))
+        # the canonical fid key makes 42/042 share an entry — echo the CALLER's spelling, not the seeder's
+        return _estimate_response({**hit[1], "flight_id": flight_id})
+
+    r = await asyncio.to_thread(est.estimate, got["points"], od)
+    payload = ess.build_response(flight_id, r, False, int(got["as_of"]))
+    _est_cache_put(key, payload, now)
+    _enqueue_estimate_log(
+        ess.build_log_rows(
+            ess.new_estimate_id(),
+            fid,
+            got["auth"][0],
+            r,
+            payload,
+            got["points"],
+            fp,
+            ess.utcnow(),
+        )
+    )
+    return _estimate_response(payload)
 
 
 @app.get("/history")
@@ -813,7 +1067,12 @@ async def history(s: float = 90.0) -> JSONResponse:
 async def healthz() -> JSONResponse:
     fresh = (time.time() - _snapshot["server_ts"]) < 10
     return JSONResponse(
-        {"ok": fresh, "count": len(_snapshot["aircraft"]), "server_ts": _snapshot["server_ts"]},
+        {
+            "ok": fresh,
+            "count": len(_snapshot["aircraft"]),
+            "server_ts": _snapshot["server_ts"],
+            "est_log": {"queued": _est_log_queue.groups, "dropped": _est_log_queue.dropped},
+        },
         status_code=200 if fresh else 503,
     )
 

@@ -23,6 +23,11 @@ export const S = {
   trails: new Map(), // hex → { pts, mil }
   renderState: new Map(), // hex → { offset, snapTs, prev, t }
   lastSeen: new Map(), // hex → last capture_ts
+  estSegments: [], // dashed estimate overlay segments [{path, kind, band}] — explicit request only (§9)
+  estSubjectKey: null, // "f:<fid>" of the DRAWN estimate (log's namespaced form); null = none drawn
+  estFetchSeq: 0, // orphans an in-flight /estimate fetch on a newer click or clear — increment-only
+  estPendingFid: null, // fid of an in-flight /estimate fetch — a second click cancels instead of re-fetching (§9)
+  histPathN: 0, // points actually drawn for the history path — the estimate button needs proof, not intent
 };
 
 // a dead feed must read as "display stopped", not as a fleet-wide signal-loss event

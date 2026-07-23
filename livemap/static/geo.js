@@ -1,4 +1,4 @@
-import { S } from "./state.js";
+import { S } from "./state.js?v=6.34";
 
 // Great-circle range/bearing from the receiver — S.feederCenter is [lon, lat] from /range-outline.
 export function stationVector(lon, lat) {
