@@ -1,12 +1,15 @@
-import { S } from "./state.js?v=6.34";
-import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.34";
-import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.34";
-import { map, overlay } from "./mapsetup.js?v=6.34";
+import { S } from "./state.js?v=6.35";
+import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.35";
+import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.35";
+import { map, overlay } from "./mapsetup.js?v=6.35";
 
 // Spotlight panel (v5.6) — pure reader of S.selected + S.snap.
 const spEl = (id) => document.getElementById(id);
 const spotlightEl = spEl("spotlight");
 const estButtonEl = spEl("sp-est");
+// may be NULL under stale-HTML/new-JS cache skew (old index.html + this module) — every use guards
+const estLiveButtonEl = spEl("sp-est-live");
+const snapRow = () => (S.selected ? S.snap.aircraft.find((x) => x.hex === S.selected.hex) : null);
 
 // "Where else has it been" — recent flights from CH; rows are DOM nodes with textContent
 // (codes/callsigns/airport names are attacker-transmittable, so never innerHTML).
@@ -52,25 +55,56 @@ function showRouteHint(route, text) {
 }
 function updateEstButton() {
   const drawn = S.estSubjectKey === "f:" + S.histFlightId;
-  estButtonEl.hidden = !(S.histFlightId && !S.histProvisional && S.histPathN > 0);
+  estButtonEl.hidden = !(S.histFlightId && S.histPathN > 0);
   estButtonEl.setAttribute("aria-pressed", String(drawn));
   estButtonEl.textContent = drawn ? "hide estimated path" : "show estimated path";
 }
+let estLiveHintTimer = 0;
+function resetEstLiveHint() {
+  // rev 3: the ONE place the hint dies — timer, handle, and marker together, so a
+  // stale timer from aircraft A can never restyle aircraft B's button
+  clearTimeout(estLiveHintTimer);
+  estLiveHintTimer = 0;
+  if (estLiveButtonEl) delete estLiveButtonEl.dataset.hint;
+}
+function showEstLiveHint(text) {
+  if (!estLiveButtonEl) return;
+  resetEstLiveHint();
+  // transient label on the button itself — the live arm has no flights-row cell to host a hint
+  const subject = S.selected && S.selected.hex; // the hint belongs to THIS aircraft only
+  estLiveButtonEl.dataset.hint = "1";
+  estLiveButtonEl.textContent = text;
+  estLiveHintTimer = setTimeout(() => {
+    estLiveHintTimer = 0;
+    delete estLiveButtonEl.dataset.hint;
+    if (S.selected && S.selected.hex === subject) updateEstLiveButton(snapRow());
+  }, 2000);
+}
+function updateEstLiveButton(a) {
+  if (!estLiveButtonEl) return; // stale-HTML skew: no button, no control — never a throw
+  // exposed only while the hex is in the CURRENT snapshot (design §5); a drawn wedge persists
+  const drawn = !!S.selected && S.estSubjectKey === "h:" + S.selected.hex;
+  estLiveButtonEl.hidden = !(S.selected && a);
+  estLiveButtonEl.setAttribute("aria-pressed", String(drawn));
+  if (!estLiveButtonEl.dataset.hint) estLiveButtonEl.textContent = drawn ? "hide estimate ahead" : "estimate ahead";
+}
 export function clearEstimate() {
   S.estFetchSeq++; // increment, never reset — a stale response must not beat a newer selection
-  S.estPendingFid = null;
+  S.estPendingKey = null;
   S.estSegments = [];
   S.estSubjectKey = null;
+  resetEstLiveHint(); // rev 3: a pending "no estimate" hint dies with the estimate state it described
   updateEstButton();
+  updateEstLiveButton(snapRow());
 }
 function fetchEstimate(fid) {
   const seq = ++S.estFetchSeq;
-  S.estPendingFid = fid;
+  S.estPendingKey = "f:" + fid;
   fetch(`/path/${encodeURIComponent(fid)}/estimate`, { cache: "no-store" })
     .then((r) => (r.ok ? r.json() : null)) // a 429/5xx envelope is not an estimate
     .then((j) => {
       if (seq !== S.estFetchSeq) return; // superseded by a newer pick or clear
-      S.estPendingFid = null;
+      S.estPendingKey = null;
       if (!j) return;
       S.estSegments = (j.segments || []).map((s) => ({
         path: s.points.map((p) => [p[0], p[1]]),
@@ -88,7 +122,33 @@ function fetchEstimate(fid) {
     })
     .catch(() => {})
     .finally(() => {
-      if (seq === S.estFetchSeq) S.estPendingFid = null;
+      if (seq === S.estFetchSeq) S.estPendingKey = null;
+    });
+}
+function fetchLiveEstimate(hex) {
+  resetEstLiveHint(); // a new request owns the button — any prior subject's hint is void
+  const seq = ++S.estFetchSeq;
+  S.estPendingKey = "h:" + hex;
+  updateEstLiveButton(snapRow());
+  fetch(`/estimate/live/${encodeURIComponent(hex)}`, { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null)) // a 429/5xx envelope is not an estimate
+    .then((j) => {
+      if (seq !== S.estFetchSeq) return; // superseded by a newer request or clear
+      S.estPendingKey = null;
+      if (!j) return;
+      S.estSegments = (j.segments || []).map((s) => ({
+        path: s.points.map((p) => [p[0], p[1]]),
+        kind: s.kind,
+        band: s.meta.uncertainty,
+      }));
+      S.estSubjectKey = S.estSegments.length ? `h:${hex}` : null;
+      if (!S.estSegments.length) showEstLiveHint("no estimate");
+      renderSpotlight();
+      updateEstButton();
+    })
+    .catch(() => {})
+    .finally(() => {
+      if (seq === S.estFetchSeq) S.estPendingKey = null;
     });
 }
 // A path far from the current view must visibly do something — frame the whole journey unless both ends are
@@ -219,6 +279,7 @@ export function renderSpotlight() {
   if (!S.selected) {
     spotlightEl.hidden = true;
     updateEstButton();
+    updateEstLiveButton(null);
     return;
   }
   const a = S.snap.aircraft.find((x) => x.hex === S.selected.hex);
@@ -237,6 +298,7 @@ export function renderSpotlight() {
     if (!S.histProvisional) badges.querySelector(".badge-prov")?.remove();
     else if (!badges.querySelector(".badge-prov")) badges.insertAdjacentHTML("beforeend", PROV_BADGE);
     updateEstButton();
+    updateEstLiveButton(null);
     return;
   }
   spotlightEl.classList.toggle("mil", a.is_military === true);
@@ -292,13 +354,28 @@ export function renderSpotlight() {
     spEl("sp-track").textContent = "track —";
   }
   updateEstButton();
+  updateEstLiveButton(a);
 }
 estButtonEl.addEventListener("click", () => {
-  if (S.estSubjectKey === "f:" + S.histFlightId) clearEstimate();
-  else if (S.estPendingFid === S.histFlightId) clearEstimate();
-  else if (S.histFlightId) fetchEstimate(S.histFlightId);
+  if (S.estSubjectKey === "f:" + S.histFlightId || S.estPendingKey === "f:" + S.histFlightId) {
+    clearEstimate();
+  } else if (S.histFlightId) {
+    clearEstimate(); // shared slot: replaces a drawn live wedge too
+    fetchEstimate(S.histFlightId);
+  }
   renderSpotlight();
   updateEstButton();
+});
+if (estLiveButtonEl) estLiveButtonEl.addEventListener("click", () => {
+  const hex = S.selected && S.selected.hex;
+  if (!hex) return;
+  if (S.estSubjectKey === "h:" + hex || S.estPendingKey === "h:" + hex) {
+    clearEstimate();
+  } else {
+    clearEstimate(); // shared slot: replaces a drawn historical estimate too
+    fetchLiveEstimate(hex);
+  }
+  renderSpotlight();
 });
 spEl("sp-close").addEventListener("click", clearSelection);
 window.addEventListener("keydown", (e) => {

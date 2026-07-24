@@ -1,6 +1,6 @@
-// Single mutable cell shared across modules — importers reassign S.* (legal: property write
-// on a shared object), never the import binding itself (illegal across ES modules).
-export const S = {
+// One shared cell even across cache-skewed module duplicates: two ?v= URLs fork the module,
+// and the poller and readers must resolve ONE object or they split-brain for the cache window.
+export const S = (globalThis.__sancha_state ??= {
   // Anchor the snapshot to the server clock so dead-reckoning and age never jump on a new poll.
   snap: { server_ts: 0, aircraft: [], perf0: 0 },
   selected: null, // { hex, pts: [{lon, lat, ts, altFt, est}], mil }
@@ -24,11 +24,11 @@ export const S = {
   renderState: new Map(), // hex → { offset, snapTs, prev, t }
   lastSeen: new Map(), // hex → last capture_ts
   estSegments: [], // dashed estimate overlay segments [{path, kind, band}] — explicit request only (§9)
-  estSubjectKey: null, // "f:<fid>" of the DRAWN estimate (log's namespaced form); null = none drawn
+  estSubjectKey: null, // "f:<fid>"|"h:<hex>" of the DRAWN estimate (log's namespaced form); null = none drawn
   estFetchSeq: 0, // orphans an in-flight /estimate fetch on a newer click or clear — increment-only
-  estPendingFid: null, // fid of an in-flight /estimate fetch — a second click cancels instead of re-fetching (§9)
+  estPendingKey: null, // "f:<fid>"|"h:<hex>" of an in-flight estimate fetch — a second click cancels instead of re-fetching (§9)
   histPathN: 0, // points actually drawn for the history path — the estimate button needs proof, not intent
-};
+});
 
 // a dead feed must read as "display stopped", not as a fleet-wide signal-loss event
 export const STREAM_FREEZE_S = 3;

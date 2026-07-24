@@ -1,12 +1,12 @@
-import { S, serverNow } from "./state.js?v=6.34";
+import { S, serverNow } from "./state.js?v=6.35";
 import {
   RING_NM, AIRPORTS, RUNWAY_PATHS, RUNWAY_ENDS, AMBER, MIL, TEAL, HISTORY, ESTIMATE,
-} from "./constants.js?v=6.34";
-import { SIL, CHEV_UP, CHEV_DOWN, zoomMult } from "./silhouettes.js?v=6.34";
-import { LABEL_ZOOM, LABEL_MAX, labelText, shadowPx, SHADOW_DIR } from "./altitude.js?v=6.34";
-import { frameData, metresBetween } from "./motion.js?v=6.34";
-import { emergencyOf } from "./telemetry.js?v=6.34";
-import { map, overlay } from "./mapsetup.js?v=6.34";
+} from "./constants.js?v=6.35";
+import { SIL, CHEV_UP, CHEV_DOWN, zoomMult } from "./silhouettes.js?v=6.35";
+import { LABEL_ZOOM, LABEL_MAX, labelText, shadowPx, SHADOW_DIR } from "./altitude.js?v=6.35";
+import { frameData, metresBetween } from "./motion.js?v=6.35";
+import { emergencyOf } from "./telemetry.js?v=6.35";
+import { map, overlay } from "./mapsetup.js?v=6.35";
 
 const { IconLayer, ScatterplotLayer, PolygonLayer, PathLayer, TextLayer, PathStyleExtension } = deck;
 

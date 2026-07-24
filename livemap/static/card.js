@@ -1,7 +1,7 @@
-import { S, serverNow } from "./state.js?v=6.34";
-import { finiteTs } from "./motion.js?v=6.34";
-import { stationVector, routeEnd, classLabel, routeSuffix } from "./geo.js?v=6.34";
-import { emergencyOf, sourceLabel, sourceKind, verticalRate, vsState, vsText, signalBars, signalText, navState } from "./telemetry.js?v=6.34";
+import { S, serverNow } from "./state.js?v=6.35";
+import { finiteTs } from "./motion.js?v=6.35";
+import { stationVector, routeEnd, classLabel, routeSuffix } from "./geo.js?v=6.35";
+import { emergencyOf, sourceLabel, sourceKind, verticalRate, vsState, vsText, signalBars, signalText, navState } from "./telemetry.js?v=6.35";
 
 // ADS-B callsigns/hex are attacker-transmittable and deck.gl renders `html` as innerHTML
 const esc = (v) =>

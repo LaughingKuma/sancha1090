@@ -5,6 +5,7 @@ import datetime
 import importlib.util
 import json
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 
@@ -84,7 +85,7 @@ FEEDER_LON = float(os.environ.get("LIVEMAP_FEEDER_LON", "139.6692"))
 # byte-identical when it is unset (the middleware isn't even registered).
 PUBLIC_MODE = os.environ.get("LIVEMAP_PUBLIC_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 # Per-IP token bucket on the per-request DB endpoints only (/aircraft + /history are in-memory reads, free).
-RATE_LIMITED_PREFIXES = ("/track/", "/flights/", "/path/")
+RATE_LIMITED_PREFIXES = ("/track/", "/flights/", "/path/", "/estimate/live/")
 RATE_LIMIT_BURST = float(os.environ.get("LIVEMAP_RATE_LIMIT_BURST", "10"))
 RATE_LIMIT_REFILL_PER_SEC = float(os.environ.get("LIVEMAP_RATE_LIMIT_REFILL_PER_SEC", "1"))
 # Cap on tracked IP buckets; fully-refilled idle ones are swept lazily on access past this cap.
@@ -296,6 +297,22 @@ try:
     EST_CACHE_MAX = max(0, int(os.environ.get("LIVEMAP_EST_CACHE_MAX", "128")))
 except ValueError:
     EST_CACHE_MAX = 128
+# Live-DR serving gates (design §5): snapshot membership proves nothing — the poller keeps
+# serving the last good snapshot through an outage, so both bounds are checked per request.
+try:
+    EST_LIVE_MAX_AGE_S = max(0.0, float(os.environ.get("LIVEMAP_EST_LIVE_MAX_AGE_S", "30")))
+except ValueError:
+    EST_LIVE_MAX_AGE_S = 30.0
+try:
+    EST_LIVE_SNAP_FRESH_S = max(0.0, float(os.environ.get("LIVEMAP_EST_LIVE_SNAP_FRESH_S", "10")))
+except ValueError:
+    EST_LIVE_SNAP_FRESH_S = 10.0
+# Cross-machine clock slack: a fix stamped slightly ahead of the host clock is fresh;
+# a far-future timestamp is garbage data, not freshness — both gates reject it (rev 2).
+EST_LIVE_FUTURE_SKEW_S = 2.0
+# The RW MV carries the producer's raw hex unvalidated — a malformed snapshot value must
+# stay a pre-gate denial, never a computable/loggable h: subject (rev 9; ~ = readsb non-ICAO)
+_LIVE_HEX_RE = re.compile(r"~?[0-9a-f]{6}")
 UINT64_MAX = 2**64 - 1
 
 # Provisional fallback (rung 2): flights newer than the mart's built head get a serve-time fused path.
@@ -345,12 +362,39 @@ def _empty_estimate(flight_id, reason, provisional, as_of) -> dict:
     )
 
 
+def _empty_live_estimate(icao24: str) -> dict:
+    return ess.build_live_response(
+        icao24,
+        est.EstimateResult([], [{"kind": "all", "reason": "no_input"}], []),
+        0,
+    )
+
+
+def _live_anchor(row):
+    # alt_baro is the MV's string field: numeric text or the 'ground' sentinel (design §5)
+    raw = row.get("alt_baro")
+    on_ground = isinstance(raw, str) and raw.strip().lower() == "ground"
+    alt_ft = None
+    if not on_ground and raw is not None:
+        try:
+            alt_ft = float(raw)
+        except (TypeError, ValueError):
+            alt_ft = None
+    return (row["capture_ts"], row["lat"], row["lon"], alt_ft, int(on_ground),
+            row.get("gs"), row.get("track"), "live")
+
+
 def _enqueue_estimate_log(rows) -> None:
     _est_log_queue.put(rows)
 
 
-def _estimate_response(payload) -> JSONResponse:
-    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+def _estimate_response(payload, estimate_id=None) -> JSONResponse:
+    headers = {"Cache-Control": "no-store"}
+    if estimate_id is not None:
+        # server-generated causal key for deploy verification (gate C queries these exact
+        # UUIDs); only on never-cached provisional/live successes — never settled/empty
+        headers["X-Estimate-Id"] = str(estimate_id)
+    return JSONResponse(payload, headers=headers)
 
 
 def _rw_rows(sql, params=None, cursor_factory=None):
@@ -697,6 +741,7 @@ async def _flush_once() -> None:
                 # a close failure after a successful INSERT is not data loss — never count it as one
                 with contextlib.suppress(Exception):
                     client.close()
+            queue.record_written(ngroups)
         except Exception as exc:
             queue.record_drop(ngroups)
             if _is_unknown_table_error(exc):
@@ -831,7 +876,7 @@ if PUBLIC_MODE:
             # s-maxage=1: with a dashboard Cache Rule making /aircraft cache-eligible (Cloudflare doesn't
             # cache JSON by default), the edge absorbs the snapshot fan-out; browsers still poll ~live.
             resp.headers["Cache-Control"] = "public, s-maxage=1"
-        elif path.startswith("/path/"):
+        elif path.startswith(("/path/", "/estimate/live/")):
             # rate-limit 429s bypass the endpoint's envelope — keep the every-response no-store belt intact
             resp.headers.setdefault("Cache-Control", "no-store")
         return resp
@@ -978,24 +1023,34 @@ async def path_estimate(flight_id: str) -> JSONResponse:
     if got["status"] == "denied":
         return _estimate_response(_empty_estimate(flight_id, "no_input", False, 0))
 
+    fid = int(flight_id)
     if got["status"] == "provisional":
-        payload = _empty_estimate(flight_id, "provisional_input", True, int(got["as_of"]))
-        fp = await asyncio.to_thread(ess.input_fingerprint, got["points"], est.OD())
+        try:
+            od = await asyncio.to_thread(_fetch_od, fid)
+        except Exception as exc:
+            print(f"livemap estimate O/D fetch failed: {type(exc).__name__}: {exc}", flush=True)
+            return _estimate_response(_empty_estimate(flight_id, "no_input", False, 0))
+        fp = await asyncio.to_thread(ess.input_fingerprint, got["points"], od)
+        r = await asyncio.to_thread(est.estimate, got["points"], od)
+        # PR-3: provisional inputs are estimated and served, logged input_provisional=1, and
+        # NEVER cached — same invariant (and reason) as the rung-2 _path_cache bypass
+        payload = ess.build_response(flight_id, r, True, int(got["as_of"]))
+        eid = ess.new_estimate_id()
         _enqueue_estimate_log(
             ess.build_log_rows(
-                ess.new_estimate_id(),
-                int(flight_id),
+                eid,
+                fid,
                 got["auth"][0],
-                None,
+                r,
                 payload,
                 got["points"],
                 fp,
                 ess.utcnow(),
             )
         )
-        return _estimate_response(payload)
+        # the causal key rides only segments-bearing responses — empties stay header-uniform
+        return _estimate_response(payload, eid if payload["segments"] else None)
 
-    fid = int(flight_id)
     if got["status"] == "settled_empty":
         r = est.estimate([], est.OD())
         payload = ess.build_response(flight_id, r, False, int(got["as_of"]))
@@ -1054,6 +1109,54 @@ async def path_estimate(flight_id: str) -> JSONResponse:
     return _estimate_response(payload)
 
 
+@app.get("/estimate/live/{icao24}")
+async def estimate_live(icao24: str) -> JSONResponse:
+    # Every denial — unknown, stale, aged, LADD, suppress-None, and computed non-results —
+    # serves this ONE shape; the truthful record of post-gate computations lives in the log only.
+    empty = _empty_live_estimate(icao24)
+    key = icao24.strip().lower()
+    if not _LIVE_HEX_RE.fullmatch(key):
+        return _estimate_response(empty)   # invalid input is a PRE-GATE denial (rev 9)
+    suppress = _ladd_suppress
+    if suppress is None:
+        return _estimate_response(empty)
+    now = time.time()
+    snap = _snapshot
+    if not (-EST_LIVE_FUTURE_SKEW_S <= now - snap["server_ts"] <= EST_LIVE_SNAP_FRESH_S):
+        return _estimate_response(empty)
+    row = next((a for a in snap["aircraft"] if (a.get("hex") or "").strip().lower() == key), None)
+    if row is None:
+        return _estimate_response(empty)
+    if _is_ladd_suppressed(key, row.get("flight"), mv_is_ladd=False, suppress=suppress) \
+            or _track_belt_suppressed(key, now, _mv_ladd_hexes):
+        return _estimate_response(empty)
+    ct = row.get("capture_ts")
+    # the chained comparison also rejects NaN ages (any comparison with NaN is False)
+    if ct is None or not (-EST_LIVE_FUTURE_SKEW_S <= now - ct <= EST_LIVE_MAX_AGE_S):
+        return _estimate_response(empty)
+    anchor = _live_anchor(row)
+    r = await asyncio.to_thread(est.estimate, [anchor], est.OD())
+    payload = ess.build_live_response(icao24, r, int(snap["server_ts"]))
+    fp = await asyncio.to_thread(ess.input_fingerprint, [anchor], est.OD())
+    eid = ess.new_estimate_id()
+    _enqueue_estimate_log(
+        ess.build_log_rows(
+            eid,
+            None,
+            key,
+            r,
+            payload,
+            [anchor],
+            fp,
+            ess.utcnow(),
+            anchor_ts=anchor[0],
+        )
+    )
+    if not payload["segments"]:
+        return _estimate_response(empty)
+    return _estimate_response(payload, eid)
+
+
 @app.get("/history")
 async def history(s: float = 90.0) -> JSONResponse:
     # clamp to the wake buffer — backfill serves the 90 s wake, never the full 30 min ring
@@ -1066,15 +1169,21 @@ async def history(s: float = 90.0) -> JSONResponse:
 @app.get("/healthz")
 async def healthz() -> JSONResponse:
     fresh = (time.time() - _snapshot["server_ts"]) < 10
-    return JSONResponse(
-        {
-            "ok": fresh,
-            "count": len(_snapshot["aircraft"]),
-            "server_ts": _snapshot["server_ts"],
-            "est_log": {"queued": _est_log_queue.groups, "dropped": _est_log_queue.dropped},
-        },
-        status_code=200 if fresh else 503,
-    )
+    payload = {
+        "ok": fresh,
+        "count": len(_snapshot["aircraft"]),
+        "server_ts": _snapshot["server_ts"],
+    }
+    # counters tick synchronously per enqueue and pre-gate denials never enqueue — public
+    # exposure would let callers bracket a probe and pierce the uniform denial wire (rev 10.2)
+    if not PUBLIC_MODE:
+        payload["est_log"] = {
+            "queued": _est_log_queue.groups,
+            "dropped": _est_log_queue.dropped,
+            "accepted": _est_log_queue.accepted,
+            "written": _est_log_queue.written,
+        }
+    return JSONResponse(payload, status_code=200 if fresh else 503)
 
 
 # Header-less statics get heuristic-cached by browsers — a stale map.js once outlived its index.html

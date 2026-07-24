@@ -194,3 +194,37 @@ def test_private_range_outline_center_unchanged(private_app, monkeypatch):
     body = TestClient(private_app.app).get("/range-outline").json()
     assert body["center"] == [private_app.FEEDER_LON, private_app.FEEDER_LAT]
     assert body["ring"] == ring
+
+
+def test_public_estimate_live_rate_limited_and_429_no_store(public_app, monkeypatch):
+    monkeypatch.setattr(public_app, "_ladd_suppress", None)   # short-circuits to the uniform empty
+    client = TestClient(public_app.app)
+    resps = [client.get("/estimate/live/abc123") for _ in range(11)]
+    assert [r.status_code for r in resps[:10]] == [200] * 10
+    assert resps[10].status_code == 429
+    assert resps[10].headers["cache-control"] == "no-store"
+    assert resps[0].headers["cache-control"] == "no-store"
+    assert "x-estimate-id" not in resps[0].headers
+    assert "x-estimate-id" not in resps[10].headers
+
+
+def test_private_estimate_live_not_rate_limited(private_app, monkeypatch):
+    monkeypatch.setattr(private_app, "_ladd_suppress", None)
+    client = TestClient(private_app.app)
+    assert all(client.get("/estimate/live/abc").status_code == 200 for _ in range(30))
+
+
+def test_public_healthz_hides_est_log_counters(public_app, monkeypatch):
+    # public counters would be a bracketing oracle over the byte-uniform denial wire, so
+    # denial probes must stay indistinguishable on the public sidecar (rev 10.2 / r3)
+    monkeypatch.setattr(public_app, "_snapshot",
+                        {"server_ts": public_app.time.time(), "aircraft": []})
+    body = TestClient(public_app.app).get("/healthz").json()
+    assert "est_log" not in body
+
+
+def test_private_healthz_keeps_est_log_counters(private_app, monkeypatch):
+    monkeypatch.setattr(private_app, "_snapshot",
+                        {"server_ts": private_app.time.time(), "aircraft": []})
+    body = TestClient(private_app.app).get("/healthz").json()
+    assert set(body["est_log"]) == {"queued", "dropped", "accepted", "written"}

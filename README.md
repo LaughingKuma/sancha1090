@@ -29,8 +29,10 @@ bronze by the `ch_serving_parity` gate.
 
 `bronze.path_estimates` sits outside that mart flow as append-only serving exhaust. Each
 recorded computation keeps one request row plus one row per emitted segment for 24 months,
-including a request row for logged non-results. The livemap writes it through the INSERT-only
-`livemap_writer` identity; it never enters silver or gold marts.
+including a request row for logged non-results. Flight-keyed requests carry the flight id;
+live requests log hex-keyed rows instead (`flight_id` NULL, `subject_key h:<icao24>`, the
+anchor-fix timestamp). The livemap writes it through the INSERT-only `livemap_writer`
+identity; it never enters silver or gold marts.
 
 <p align="center">
   <picture>
@@ -244,8 +246,9 @@ carrying airline, registration, and owner identity, click-to-select 30-minute tr
 a recent-flights drill-down per airframe that draws each flight's own fused historical path
 on click, and the antenna's measured coverage outline. Those accumulated-history features are
 computed in the ClickHouse batch lane and shipped to the map, so the hot path stays a thin
-120-second window. On settled historical flights, the spotlight also exposes an explicit
-`[show estimated path]` button.
+120-second window. The spotlight exposes an explicit `[show estimated path]` button on any
+drawn path, settled or provisional, plus an `[estimate ahead]` control that appears only while
+the selected aircraft is still in the live snapshot.
 
 `/path` itself follows a three-rung freshness ladder. Live position always comes from the
 120-second RisingWave window above. A click on a flight that reconciled after
@@ -259,14 +262,21 @@ path either way. Every `/path` response, provisional or settled, carries `Cache-
 no-store`, and the livemap's LADD suppression (mart flag plus the live hex and callsign sets)
 guards both arms identically.
 
-`GET /path/{flight_id}/estimate` runs the pure estimator over settled inputs only, drawing
-great-circle gap bridges and endpoint extensions plus capped dead-reckoning as a violet dashed
-overlay. Each segment carries a harness-derived p50/p90 uncertainty band; its hover reads
-`ESTIMATED · ±p50–p90 km (bin)` — or `≥` when the longest-gap bin serves its floor values
-rather than calibrated percentiles. Provisional inputs are denied rather than drawn, and the
-endpoint inherits `/path`'s privacy posture whole: LADD authorization re-runs on every cache
-hit, and suppressed, unknown, and errored flights all return the same byte-identical
-fail-closed empty response.
+`GET /path/{flight_id}/estimate` runs the pure estimator over the settled or provisional rich
+loader, drawing great-circle gap bridges and endpoint extensions plus capped dead-reckoning as
+a violet dashed overlay. Each segment carries a harness-derived p50/p90 uncertainty band; its
+hover reads `ESTIMATED · ±p50–p90 km (bin)` — or `≥` when the longest-gap bin serves its floor
+values rather than calibrated percentiles. Provisional inputs are now estimated and served too,
+flagged `input_provisional`, recomputed on every click and never cached. A companion
+`GET /estimate/live/{icao24}` draws a single capped dead-reckoning wedge off the live snapshot,
+with freshness checked server-side (a fresh snapshot AND a bounded per-aircraft fix age): stale,
+on-ground, invalid-motion, unknown, and suppressed lookups all return one byte-uniform empty
+response, and the endpoint is rate-limited like the other per-request surfaces. Successful
+segments-bearing provisional and live responses carry a server-generated `X-Estimate-Id` header
+used to audit their exact persisted log groups; settled responses and every empty stay
+header-free. The endpoints inherit `/path`'s privacy posture whole: LADD authorization re-runs
+on every settled cache hit, and suppressed, unknown, and errored requests all return the same
+byte-identical fail-closed empty response.
 
 ### Public deployment (Cloudflare Tunnel)
 

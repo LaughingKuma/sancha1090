@@ -112,6 +112,8 @@ class LogQueue:
         self._queued = collections.deque()
         self._lock = threading.Lock()
         self.dropped = 0
+        self.accepted = 0
+        self.written = 0
 
     @property
     def groups(self):
@@ -122,7 +124,12 @@ class LogQueue:
             if len(self._queued) >= self._max_groups:
                 self.dropped += 1
                 return
+            self.accepted += 1
             self._queued.append(list(rows))
+
+    def record_written(self, ngroups):
+        with self._lock:
+            self.written += ngroups
 
     def record_drop(self, ngroups):
         with self._lock:
@@ -198,17 +205,36 @@ def _segment_meta(segment):
     }
 
 
+def _segments_payload(result):
+    return [
+        {"kind": segment.kind, "points": segment.points, "meta": _segment_meta(segment)}
+        for segment in result.segments
+    ]
+
+
 def build_response(flight_id: str, result, provisional: bool, as_of: int) -> dict:
     return {
         "flight_id": flight_id,
-        "segments": [
-            {"kind": segment.kind, "points": segment.points, "meta": _segment_meta(segment)}
-            for segment in result.segments
-        ],
+        "segments": _segments_payload(result),
         "skips": result.skips,
         "method_version": METHOD_VERSION,
         "wind_source": "none",
         "input_provisional": provisional,
+        "input_as_of": as_of,
+    }
+
+
+def build_live_response(icao24: str, result, as_of: int) -> dict:
+    # live wire/log carry only dr-arm skips: OD() is synthesized for live, so origin/dest
+    # eligibility noise is meaningless there; 'all' rides the uniform empty shape (design §5)
+    return {
+        "flight_id": None,
+        "icao24": icao24,
+        "segments": _segments_payload(result),
+        "skips": [s for s in result.skips if s["kind"] in ("dr", "all")],
+        "method_version": METHOD_VERSION,
+        "wind_source": "none",
+        "input_provisional": False,
         "input_as_of": as_of,
     }
 
@@ -233,7 +259,7 @@ def _ordered_row(values):
 
 
 def build_log_rows(
-    estimate_id, fid, icao24, result, payload, points, fingerprint, computed_at
+    estimate_id, fid, icao24, result, payload, points, fingerprint, computed_at, anchor_ts=None
 ) -> list[tuple]:
     input_first_ts, input_last_ts = _input_bounds(points)
     common = {
@@ -253,7 +279,7 @@ def build_log_rows(
         "wind_samples": [],
         "input_provisional": int(bool(payload["input_provisional"])),
         "input_as_of": _as_utc_datetime(payload["input_as_of"]),
-        "anchor_ts": None,
+        "anchor_ts": _as_utc_datetime(anchor_ts) if anchor_ts is not None else None,
         "input_first_ts": input_first_ts,
         "input_last_ts": input_last_ts,
         "input_fingerprint": fingerprint,

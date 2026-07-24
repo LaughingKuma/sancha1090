@@ -223,6 +223,7 @@
     color: rgb(176, 138, 230); border-color: rgba(176, 138, 230, 0.55);
     background: rgba(176, 138, 230, 0.08);
   }
+  .sp-est + .sp-est { margin-top: 4px; }
   .sp-live { margin: 9px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; }
   .sp-live dt { color: var(--ink-dim); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; }
   .sp-live dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; color: var(--ink); }
@@ -332,6 +333,7 @@
     <div class="sp-org" id="sp-org">—</div>
     <div class="sp-route" id="sp-route" hidden></div>
     <button type="button" class="sp-est" id="sp-est" aria-pressed="false" hidden>show estimated path</button>
+    <button type="button" class="sp-est" id="sp-est-live" aria-pressed="false" hidden>estimate ahead</button>
     <dl class="sp-live">
       <dt>Alt</dt><dd id="sp-alt">—</dd>
       <dt>V/S</dt><dd id="sp-vs">—</dd>
@@ -384,6 +386,6 @@
 <script src="vendor/maplibre-gl.js"></script>
 <script src="vendor/deck.gl.min.js"></script>
 <!-- versioned URL evicts pre-no-cache copies browsers heuristic-cached; bump on release -->
-<script type="module" src="map.js?v=6.34"></script>
+<script type="module" src="map.js?v=6.35"></script>
 </body>
 </html>
