@@ -1,7 +1,7 @@
-import { S, serverNow } from "./state.js?v=6.35";
-import { finiteTs } from "./motion.js?v=6.35";
-import { stationVector, routeEnd, classLabel, routeSuffix } from "./geo.js?v=6.35";
-import { emergencyOf, sourceLabel, sourceKind, verticalRate, vsState, vsText, signalBars, signalText, navState } from "./telemetry.js?v=6.35";
+import { S, serverNow } from "./state.js?v=6.36";
+import { finiteTs } from "./motion.js?v=6.36";
+import { stationVector, routeEnd, classLabel, routeSuffix } from "./geo.js?v=6.36";
+import { emergencyOf, sourceLabel, sourceKind, verticalRate, vsState, vsText, signalBars, signalText, navState } from "./telemetry.js?v=6.36";
 
 // ADS-B callsigns/hex are attacker-transmittable and deck.gl renders `html` as innerHTML
 const esc = (v) =>
@@ -85,8 +85,8 @@ export function cardData(a) {
     alt: a.alt_baro == null ? "—" : a.alt_baro === "ground" ? "GROUND" : `${a.alt_baro} ft`,
     spd: a.gs == null ? "—" : `${Math.round(a.gs)} kt`,
     hdg: a.track == null ? "—" : `${Math.round(a.track)}°`,
-    rng: sv ? `${sv.nm.toFixed(1)} nm` : "—",
-    brg: sv ? `${Math.round(sv.brg)}°` : "—",
+    rng: sv ? `${S.feederCenterKind === "coverage" ? "≈" : ""}${sv.nm.toFixed(1)} nm` : "—",
+    brg: sv ? `${S.feederCenterKind === "coverage" ? "≈" : ""}${Math.round(sv.brg)}°` : "—",
     reg: a.registration || "—",
     code: a.typecode || "—",
     hex: (a.hex || "—").toUpperCase(),

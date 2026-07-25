@@ -23,6 +23,7 @@ est = _load_sibling("estimator")
 
 METHOD_VERSION = "gc-dr-1"
 UNCERTAINTY_BANDS: dict = {
+    "gap_2_10m": {"p50_km": 0.2, "p90_km": 4.2},
     "gap_15_60m": {"p50_km": 5.5, "p90_km": 27.9},
     "gap_60_180m": {"p50_km": 44.4, "p90_km": 181.4},
     # n=1 is not a band, so the 60–180m values are served explicitly as a floor.
@@ -259,12 +260,13 @@ def _ordered_row(values):
 
 
 def build_log_rows(
-    estimate_id, fid, icao24, result, payload, points, fingerprint, computed_at, anchor_ts=None
+    estimate_id, fid, icao24, result, payload, points, fingerprint, computed_at, anchor_ts=None,
+    producer="serving",
 ) -> list[tuple]:
     input_first_ts, input_last_ts = _input_bounds(points)
     common = {
         "estimate_id": estimate_id,
-        "producer": "serving",
+        "producer": producer,
         "flight_id": fid,
         # §7: fid-keyed rows log '' — the hex identifies only live (flight_id-NULL) estimates
         "icao24": "" if fid is not None else icao24,

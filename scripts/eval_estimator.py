@@ -7,6 +7,7 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
 
@@ -104,12 +105,13 @@ def mask_lonbox(points, lon_lo, lon_hi):
 
 
 WINDOW_DURATIONS = [1200.0, 2700.0, 5400.0, 10800.0]
+FINE_WINDOW_DURATIONS = [150.0, 300.0, 480.0]
 MARGIN_S = 900.0
 TERMINAL_MASK_S = 2400.0
 ERR_SAMPLE_MAX = 20
 CHINA_LON_LO, CHINA_LON_HI = 100.0, 125.0
 TARGET_KINDS = {"terminal": "dest_ext", "leading": "origin_ext", "window": "gap",
-                "dr": "dr", "lonbox": "gap"}
+                "window_fine": "gap", "dr": "dr", "lonbox": "gap"}
 
 
 def interp_at(seg_points, ts):
@@ -154,7 +156,7 @@ def _region(points):
     return "other"
 
 
-def _lonbox_runs(points):
+def _lonbox_runs(points, cfg=est.DEFAULT_CONFIG):
     # visits must be independently bounded so truncation and separate crossings are never
     # conflated into one bridge-eligibility experiment
     runs, cur = [], []
@@ -171,7 +173,7 @@ def _lonbox_runs(points):
         if run[0] == 0 or run[-1] == len(points) - 1 or len(run) < 3:
             continue
         gap_dur = points[run[-1] + 1][0] - points[run[0] - 1][0]
-        if gap_dur <= est.DEFAULT_CONFIG.gap_min_s:
+        if gap_dur <= cfg.gap_min_s:
             continue
         out.append((points[:run[0]] + points[run[-1] + 1:], points[run[0]:run[-1] + 1], gap_dur))
     return out
@@ -187,7 +189,8 @@ def _mask_for(flight_row, points, scenario):
         if dur < TERMINAL_MASK_S + 2 * MARGIN_S:
             return None
         return mask_leading(points, TERMINAL_MASK_S)
-    fitting = [w for w in WINDOW_DURATIONS if dur >= w + 2 * MARGIN_S]
+    durations = FINE_WINDOW_DURATIONS if scenario == "window_fine" else WINDOW_DURATIONS
+    fitting = [w for w in durations if dur >= w + 2 * MARGIN_S]
     if not fitting:
         return None
     win = fitting[int(flight_row["flight_id"]) % len(fitting)]
@@ -212,11 +215,11 @@ def _endpoint_fields(flight_row, kind, scenario):
     return None, None
 
 
-def evaluate_flight(flight_row, points, scenario):
+def evaluate_flight(flight_row, points, scenario, cfg=est.DEFAULT_CONFIG):
     if scenario == "lonbox":
         rows = []
-        for kept, masked, gap_dur in _lonbox_runs(points):
-            rows.extend(_rows_for_mask(flight_row, points, scenario, kept, masked, gap_dur))
+        for kept, masked, gap_dur in _lonbox_runs(points, cfg):
+            rows.extend(_rows_for_mask(flight_row, points, scenario, kept, masked, gap_dur, cfg))
         return rows
     masked_pair = _mask_for(flight_row, points, scenario)
     if masked_pair is None:
@@ -224,21 +227,35 @@ def evaluate_flight(flight_row, points, scenario):
     kept, masked = masked_pair
     if len(kept) < 1 or len(masked) < 3:
         return []
-    return _rows_for_mask(flight_row, points, scenario, kept, masked)
+    gap_dur = None
+    if scenario in ("window", "window_fine"):
+        # the experiment's ACTUAL induced hole (mask + cadence overhang): rejected rows need it
+        # so >600 s inductions can be excluded from fine-bin censuses like eligible rows are
+        before = [p[0] for p in kept if p[0] < masked[0][0]]
+        after = [p[0] for p in kept if p[0] > masked[-1][0]]
+        if before and after:
+            gap_dur = min(after) - max(before)
+    return _rows_for_mask(flight_row, points, scenario, kept, masked, gap_dur, cfg=cfg)
 
 
-def _rows_for_mask(flight_row, points, scenario, kept, masked, gap_dur=None):
+def _overlaps(seg, masked):
+    # natural fine-hole bridges elsewhere in the flight are not this experiment
+    lo, hi = masked[0][0], masked[-1][0]
+    return seg.points[0][2] <= hi and seg.points[-1][2] >= lo
+
+
+def _rows_for_mask(flight_row, points, scenario, kept, masked, gap_dur=None, cfg=est.DEFAULT_CONFIG):
     target = TARGET_KINDS[scenario]
-    r = est.estimate(kept, _od_for(flight_row, scenario))
+    r = est.estimate(kept, _od_for(flight_row, scenario), cfg)
     src, agr = _endpoint_fields(flight_row, target, scenario)
     base = {"flight_id": flight_row["flight_id"], "scenario": scenario, "target_kind": target,
             "region": _region(points), "source": src, "agreement": agr}
     rows = []
-    target_segs = [s for s in r.segments if s.kind == target]
+    target_segs = [s for s in r.segments if s.kind == target and _overlaps(s, masked)]
     for seg in target_segs:
         score_pts = masked
         if scenario == "dr":
-            horizon = kept[-1][0] + est.DEFAULT_CONFIG.dr_cap_s
+            horizon = kept[-1][0] + cfg.dr_cap_s
             score_pts = [p for p in masked if p[0] <= horizon]
         if len(score_pts) <= ERR_SAMPLE_MAX:
             sampled = score_pts
@@ -250,22 +267,24 @@ def _rows_for_mask(flight_row, points, scenario, kept, masked, gap_dur=None):
         scored = [e for e in errs if e is not None]
         rows.append({**base, "bin": seg.meta["bin"], "eligible": bool(scored),
                      "coverage": len(scored) / len(sampled) if sampled else 0.0,
-                     "errors": scored,
+                     "errors": scored, "gap_s": seg.points[-1][2] - seg.points[0][2],
                      "eta_s": eta_error_s(r, masked) if target == "dest_ext" else None,
                      "skip_reason": None})
     if not target_segs:
         reasons = [s["reason"] for s in r.skips if s["kind"] == target]
-        if scenario == "window":
+        if scenario in ("window", "window_fine"):
             dur = points[-1][0] - points[0][0]
-            fitting = [w for w in WINDOW_DURATIONS if dur >= w + 2 * MARGIN_S]
+            durations = FINE_WINDOW_DURATIONS if scenario == "window_fine" else WINDOW_DURATIONS
+            fitting = [w for w in durations if dur >= w + 2 * MARGIN_S]
             win = fitting[int(flight_row["flight_id"]) % len(fitting)]
-            # a-priori bin (+60 s mask cadence) keeps a rejected row in the stratum it failed out of
-            skip_bin = est._gap_bin(win + 60.0)
+            # window keeps the +60 s mask-cadence allowance; all fine durations already land in-bin
+            skip_bin = est._gap_bin(win) if scenario == "window_fine" else est._gap_bin(win + 60.0)
         elif scenario == "lonbox":
             skip_bin = est._gap_bin(gap_dur)
         else:
             skip_bin = target
         rows.append({**base, "bin": skip_bin, "eligible": False, "coverage": 0.0, "errors": [],
+                     "gap_s": gap_dur, "skip_ambiguous": len(reasons) > 1,
                      "eta_s": None, "skip_reason": reasons[0] if reasons else "not_produced"})
     return rows
 
@@ -301,10 +320,15 @@ def summarize(rows):
 def skip_table(rows):
     out = {}
     for r in rows:
-        if r["skip_reason"]:
+        # ambiguous rows (multi-rejection) cannot attribute reasons[0] to the experiment — count separately
+        if r["skip_reason"] and not r.get("skip_ambiguous"):
             key = (r["target_kind"], r["skip_reason"])
             out[key] = out.get(key, 0) + 1
     return out
+
+
+def ambiguous_count(rows):
+    return sum(1 for r in rows if r["skip_reason"] and r.get("skip_ambiguous"))
 
 
 def main(argv):
@@ -313,18 +337,21 @@ def main(argv):
     ap.add_argument("--day-hi", required=True)
     ap.add_argument("--per-stratum", type=int, default=150)
     ap.add_argument("--scenarios", default="terminal,leading,window,dr,lonbox")
+    ap.add_argument("--gap-min-s", type=float, default=None)
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
     scenarios = args.scenarios.split(",")
     unknown = sorted(set(scenarios) - set(TARGET_KINDS))
     if unknown:
         raise SystemExit(f"unknown scenarios {unknown}; valid: {sorted(TARGET_KINDS)}")
+    cfg = (est.DEFAULT_CONFIG if args.gap_min_s is None
+           else replace(est.DEFAULT_CONFIG, gap_min_s=args.gap_min_s))
     flights = select_truth_flights(args.day_lo, args.day_hi, args.per_stratum)
     rows, mask_yield = [], {}
     for fr in flights:
         points = fetch_points(fr["flight_id"])
         for sc in scenarios:
-            got = evaluate_flight(fr, points, sc)
+            got = evaluate_flight(fr, points, sc, cfg)
             y = mask_yield.setdefault(sc, {"candidates": 0, "masked_ok": 0})
             y["candidates"] += 1
             if got:
@@ -333,7 +360,8 @@ def main(argv):
     strata = summarize(rows)
     skips = {f"{k}|{reason}": v for (k, reason), v in skip_table(rows).items()}
     Path(args.out).write_text(json.dumps(
-        {"strata": strata, "skips": skips, "mask_yield": mask_yield, "rows": rows}, default=str))
+        {"strata": strata, "skips": skips, "skips_ambiguous": ambiguous_count(rows),
+         "mask_yield": mask_yield, "rows": rows}, default=str))
     print("| stratum | n | elig | pos p50 km | pos p90 km | eta p50 s | eta p90 s |")
     print("|---|---|---|---|---|---|---|")
     for key in sorted(strata):

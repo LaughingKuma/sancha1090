@@ -68,7 +68,7 @@ def test_prepare_sorts_dedups_drops():
 
 def test_detect_gaps():
     fixes = [fx(0), fx(300), fx(1200), fx(1300), fx(3000)]
-    assert est.detect_gaps(fixes, CFG) == [(1, 2), (3, 4)]
+    assert est.detect_gaps(fixes, CFG) == [(0, 1), (1, 2), (3, 4)]
 
 
 def test_gap_eligibility_happy_and_null_track_ok():
@@ -131,3 +131,20 @@ def test_ext_eligibility_origin_bearing_uses_origin_to_first_fix():
     assert isinstance(got, dict)
     # origin missing -> skip (never DR for origins)
     assert est.ext_eligibility(fixes, est.OD(), "origin", CFG) == "missing_endpoint"
+
+
+def test_ext_walk_may_cross_a_fine_gap_within_the_envelope():
+    # deliberate semantics: never-across-the-gap scopes to gap edges (design 6a);
+    # ext/dr fallback is temporal-only, so a bridgeable fine hole does not block it
+    od = est.OD(dest=est.Endpoint(lat=35.0, lon=150.0))
+    fixes = [fx(0, lon=139.0, gs=450.0, track=90.0), fx(130, lon=139.3, gs=None, track=None)]
+    got = est.ext_eligibility(fixes, od, "dest", CFG)
+    assert isinstance(got, dict) and got["motion"] is fixes[0]
+
+
+def test_gap_edge_walk_stops_at_an_adjacent_fine_gap():
+    # run bounds are delimited by DETECTED gaps — at 120 s that includes fine holes
+    fixes = [fx(0, gs=440.0), fx(150, lon=139.3, gs=None), fx(1200, lon=141.0, gs=430.0)]
+    gaps = est.detect_gaps(fixes, CFG)
+    assert gaps == [(0, 1), (1, 2)]
+    assert est.gap_eligibility(fixes, 1, 2, gaps, CFG) == "invalid_motion"

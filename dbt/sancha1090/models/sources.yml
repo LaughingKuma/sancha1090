@@ -81,6 +81,15 @@ sources:
             description: "@sourceTimeStamp — the amendment version; on every message, used for argMax + ORDER BY."
             tests:
               - not_null
+      - name: path_estimates
+        description: "Livemap estimate-serving exhaust (estimated-path design §7): one request row (seg_idx=0) plus one row per served segment, INSERT-only via livemap_writer. Analytics substrate only — estimate rows never enter the flight marts (standing invariant)."
+        columns:
+          - name: estimate_id
+            tests:
+              - not_null
+          - name: producer
+            tests:
+              - not_null
 
   - name: dim
     description: "Operator-loaded dimensions created by clickhouse-init (not dbt-managed): reference lists the marts read."

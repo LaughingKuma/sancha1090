@@ -91,7 +91,7 @@ class OD:
 
 @dataclass(frozen=True)
 class EstConfig:
-    gap_min_s: float = 600.0
+    gap_min_s: float = 120.0
     sample_s: float = 60.0
     motion_fallback_s: float = 600.0
     gap_min_kt: float = 30.0
@@ -208,7 +208,8 @@ def ext_eligibility(fixes, od, end, cfg):
         return "below_min_distance"
     direction = +1 if end == "origin" else -1
     stop = len(fixes) if end == "origin" else -1
-    # temporal bound only: safe while motion_fallback_s <= gap_min_s, so the walk cannot cross a real gap
+    # temporal bound only — design 6a scopes never-across-the-gap to gap edges; the ext/dr
+    # walk may cross bridgeable fine gaps but never exceeds the motion_fallback_s envelope
     motion = find_motion(fixes, edge_idx, direction, "ext", cfg, stop_idx=stop)
     if motion is None:
         return "invalid_motion"
@@ -236,6 +237,8 @@ def round_ts(x):
 
 
 def _gap_bin(duration_s):
+    if duration_s <= 600:
+        return "gap_2_10m"
     if duration_s <= 3600:
         return "gap_15_60m"
     if duration_s <= 10800:

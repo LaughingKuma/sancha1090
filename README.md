@@ -32,7 +32,15 @@ recorded computation keeps one request row plus one row per emitted segment for 
 including a request row for logged non-results. Flight-keyed requests carry the flight id;
 live requests log hex-keyed rows instead (`flight_id` NULL, `subject_key h:<icao24>`, the
 anchor-fix timestamp). The livemap writes it through the INSERT-only `livemap_writer`
-identity; it never enters silver or gold marts.
+identity; estimate geometry never enters the silver/gold flight marts — the only gold
+footprint is serving TELEMETRY (usage counts and distributions, rev 10.3), never
+estimated positions. Rows are sidecar-attributed — the public
+instance stamps `producer='serving-public'`, the private one `'serving-private'` (rows from
+before the split keep the legacy `'serving'`) — and two small analytics marts aggregate the
+exhaust daily: `gold_ch.agg_est_usage_daily` (requests/served/segments/subjects by producer
+and arm, UTC days) and `gold_ch.agg_est_breakdown_daily` (skip-reason, segment-kind, and
+uncertainty-bin distributions). The standing demand read is
+`SELECT day, requests, served FROM gold_ch.agg_est_usage_daily WHERE producer = 'serving-public' ORDER BY day`.
 
 <p align="center">
   <picture>
@@ -264,7 +272,13 @@ guards both arms identically.
 
 `GET /path/{flight_id}/estimate` runs the pure estimator over the settled or provisional rich
 loader, drawing great-circle gap bridges and endpoint extensions plus capped dead-reckoning as
-a violet dashed overlay. Each segment carries a harness-derived p50/p90 uncertainty band; its
+a violet dashed overlay. Gap bridging starts at two minutes: the renderer connects holes up
+to 60 seconds as observed track, holes over 120 seconds (up to 10 minutes) — common on
+over-water OpenSky-REST stretches — get their own `gap_2_10m` bin (holdout-calibrated to
+±0.2/4.2 km at p50/p90), and only the 60–120 second sliver deliberately stays unconnected
+beads. Each segment carries a
+harness-derived p50/p90 uncertainty band rendered as nested translucent corridor ribbons in
+true meters around the dashed line — the estimate reads as a corridor, not a track; its
 hover reads `ESTIMATED · ±p50–p90 km (bin)` — or `≥` when the longest-gap bin serves its floor
 values rather than calibrated percentiles. Provisional inputs are now estimated and served too,
 flagged `input_provisional`, recomputed on every click and never cached. A companion
@@ -303,10 +317,14 @@ endpoint that — with that Cache Rule in place — lets Cloudflare absorb viewe
 security headers. It publishes no host port at all, and `cloudflared` shares only a dedicated `edge`
 network with it, so the tunnel reaches the public map and nothing else in the stack.
 
-The public instance serves no receiver anchor: its `/range-outline` returns a null center, so the
-map draws no receiver marker, no range rings, and no distance or bearing readouts — only the
-measured coverage outline. It also does not receive the feeder coordinates that the private
-instance reads from `.env`, so those coordinates never enter its environment.
+The public instance serves no receiver anchor. Instead, its `/range-outline` anchors at the
+**centroid of the measured coverage outline** (`center_kind: "coverage"`): a pure function of
+the polygon every visitor already receives, so it leaks nothing the outline doesn't — and the
+terrain-shaped outline biases it away from the receiver. The public map labels the dot
+"coverage center" and prefixes its Range/Bearing readouts with `≈`; the private instance keeps
+the real receiver anchor (`center_kind: "receiver"`) and exact readouts. The public instance
+still never receives the feeder coordinates that the private instance reads from `.env`, so
+those coordinates never enter its environment.
 
 ## Tech stack
 

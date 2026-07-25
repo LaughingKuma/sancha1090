@@ -18,7 +18,7 @@ def pt(ts, lat=35.0, lon=139.0, alt=35000.0, ground=False, gs=450.0, track=90.0,
 def test_estimate_full_flight_gap_and_both_extensions():
     od = est.OD(origin=est.Endpoint(35.0, 130.0, "swim", "unanimous"),
                 dest=est.Endpoint(35.0, 152.0, "opensky_flights", "majority"))
-    points = [pt(0, lon=135.0), pt(300, lon=135.5), pt(4000, lon=141.0), pt(4300, lon=141.5)]
+    points = [pt(0, lon=135.0), pt(60, lon=135.1), pt(4000, lon=141.0), pt(4060, lon=141.1)]
     r = est.estimate(points, od, CFG)
     kinds = [s.kind for s in r.segments]
     assert kinds == ["origin_ext", "gap", "dest_ext"]
@@ -29,7 +29,7 @@ def test_estimate_full_flight_gap_and_both_extensions():
 
 def test_estimate_null_dest_routes_to_dr():
     od = est.OD(origin=est.Endpoint(35.0, 130.0))
-    points = [pt(0, lon=135.0), pt(300, lon=135.5)]
+    points = [pt(0, lon=135.0), pt(60, lon=135.1)]
     r = est.estimate(points, od, CFG)
     assert [s.kind for s in r.segments] == ["origin_ext", "dr"]
 
@@ -124,3 +124,18 @@ def test_wind_request_anchors_and_never_invented_altitude():
     dr = est.Segment("dr", [[139.0, 35.0, 0, 36000.0], [139.5, 35.0, 600, 36000.0]], {})
     dr_marks = est._wind_request_for(1, dr, CFG)
     assert dr_marks[0][1:] == (35.0, 139.0, 36000.0, 0)
+
+
+def test_fine_gap_bridged_with_fine_bin():
+    points = [pt(0, lon=139.0), pt(300, lon=139.4)]
+    r = est.estimate(points, est.OD(), CFG)
+    gap = [s for s in r.segments if s.kind == "gap"]
+    assert gap and gap[0].meta["bin"] == "gap_2_10m"
+    assert [p[2] for p in gap[0].points][0] == 0 and [p[2] for p in gap[0].points][-1] == 300
+
+
+def test_sub_threshold_hole_stays_unbridged():
+    points = [pt(0, lon=139.0), pt(100, lon=139.15)]
+    r = est.estimate(points, est.OD(), CFG)
+    assert all(s.kind != "gap" for s in r.segments)
+    assert all(s["kind"] != "gap" for s in r.skips)

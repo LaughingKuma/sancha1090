@@ -178,22 +178,44 @@ def test_private_no_rate_limit(private_app, monkeypatch):
     assert all(client.get("/track/ABC").status_code == 200 for _ in range(30))
 
 
-# ---- F7: public /range-outline serves no receiver anchor (center null); the ring still renders ----
+# ---- F7: public /range-outline anchors at the coverage centroid (Amit ruling 2026-07-24);
+# ---- private keeps the real receiver anchor; the ring renders on both ----
 
-def test_public_range_outline_center_null_ring_intact(public_app, monkeypatch):
-    ring = [[139.0, 35.0], [140.0, 35.0], [140.0, 36.0]]
-    monkeypatch.setattr(public_app, "_outline", ring)
+SQUARE_RING = [[139.0, 35.0], [139.0, 36.0], [141.0, 36.0], [141.0, 35.0], [139.0, 35.0]]
+
+
+def test_public_range_outline_serves_coverage_centroid(public_app, monkeypatch):
+    monkeypatch.setattr(public_app, "_outline", SQUARE_RING)
     body = TestClient(public_app.app).get("/range-outline").json()
-    assert body["center"] is None
-    assert body["ring"] == ring
+    assert body["center_kind"] == "coverage"
+    assert body["center"] == pytest.approx([140.0, 35.5], abs=0.01)
+    assert body["ring"] == SQUARE_RING
 
 
-def test_private_range_outline_center_unchanged(private_app, monkeypatch):
-    ring = [[139.0, 35.0], [140.0, 35.0]]
-    monkeypatch.setattr(private_app, "_outline", ring)
+def test_public_range_outline_center_null_without_outline(public_app, monkeypatch):
+    monkeypatch.setattr(public_app, "_outline", [])
+    body = TestClient(public_app.app).get("/range-outline").json()
+    assert body["center"] is None and body["center_kind"] == "coverage"
+
+
+def test_private_range_outline_keeps_receiver_anchor(private_app, monkeypatch):
+    monkeypatch.setattr(private_app, "_outline", SQUARE_RING)
     body = TestClient(private_app.app).get("/range-outline").json()
     assert body["center"] == [private_app.FEEDER_LON, private_app.FEEDER_LAT]
-    assert body["ring"] == ring
+    assert body["center_kind"] == "receiver"
+
+
+def test_ring_centroid_degenerate_inputs_yield_none(private_app):
+    assert private_app._ring_centroid([]) is None
+    assert private_app._ring_centroid([[139.0, 35.0], [139.0, 35.0]]) is None
+    collinear = [[139.0, 35.0], [140.0, 35.0], [141.0, 35.0], [139.0, 35.0]]
+    assert private_app._ring_centroid(collinear) is None
+
+
+def test_est_producer_is_sidecar_attributed(public_app, private_app):
+    # ruling 4: the demand gate reads serving-public; legacy 'serving' = pre-split rows
+    assert public_app.EST_PRODUCER == "serving-public"
+    assert private_app.EST_PRODUCER == "serving-private"
 
 
 def test_public_estimate_live_rate_limited_and_429_no_store(public_app, monkeypatch):

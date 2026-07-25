@@ -1,12 +1,12 @@
-import { S, serverNow } from "./state.js?v=6.35";
+import { S, serverNow } from "./state.js?v=6.36";
 import {
   RING_NM, AIRPORTS, RUNWAY_PATHS, RUNWAY_ENDS, AMBER, MIL, TEAL, HISTORY, ESTIMATE,
-} from "./constants.js?v=6.35";
-import { SIL, CHEV_UP, CHEV_DOWN, zoomMult } from "./silhouettes.js?v=6.35";
-import { LABEL_ZOOM, LABEL_MAX, labelText, shadowPx, SHADOW_DIR } from "./altitude.js?v=6.35";
-import { frameData, metresBetween } from "./motion.js?v=6.35";
-import { emergencyOf } from "./telemetry.js?v=6.35";
-import { map, overlay } from "./mapsetup.js?v=6.35";
+} from "./constants.js?v=6.36";
+import { SIL, CHEV_UP, CHEV_DOWN, zoomMult } from "./silhouettes.js?v=6.36";
+import { LABEL_ZOOM, LABEL_MAX, labelText, shadowPx, SHADOW_DIR } from "./altitude.js?v=6.36";
+import { frameData, metresBetween } from "./motion.js?v=6.36";
+import { emergencyOf } from "./telemetry.js?v=6.36";
+import { map, overlay } from "./mapsetup.js?v=6.36";
 
 const { IconLayer, ScatterplotLayer, PolygonLayer, PathLayer, TextLayer, PathStyleExtension } = deck;
 
@@ -45,6 +45,7 @@ async function loadOutline() {
   try {
     const j = await (await fetch("/range-outline", { cache: "no-store" })).json();
     S.feederCenter = j.center || null;
+    S.feederCenterKind = j.center_kind || null;
     S.outlineData = j.ring && j.ring.length ? [{ ring: j.ring }] : [];
   } catch (e) {
     /* outline is optional — absent until the batch job has run */
@@ -166,6 +167,32 @@ function buildLayers() {
       getDashArray: [4, 6], // longer dash than any live layer — dotted-ghost reading, never confused with a wake
       wrapLongitude: true, // a dateline-crossing segment (adjacent fixes at ±179.9°) must wrap the short way
       extensions: [new PathStyleExtension({ dash: true })],
+      parameters: { depthTest: false },
+    }),
+    // ±p90 then ±p50 translucent ribbons — the estimate reads as a corridor, not a track;
+    // widths are true meters so zoom honestly rescales the uncertainty
+    new PathLayer({
+      id: "estimate-corridor-p90",
+      data: S.estSegments,
+      getPath: (d) => d.path,
+      getColor: [...ESTIMATE, 10],
+      getWidth: (d) => d.band.p90_km * 2000,
+      widthUnits: "meters",
+      capRounded: true,
+      jointRounded: true,
+      wrapLongitude: true,
+      parameters: { depthTest: false },
+    }),
+    new PathLayer({
+      id: "estimate-corridor-p50",
+      data: S.estSegments,
+      getPath: (d) => d.path,
+      getColor: [...ESTIMATE, 22],
+      getWidth: (d) => d.band.p50_km * 2000,
+      widthUnits: "meters",
+      capRounded: true,
+      jointRounded: true,
+      wrapLongitude: true,
       parameters: { depthTest: false },
     }),
     // requested estimate overlay — dashed like the history ghost but a distinct hue + tighter dash,
@@ -356,6 +383,19 @@ function buildLayers() {
       getLineColor: [5, 9, 14, 255],
       lineWidthUnits: "pixels",
       getLineWidth: 1.6,
+      parameters: { depthTest: false },
+    }),
+    new TextLayer({
+      id: "receiver-label",
+      data: S.feederCenter && S.feederCenterKind === "coverage" ? [S.feederCenter] : [],
+      getPosition: (d) => d,
+      getText: () => "coverage center",
+      getSize: 8,
+      getColor: [...TEAL, 150],
+      fontFamily: "'Spline Sans Mono', monospace",
+      getTextAnchor: "middle",
+      getAlignmentBaseline: "top",
+      getPixelOffset: [0, 7],
       parameters: { depthTest: false },
     }),
     // PR 1b-i: always-on red pulse on emergency-squawk contacts — topmost so it's never occluded

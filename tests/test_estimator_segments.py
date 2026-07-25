@@ -56,6 +56,8 @@ def test_build_gap_altitude_linear_and_null_propagation():
 
 
 def test_build_gap_bin():
+    a, b = fx(0.0, lon=139.0), fx(300.0, lon=139.4)
+    assert est.build_gap(a, b, a, b, CFG).meta["bin"] == "gap_2_10m"
     a, b = fx(0.0, lon=139.0), fx(2000.0, lon=142.0)
     assert est.build_gap(a, b, a, b, CFG).meta["bin"] == "gap_15_60m"
     a, b = fx(0.0, lon=139.0), fx(8000.0, lon=152.0)

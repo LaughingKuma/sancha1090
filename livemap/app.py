@@ -4,6 +4,7 @@ import contextlib
 import datetime
 import importlib.util
 import json
+import math
 import os
 import re
 import time
@@ -84,6 +85,8 @@ FEEDER_LON = float(os.environ.get("LIVEMAP_FEEDER_LON", "139.6692"))
 # Public-instance hardening — every effect below is gated on this flag so the private LAN instance is
 # byte-identical when it is unset (the middleware isn't even registered).
 PUBLIC_MODE = os.environ.get("LIVEMAP_PUBLIC_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+# ruling 4 (2026-07-25): sidecar-attributed serving exhaust; legacy 'serving' = pre-split rows
+EST_PRODUCER = "serving-public" if PUBLIC_MODE else "serving-private"
 # Per-IP token bucket on the per-request DB endpoints only (/aircraft + /history are in-memory reads, free).
 RATE_LIMITED_PREFIXES = ("/track/", "/flights/", "/path/", "/estimate/live/")
 RATE_LIMIT_BURST = float(os.environ.get("LIVEMAP_RATE_LIMIT_BURST", "10"))
@@ -887,12 +890,35 @@ async def aircraft() -> JSONResponse:
     return JSONResponse(_snapshot)
 
 
+def _ring_centroid(ring):
+    # area centroid on a local equirectangular plane (ring is Kanto-scale, no wrap);
+    # a vertex mean would drift with per-bearing bin density
+    pts = ring[:-1] if len(ring) > 1 and ring[0] == ring[-1] else list(ring)
+    if len(pts) < 3:
+        return None
+    lat0 = sum(p[1] for p in pts) / len(pts)
+    k = math.cos(math.radians(lat0))
+    xy = [(p[0] * k, p[1]) for p in pts]
+    a2 = cx = cy = 0.0
+    for (x1, y1), (x2, y2) in zip(xy, xy[1:] + xy[:1], strict=True):
+        cross = x1 * y2 - x2 * y1
+        a2 += cross
+        cx += (x1 + x2) * cross
+        cy += (y1 + y2) * cross
+    if abs(a2) < 1e-9:
+        return None
+    return [cx / (3 * a2) / k, cy / (3 * a2)]
+
+
 @app.get("/range-outline")
 async def range_outline() -> JSONResponse:
-    # Public mode serves no receiver anchor (center null): the public-landmark default was judged too close
-    # to the real antenna to anchor publicly. Frontend null-guards marker/rings/range-bearing; ring renders.
-    center = None if PUBLIC_MODE else [FEEDER_LON, FEEDER_LAT]
-    return JSONResponse({"center": center, "ring": _outline})
+    # Public anchors at the coverage-outline centroid (Amit ruling 2026-07-24): a pure function
+    # of the already-served ring leaks nothing the polygon doesn't; the real receiver stays private.
+    if PUBLIC_MODE:
+        return JSONResponse({"center": _ring_centroid(_outline), "center_kind": "coverage",
+                             "ring": _outline})
+    return JSONResponse({"center": [FEEDER_LON, FEEDER_LAT], "center_kind": "receiver",
+                         "ring": _outline})
 
 
 @app.get("/track/{icao}")
@@ -1046,6 +1072,7 @@ async def path_estimate(flight_id: str) -> JSONResponse:
                 got["points"],
                 fp,
                 ess.utcnow(),
+                producer=EST_PRODUCER,
             )
         )
         # the causal key rides only segments-bearing responses — empties stay header-uniform
@@ -1065,6 +1092,7 @@ async def path_estimate(flight_id: str) -> JSONResponse:
                 [],
                 fp,
                 ess.utcnow(),
+                producer=EST_PRODUCER,
             )
         )
         return _estimate_response(payload)
@@ -1104,6 +1132,7 @@ async def path_estimate(flight_id: str) -> JSONResponse:
             got["points"],
             fp,
             ess.utcnow(),
+            producer=EST_PRODUCER,
         )
     )
     return _estimate_response(payload)
@@ -1150,6 +1179,7 @@ async def estimate_live(icao24: str) -> JSONResponse:
             fp,
             ess.utcnow(),
             anchor_ts=anchor[0],
+            producer=EST_PRODUCER,
         )
     )
     if not payload["segments"]:

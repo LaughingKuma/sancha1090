@@ -5,6 +5,7 @@ export const S = (globalThis.__sancha_state ??= {
   snap: { server_ts: 0, aircraft: [], perf0: 0 },
   selected: null, // { hex, pts: [{lon, lat, ts, altFt, est}], mil }
   feederCenter: null, // [lon, lat] from /range-outline
+  feederCenterKind: null, // "receiver" | "coverage" from /range-outline — drives the approx labeling
   countryIso2: {}, // country NAME → ISO2 (built from flag-icons); empty until loaded
   outlineData: [],
   historyLoaded: false,

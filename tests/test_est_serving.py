@@ -42,7 +42,7 @@ def test_writer_env_reaches_both_sidecars_and_env_example():
 
 
 def test_uncertainty_bands_cover_every_serving_bin():
-    for b in ("gap_15_60m", "gap_60_180m", "gap_180m_plus", "dest_ext", "origin_ext", "dr"):
+    for b in ("gap_2_10m", "gap_15_60m", "gap_60_180m", "gap_180m_plus", "dest_ext", "origin_ext", "dr"):
         assert b in es.UNCERTAINTY_BANDS
     # a single holdout observation cannot calibrate the >180m band — the last calibrated values serve as a floor
     floor_band = es.UNCERTAINTY_BANDS["gap_180m_plus"]
@@ -275,3 +275,23 @@ def test_log_rows_mirror_multi_segment_responses_in_order():
         assert rows[n][idx("kind")] == seg["kind"]
         assert rows[n][idx("points")] == [(p[2], p[1], p[0], p[3]) for p in seg["points"]]
         assert rows[n][idx("meta_json")] == es._canonical_json(seg["meta"])
+
+
+def test_build_log_rows_producer_kwarg_threads_to_every_row():
+    r = est.estimate(LIVE_ANCHOR, est.OD())
+    payload = es.build_live_response("abc123", r, 1765500005)
+    rows = es.build_log_rows(es.new_estimate_id(), None, "abc123", r, payload,
+                             LIVE_ANCHOR, es.input_fingerprint(LIVE_ANCHOR, est.OD()),
+                             es.utcnow(), anchor_ts=1765500000.0, producer="serving-public")
+    idx = es.INSERT_COLUMNS.index("producer")
+    assert all(row[idx] == "serving-public" for row in rows)
+
+
+def test_build_log_rows_producer_defaults_to_legacy_serving():
+    r = est.estimate(LIVE_ANCHOR, est.OD())
+    payload = es.build_live_response("abc123", r, 1765500005)
+    rows = es.build_log_rows(es.new_estimate_id(), None, "abc123", r, payload,
+                             LIVE_ANCHOR, es.input_fingerprint(LIVE_ANCHOR, est.OD()),
+                             es.utcnow())
+    producer_idx = es.INSERT_COLUMNS.index("producer")
+    assert all(row[producer_idx] == "serving" for row in rows)

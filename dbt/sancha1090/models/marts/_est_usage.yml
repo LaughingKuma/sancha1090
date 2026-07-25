@@ -1,0 +1,22 @@
+version: 2
+
+models:
+  - name: agg_est_usage_daily
+    description: "Daily (UTC day) estimate-serving usage by producer and arm (live/provisional/settled). The PR-4 demand-gate query reads producer='serving-public' (ruling 4); legacy 'serving' rows are pre-split (2026-07-22..24). UTC grain is deliberate — serving exhaust is UTC-native and the gate reads multi-week trends, unlike the JST traffic-day marts."
+    columns:
+      - name: day
+        tests:
+          - not_null
+      - name: arm
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['live', 'provisional', 'settled']
+  - name: agg_est_breakdown_daily
+    description: "Daily long-format distributions over the estimate exhaust: skip reasons (kind:reason), served segment kinds, uncertainty bins."
+    columns:
+      - name: dimension
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['skip', 'segment_kind', 'uncertainty_bin']

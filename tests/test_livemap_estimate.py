@@ -775,3 +775,20 @@ def test_healthz_est_log_carries_all_four_counters(livemap, monkeypatch):
     body = TestClient(livemap.app).get("/healthz").json()
 
     assert body["est_log"] == {"queued": 1, "dropped": 0, "accepted": 1, "written": 3}
+
+
+def test_settled_empty_log_rows_carry_sidecar_producer(livemap, monkeypatch):
+    # settled-empty logs a request-only row; its producer must stay sidecar-attributed like every arm
+    _stub_loader(livemap, monkeypatch, _loader_result(status="settled_empty", points=[]))
+    monkeypatch.setattr(
+        livemap,
+        "_fetch_od",
+        lambda _fid: pytest.fail("settled-empty estimates must not fetch O/D"),
+    )
+    enqueued = []
+    monkeypatch.setattr(livemap, "_enqueue_estimate_log", enqueued.append)
+
+    TestClient(livemap.app).get("/path/42/estimate")
+
+    prod_idx = livemap.ess.INSERT_COLUMNS.index("producer")
+    assert enqueued[0][0][prod_idx] == livemap.EST_PRODUCER

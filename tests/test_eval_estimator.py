@@ -135,3 +135,59 @@ def test_lonbox_two_bounded_visits_are_independent_experiments():
     rows = ev.evaluate_flight(FLIGHT_ROW, pts, "lonbox")
     assert len(rows) == 2
     assert all(r["skip_reason"] == "gap_kinematics" and r["bin"] == "gap_15_60m" for r in rows)
+
+
+def test_window_fine_uses_fine_durations_and_bins_by_window():
+    rows = ev.evaluate_flight(FLIGHT_ROW, mk(n=100), "window_fine",
+                              ev.est.EstConfig(gap_min_s=120.0))
+    gap_rows = [r for r in rows if r["target_kind"] == "gap"]
+    assert gap_rows and gap_rows[0]["eligible"]
+    # 5,940 s flight fits all three fine durations with margins; fid 1 -> index 1 -> 300 s.
+    # Bin asserted via _gap_bin so the test is stable across Task 3's bin-arm landing.
+    assert gap_rows[0]["bin"] == ev.est._gap_bin(300.0)
+
+
+def test_rows_for_mask_ignores_natural_hole_bridges_outside_the_mask():
+    # DELETE five points so the off-mask hole is a REAL bridgeable gap (360 s, ~147 kt —
+    # a time-shifted hole would be a sub-30 kt kinematic skip and never exercise the filter)
+    pts = mk(n=100)
+    pts = pts[:10] + pts[15:]
+    rows = ev.evaluate_flight(FLIGHT_ROW, pts, "window_fine",
+                              ev.est.EstConfig(gap_min_s=120.0))
+    gap_rows = [r for r in rows if r["target_kind"] == "gap"]
+    assert len(gap_rows) == 1 and gap_rows[0]["eligible"]
+
+
+def test_gap_min_override_threads_to_estimate_and_lonbox():
+    # OBSERVING threading proof (r1 review): each assertion pair flips if either threaded
+    # config is ignored — an out-of-box fixture or default-equal override would observe nothing
+    rows600 = ev.evaluate_flight(FLIGHT_ROW, mk(n=100), "window_fine",
+                                 ev.est.EstConfig(gap_min_s=600.0))
+    gap600 = [r for r in rows600 if r["target_kind"] == "gap"]
+    assert gap600 and gap600[0]["skip_reason"] == "not_produced"   # 300 s mask undetected at 600
+    box_pts = ([(0.0, 35.0, 99.0, 35000.0, False, 147.3, 90.0, "a")]
+               + [(60.0 * (i + 1), 35.0, 101.0 + i, 35000.0, False, 147.3, 90.0, "a") for i in range(3)]
+               + [(240.0, 35.0, 126.0, 35000.0, False, 147.3, 90.0, "a")])
+    assert len(ev._lonbox_runs(box_pts, ev.est.EstConfig(gap_min_s=120.0))) == 1
+    assert ev._lonbox_runs(box_pts, ev.est.EstConfig(gap_min_s=600.0)) == []
+
+
+def test_skip_table_excludes_ambiguous_rows():
+    # r2 review: ambiguous multi-rejection rows must never be attributed to a reason
+    rows = [{"target_kind": "gap", "skip_reason": "gap_kinematics", "skip_ambiguous": False},
+            {"target_kind": "gap", "skip_reason": "gap_kinematics", "skip_ambiguous": True},
+            {"target_kind": "dest_ext", "skip_reason": "bearing_conflict"}]
+    assert ev.skip_table(rows) == {("gap", "gap_kinematics"): 1, ("dest_ext", "bearing_conflict"): 1}
+    assert ev.ambiguous_count(rows) == 1
+
+
+def test_window_skip_rows_carry_actual_induced_gap():
+    # r4 finding: a REJECTED window experiment must expose its actual induced hole
+    # (mask + cadence overhang) so >600 s inductions are excludable from fine censuses
+    slow = [(i * 60, 35.0, 130.0 + 0.0005 * i, 35000.0, False, 147.3, 90.0, "a")
+            for i in range(100)]
+    rows = ev.evaluate_flight(FLIGHT_ROW, slow, "window_fine", ev.est.EstConfig(gap_min_s=120.0))
+    gap_rows = [r for r in rows if r["target_kind"] == "gap"]
+    assert gap_rows and gap_rows[0]["skip_reason"] == "gap_kinematics"
+    # fid 1 -> 300 s mask at 60 s cadence: induced hole spans 360 s exactly
+    assert gap_rows[0]["gap_s"] == 360
