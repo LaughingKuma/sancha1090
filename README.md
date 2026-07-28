@@ -307,11 +307,21 @@ a violet dashed overlay. Gap bridging starts at two minutes: the renderer connec
 to 60 seconds as observed track, holes over 120 seconds (up to 10 minutes) — common on
 over-water OpenSky-REST stretches — get their own `gap_2_10m` bin (holdout-calibrated to
 ±0.2/4.2 km at p50/p90), and only the 60–120 second sliver deliberately stays unconnected
-beads. Each segment carries a
+beads. When the flight has a filed FAA SWIM plan, gap bridges follow it: the raw oceanic
+coordinate waypoints (`4800N/14000W` style) airlines file for exactly the stretches no
+receiver hears are parsed from the plan's route string and — when they pass in-gap
+lens, monotonicity, and detour-ratio guards — replace the pure great circle with a
+piecewise chain, so a trans-Pacific hole renders at its filed 43°N crossing instead of
+the great-circle arc through the Aleutians, and a polar reroute at its filed 82°N track.
+Any guard failure, missing plan, or fetch timeout falls back to the pure great circle;
+route-prior segments carry `_route`-suffixed bins serving the same band values as their
+base bins until settlement evidence separates them. Each segment carries a
 harness-derived p50/p90 uncertainty band rendered as nested translucent corridor ribbons in
 true meters around the dashed line — the estimate reads as a corridor, not a track; its
-hover reads `ESTIMATED · ±p50–p90 km (bin)` — or `≥` when the longest-gap bin serves its floor
-values rather than calibrated percentiles. Provisional inputs are now estimated and served too,
+hover reads `ESTIMATED · ±p50–p90 km (bin)` — or `≥` when the bin serves floor values rather
+than calibrated percentiles: the longest-gap bin, and every route-prior `_route` bin (their
+bands were calibrated on great-circle bridges, and a filed route can sit legitimately far
+from that great circle). Provisional inputs are now estimated and served too,
 flagged `input_provisional`, recomputed on every click and never cached. A companion
 `GET /estimate/live/{icao24}` draws a single capped dead-reckoning wedge off the live snapshot,
 with freshness checked server-side (a fresh snapshot AND a bounded per-aircraft fix age): stale,

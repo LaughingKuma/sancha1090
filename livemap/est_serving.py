@@ -28,6 +28,12 @@ UNCERTAINTY_BANDS: dict = {
     "gap_60_180m": {"p50_km": 44.4, "p90_km": 181.4},
     # n=1 is not a band, so the 60–180m values are served explicitly as a floor.
     "gap_180m_plus": {"p50_km": 44.4, "p90_km": 181.4, "floor": True},
+    # Route-prior bins carry base band VALUES but serve them as FLOORS: the bands were
+    # calibrated on GC bridges, and an admitted prior can sit far off that GC (adversarial r6).
+    "gap_2_10m_route": {"p50_km": 0.2, "p90_km": 4.2, "floor": True},
+    "gap_15_60m_route": {"p50_km": 5.5, "p90_km": 27.9, "floor": True},
+    "gap_60_180m_route": {"p50_km": 44.4, "p90_km": 181.4, "floor": True},
+    "gap_180m_plus_route": {"p50_km": 44.4, "p90_km": 181.4, "floor": True},
     "dest_ext": {"p50_km": 16.4, "p90_km": 47.2},
     "origin_ext": {"p50_km": 13.2, "p90_km": 35.9},
     "dr": {"p50_km": 1.3, "p90_km": 20.2},
@@ -160,7 +166,7 @@ def _json_uint64(value):
 CONFIG_HASH: int = _json_uint64(asdict(est.DEFAULT_CONFIG))
 
 
-def input_fingerprint(points, od) -> int:
+def input_fingerprint(points, od, route_pts=None, route_plan_ts=None) -> int:
     od_tuple = (
         od.origin.lat,
         od.origin.lon,
@@ -174,6 +180,10 @@ def input_fingerprint(points, od) -> int:
     canonical_input = {
         "points": list(points),
         "od": od_tuple,
+        # null != any token list, and plan_ts rides the hash: a plan appearing OR a same-token
+        # amendment between two serves must miss the estimate cache (r1 finding)
+        "route": None if route_pts is None
+        else {"pts": [list(p) for p in route_pts], "plan_ts": route_plan_ts},
         "config": asdict(est.DEFAULT_CONFIG),
     }
     return _json_uint64(canonical_input)
@@ -190,7 +200,7 @@ def utcnow() -> datetime:
 def _segment_meta(segment):
     bin_name = segment.meta["bin"]
     band = UNCERTAINTY_BANDS[bin_name]
-    return {
+    served = {
         "gs_entry_kt": segment.meta["gs_entry_kt"],
         "gs_exit_kt": segment.meta["gs_exit_kt"],
         "tas_carried_kt": None,
@@ -204,6 +214,10 @@ def _segment_meta(segment):
         },
         "confidence": segment.meta["confidence"],
     }
+    # route provenance rides the served meta so meta_json stays a lossless record of the wire
+    if segment.meta.get("route") is not None:
+        served["route"] = segment.meta["route"]
+    return served
 
 
 def _segments_payload(result):

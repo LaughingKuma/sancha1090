@@ -30,7 +30,8 @@ def allow_path_auth(livemap, monkeypatch):
 
 def test_fetch_od_maps_reconciled_row(livemap, monkeypatch):
     class _Res:
-        result_rows = [(35.55, 139.78, "vrs_routes", "unanimous", None, None, None, None)]
+        result_rows = [(35.55, 139.78, "vrs_routes", "unanimous", None, None, None, None,
+                        "JAL41", 1765500000, 1765503600, "RJTT", "EGLL")]
 
     class _Client:
         def query(self, *_a, **_k):
@@ -40,9 +41,10 @@ def test_fetch_od_maps_reconciled_row(livemap, monkeypatch):
             pass
 
     monkeypatch.setattr(livemap, "_ch_client", lambda: _Client())
-    od = livemap._fetch_od(42)
+    od, flight = livemap._fetch_od(42)
     assert od.origin.lat == 35.55 and od.origin.agreement == "unanimous"
     assert od.dest.lat is None
+    assert flight == ("JAL41", 1765500000, 1765503600, "RJTT", "EGLL")
 
 
 AUTH = ("abc123", "ANA1", False, 1765500000, 1765503600, datetime.date(2026, 6, 1))
@@ -70,7 +72,7 @@ def _assert_no_store(response):
 
 def test_path_estimate_settled_serves_and_enqueues_one_group(livemap, monkeypatch):
     _stub_loader(livemap, monkeypatch, _loader_result())
-    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: livemap.est.OD())
+    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: (livemap.est.OD(), None))
     enqueued = []
     monkeypatch.setattr(livemap, "_enqueue_estimate_log", enqueued.append)
 
@@ -114,7 +116,7 @@ def test_path_estimate_denials_are_byte_equal_and_unlogged(livemap, monkeypatch)
 
 def test_path_estimate_provisional_computes_serves_and_logs_never_caches(livemap, monkeypatch):
     _stub_loader(livemap, monkeypatch, _loader_result(status="provisional"))
-    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: livemap.est.OD())
+    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: (livemap.est.OD(), None))
     enqueued = []
     monkeypatch.setattr(livemap, "_enqueue_estimate_log", enqueued.append)
 
@@ -139,12 +141,12 @@ def test_path_estimate_provisional_recomputes_every_click(livemap, monkeypatch):
     calls = {"estimate": 0}
     real_estimate = livemap.est.estimate
 
-    def counting_estimate(points, od):
+    def counting_estimate(points, od, *_a, **_k):
         calls["estimate"] += 1
         return real_estimate(points, od)
 
     _stub_loader(livemap, monkeypatch, _loader_result(status="provisional"))
-    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: livemap.est.OD())
+    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: (livemap.est.OD(), None))
     monkeypatch.setattr(livemap.est, "estimate", counting_estimate)
     monkeypatch.setattr(livemap, "_enqueue_estimate_log", lambda _rows: None)
     client = TestClient(livemap.app)
@@ -187,7 +189,7 @@ def test_path_estimate_provisional_od_failure_matches_denial_and_is_unlogged(liv
 def test_path_estimate_provisional_all_skipped_logs_without_header(livemap, monkeypatch):
     # A computed non-result is logged truthfully but must remain header-identical to denials.
     _stub_loader(livemap, monkeypatch, _loader_result(status="provisional"))
-    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: livemap.est.OD())
+    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: (livemap.est.OD(), None))
     monkeypatch.setattr(
         livemap.est,
         "estimate",
@@ -213,7 +215,7 @@ def test_path_estimate_provisional_all_skipped_logs_without_header(livemap, monk
 def test_estimate_id_header_stays_off_settled_cache_miss_and_hit(livemap, monkeypatch):
     # Gate C needs causal IDs only for never-cached PR-3 arms; settled cache state stays private.
     _stub_loader(livemap, monkeypatch, _loader_result())
-    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: livemap.est.OD())
+    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: (livemap.est.OD(), None))
     enqueued = []
     monkeypatch.setattr(livemap, "_enqueue_estimate_log", enqueued.append)
     client = TestClient(livemap.app)
@@ -230,7 +232,7 @@ def test_path_estimate_provisional_fingerprints_with_real_od(livemap, monkeypatc
     # §7 canonical fingerprint: the computed provisional arm hashes the REAL O/D, not the sentinel
     _stub_loader(livemap, monkeypatch, _loader_result(status="provisional"))
     od = livemap.est.OD(dest=livemap.est.Endpoint(34.78, 135.44, "vrs_routes", "unanimous"))
-    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: od)
+    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: (od, None))
     enqueued = []
     monkeypatch.setattr(livemap, "_enqueue_estimate_log", enqueued.append)
 
@@ -297,12 +299,12 @@ def test_path_estimate_cache_hit_reuses_payload_without_estimating(livemap, monk
 
     real_estimate = livemap.est.estimate
 
-    def counting_estimate(points, od):
+    def counting_estimate(points, od, *_a, **_k):
         calls["estimate"] += 1
         return real_estimate(points, od)
 
     monkeypatch.setattr(livemap, "_load_path_input", load)
-    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: livemap.est.OD())
+    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: (livemap.est.OD(), None))
     monkeypatch.setattr(livemap.est, "estimate", counting_estimate)
     monkeypatch.setattr(livemap, "_est_cache", {})
     enqueued = []
@@ -323,7 +325,7 @@ def test_path_estimate_cache_hit_reuses_payload_without_estimating(livemap, monk
 def test_path_estimate_cache_hit_echoes_request_spelling(livemap, monkeypatch, seed_id, alias_id):
     # 42/042 share the canonical cache key — the wire must echo the caller's id, not the seeder's
     _stub_loader(livemap, monkeypatch, _loader_result())
-    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: livemap.est.OD())
+    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: (livemap.est.OD(), None))
     monkeypatch.setattr(livemap, "_enqueue_estimate_log", lambda _rows: None)
     client = TestClient(livemap.app)
 
@@ -342,7 +344,7 @@ def test_path_estimate_cache_hit_rechecks_ladd(livemap, monkeypatch):
         return state["result"]
 
     monkeypatch.setattr(livemap, "_load_path_input", load)
-    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: livemap.est.OD())
+    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: (livemap.est.OD(), None))
     monkeypatch.setattr(livemap, "_est_cache", {})
     enqueued = []
     monkeypatch.setattr(livemap, "_enqueue_estimate_log", enqueued.append)
@@ -653,7 +655,7 @@ def test_estimate_live_never_cached_recomputes_each_click(livemap, monkeypatch):
     calls = {"estimate": 0}
     real_estimate = livemap.est.estimate
 
-    def counting_estimate(points, od):
+    def counting_estimate(points, od, *_a, **_k):
         calls["estimate"] += 1
         return real_estimate(points, od)
 
@@ -797,7 +799,7 @@ def test_settled_empty_log_rows_carry_sidecar_producer(livemap, monkeypatch):
 def test_settled_log_rows_carry_the_auth_hex(livemap, monkeypatch):
     # rev 10.4(1): the fid dies at settlement, so the endpoint must log the resolved hex it walked
     _stub_loader(livemap, monkeypatch, _loader_result())
-    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: livemap.est.OD())
+    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: (livemap.est.OD(), None))
     enqueued = []
     monkeypatch.setattr(livemap, "_enqueue_estimate_log", enqueued.append)
 

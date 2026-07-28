@@ -110,6 +110,7 @@ class EstConfig:
     origin_ramp_floor_kt: float = 160.0
     wind_sample_nm: float = 250.0
     max_central_deg: float = 179.0
+    route_detour_max_ratio: float = 1.5
 
 
 DEFAULT_CONFIG = EstConfig()
@@ -246,7 +247,56 @@ def _gap_bin(duration_s):
     return "gap_180m_plus"
 
 
-def build_gap(a, b, entry, exit_, cfg):
+def select_route_prior(entry, exit_, route_pts, cfg):
+    if not route_pts:
+        return None
+    direct = haversine_nm(entry.lat, entry.lon, exit_.lat, exit_.lon)
+    if direct <= 0.0:
+        return None
+    # distance lens rather than a bearing cone: well defined at the poles and the
+    # antimeridian, where a real polar filed route would fail a cone test
+    kept = [(lat, lon) for lat, lon in route_pts
+            if haversine_nm(entry.lat, entry.lon, lat, lon) < direct
+            and haversine_nm(lat, lon, exit_.lat, exit_.lon) < direct]
+    if not kept:
+        return None
+    prev = 0.0
+    for lat, lon in kept:
+        d = haversine_nm(entry.lat, entry.lon, lat, lon)
+        if d <= prev:
+            return None
+        prev = d
+    chain = [(entry.lat, entry.lon), *kept, (exit_.lat, exit_.lon)]
+    length = sum(haversine_nm(p[0], p[1], q[0], q[1]) for p, q in pairwise(chain))
+    if length > cfg.route_detour_max_ratio * direct:
+        return None
+    # eligibility passed gap_max_kt on the DIRECT line; a 1.5x chain must not smuggle a
+    # faster-than-envelope effective speed back in (r2 finding: 798 kt direct -> 1,178 kt chained)
+    duration_h = (exit_.ts - entry.ts) / 3600.0
+    if duration_h <= 0.0 or length / duration_h > cfg.gap_max_kt:
+        return None
+    return kept
+
+
+def _chain_cumulative(chain, cfg):
+    # probe every leg up front so one infeasible leg drops the whole prior, never half a chain
+    cum = [0.0]
+    for (lat1, lon1), (lat2, lon2) in pairwise(chain):
+        gc_point(lat1, lon1, lat2, lon2, 0.5, cfg.max_central_deg)
+        cum.append(cum[-1] + haversine_nm(lat1, lon1, lat2, lon2))
+    return cum
+
+
+def _chain_point(chain, cum, f, cfg):
+    target = f * cum[-1]
+    k = next((i for i in range(1, len(cum)) if target <= cum[i]), len(cum) - 1)
+    leg = cum[k] - cum[k - 1]
+    g = 0.0 if leg <= 0.0 else min(1.0, max(0.0, (target - cum[k - 1]) / leg))
+    (lat1, lon1), (lat2, lon2) = chain[k - 1], chain[k]
+    return gc_point(lat1, lon1, lat2, lon2, g, cfg.max_central_deg)
+
+
+def build_gap(a, b, entry, exit_, cfg, route_pts=None):
     total_t = b.ts - a.ts
     gs_in, gs_out = entry.gs_kt, exit_.gs_kt
     # trapezoid distance fraction, renormalized so f(total_t) == 1 exactly
@@ -258,21 +308,38 @@ def build_gap(a, b, entry, exit_, cfg):
             return tau / total_t
         return (gs_in * tau + (gs_out - gs_in) * tau * tau / (2.0 * total_t)) / denom
 
+    chain, cum = None, None
+    if route_pts:
+        chain = [(a.lat, a.lon), *((float(lat), float(lon)) for lat, lon in route_pts),
+                 (b.lat, b.lon)]
+        try:
+            cum = _chain_cumulative(chain, cfg)
+        except NearAntipodal:
+            chain, cum = None, None
+
     points = [[a.lon, a.lat, round_ts(a.ts), a.alt_ft]]
     tau = cfg.sample_s
     while tau < total_t:
         f = min(1.0, frac(tau))
-        lat, lon = gc_point(a.lat, a.lon, b.lat, b.lon, f, cfg.max_central_deg)
+        # the trapezoid fraction is a DISTANCE fraction: with a prior it maps onto the
+        # cumulative chain length, so the gap duration is honored exactly either way
+        if chain is None:
+            lat, lon = gc_point(a.lat, a.lon, b.lat, b.lon, f, cfg.max_central_deg)
+        else:
+            lat, lon = _chain_point(chain, cum, f, cfg)
         alt = a.alt_ft + (b.alt_ft - a.alt_ft) * (tau / total_t) if both_alt else None
         points.append([lon, lat, round_ts(a.ts + tau), alt])
         tau += cfg.sample_s
     points.append([b.lon, b.lat, round_ts(b.ts), b.alt_ft])
-    return Segment("gap", points, {
+    meta = {
         "gs_entry_kt": gs_in, "gs_exit_kt": gs_out, "capped": False,
-        "bin": _gap_bin(total_t),
+        "bin": _gap_bin(total_t) if chain is None else _gap_bin(total_t) + "_route",
         "confidence": {"endpoint_source": None, "endpoint_agreement": None,
                        "times_low_confidence": False},
-    })
+    }
+    if chain is not None:
+        meta["route"] = {"prior": True, "tokens": len(chain) - 2}
+    return Segment("gap", points, meta)
 
 
 def _speed_at(schedule, x):
@@ -406,7 +473,7 @@ def _wind_request_for(seg_idx, seg, cfg):
     return marks
 
 
-def estimate(points, od, cfg=DEFAULT_CONFIG):
+def estimate(points, od, cfg=DEFAULT_CONFIG, route_pts=None):
     fixes = prepare(points)
     if not fixes:
         return EstimateResult([], [{"kind": "all", "reason": "no_input"}], [])
@@ -426,8 +493,9 @@ def estimate(points, od, cfg=DEFAULT_CONFIG):
     for i, j in gaps:
         got = gap_eligibility(fixes, i, j, gaps, cfg)
         if isinstance(got, tuple):
+            prior = select_route_prior(fixes[i], fixes[j], route_pts, cfg) if route_pts else None
             try:
-                segments.append(build_gap(fixes[i], fixes[j], got[0], got[1], cfg))
+                segments.append(build_gap(fixes[i], fixes[j], got[0], got[1], cfg, prior))
             except NearAntipodal:
                 skips.append({"kind": "gap", "reason": "near_antipodal"})
         else:

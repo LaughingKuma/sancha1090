@@ -28,6 +28,7 @@ def _load_sibling(name):
 
 est = _load_sibling("estimator")
 ess = _load_sibling("est_serving")
+er = _load_sibling("est_route")
 
 # Server-side cache is the whole point: N browser tabs share ONE RW query stream, never N.
 POLL_SECONDS = float(os.environ.get("LIVEMAP_POLL_SECONDS", "1.0"))
@@ -68,6 +69,7 @@ except ValueError:
 
 _est_log_queue = ess.LogQueue(EST_LOG_QUEUE_MAX)
 _est_missing_table_warned = False
+_est_route_fetch_warned: set = set()
 
 # LADD suppression: the live surfaces only need "listed right now" — the OPEN intervals. The mart's
 # window-aware is_ladd covers history. dim_ladd is RMT(_version) so FINAL for current SCD2 state.
@@ -149,12 +151,56 @@ PATH_AUTH_QUERY = f"""
     LIMIT 1
 """
 
-# O/D + provenance for the estimate arm only (SP2 geo columns); /path never pays this query
+# O/D + provenance for the estimate arm only (SP2 geo columns); /path never pays this query.
+# The callsign/window ride the same read — the SWIM route prior needs them and one trip is enough.
 PATH_OD_QUERY = f"""
     SELECT origin_lat, origin_lon, origin_source, origin_agreement,
-           dest_lat, dest_lon, dest_source, dest_agreement
+           dest_lat, dest_lon, dest_source, dest_agreement,
+           callsign, toUnixTimestamp(start_time), toUnixTimestamp(end_time),
+           origin_icao, dest_icao
     FROM {CH_DB}.fct_flights_reconciled
     WHERE flight_id = {{fid:UInt64}}
+    LIMIT 1
+"""
+
+# Filed SWIM plan (ledger 6a): O/D-anchored, conflict-vetoed; FULL plans authoritative by
+# recency (newer tokenless full plan = real reroute -> GC); './.' fills only sans full plan.
+EST_ROUTE_ATTR_PAT = 'legacyFormat="([^"]+)"'
+EST_ROUTE_TEXT_PAT = ":routeOfFlight>([^<]+)<"
+EST_ROUTE_COORD_PAT = r"\d{4}[NS]/\d{5}[EW]"
+EST_ROUTE_QUERY = f"""
+    WITH nullif(extract(raw_xml, '{EST_ROUTE_ATTR_PAT}'), '') AS attr_route,
+         nullif(extract(raw_xml, '{EST_ROUTE_TEXT_PAT}'), '') AS text_route
+    SELECT multiIf(attr_route IS NOT NULL AND match(attr_route, '{EST_ROUTE_COORD_PAT}'), attr_route,
+                   text_route IS NOT NULL AND match(text_route, '{EST_ROUTE_COORD_PAT}'), text_route,
+                   coalesce(attr_route, text_route)) AS route,
+           toUnixTimestamp(msg_timestamp),
+           (({{origin:String}} != '' AND dep_point_kind = 'airport'
+             AND (upper(dep_point) = {{origin:String}}
+                  OR substring({{origin:String}}, 2) = upper(dep_point)))
+          + ({{dest:String}} != '' AND arr_point_kind = 'airport'
+             AND (upper(arr_point) = {{dest:String}}
+                  OR substring({{dest:String}}, 2) = upper(arr_point)))) AS od_matches,
+           (({{origin:String}} != '' AND dep_point_kind = 'airport'
+             AND NOT (upper(dep_point) = {{origin:String}}
+                      OR substring({{origin:String}}, 2) = upper(dep_point)))
+          + ({{dest:String}} != '' AND arr_point_kind = 'airport'
+             AND NOT (upper(arr_point) = {{dest:String}}
+                      OR substring({{dest:String}}, 2) = upper(arr_point)))) AS od_conflicts,
+           position(route, './.') = 0 AS is_full
+    FROM bronze.swim_flightdata
+    WHERE upper(trimBoth(acid)) = {{callsign:String}}
+      AND swim_date BETWEEN toDate(toDateTime({{start:Int64}}) - INTERVAL 30 HOUR)
+                        AND toDate(toDateTime({{end:Int64}})) + 1
+      AND msg_type IN ('flightPlanInformation', 'flightPlanAmendmentInformation', 'FlightRoute')
+      AND msg_timestamp BETWEEN toDateTime({{start:Int64}}) - INTERVAL 30 HOUR
+                            AND toDateTime({{end:Int64}})
+      AND filed_departure_time BETWEEN toDateTime({{start:Int64}}) - INTERVAL 6 HOUR
+                                   AND toDateTime({{end:Int64}})
+      AND route != ''
+      AND od_matches >= 1
+      AND od_conflicts = 0
+    ORDER BY od_matches DESC, is_full DESC, msg_timestamp DESC, _dedup_fp DESC
     LIMIT 1
 """
 
@@ -313,6 +359,8 @@ except ValueError:
 # Cross-machine clock slack: a fix stamped slightly ahead of the host clock is fresh;
 # a far-future timestamp is garbage data, not freshness — both gates reject it (rev 2).
 EST_LIVE_FUTURE_SKEW_S = 2.0
+# The route prior is optional work on a click-latency path: bound it well inside the click budget.
+EST_ROUTE_TIMEOUT_S = 3.0
 # The RW MV carries the producer's raw hex unvalidated — a malformed snapshot value must
 # stay a pre-gate denial, never a computable/loggable h: subject (rev 9; ~ = readsb non-ICAO)
 _LIVE_HEX_RE = re.compile(r"~?[0-9a-f]{6}")
@@ -354,6 +402,51 @@ def _est_cache_put(key, payload, now: float) -> None:
             del _est_cache[k]
         while len(_est_cache) > EST_CACHE_MAX:
             del _est_cache[min(_est_cache, key=lambda k: _est_cache[k][0])]
+
+
+def _has_bridgeable_gap(points) -> bool:
+    # the estimator's OWN eligibility is the precheck (pure, ms-scale) — an approximation here
+    # kept paying the SWIM read for gaps estimate() then rejected (r2: slow/ground/no-motion)
+    fixes = est.prepare(points)
+    gaps = est.detect_gaps(fixes, est.DEFAULT_CONFIG)
+    return any(
+        isinstance(est.gap_eligibility(fixes, i, j, gaps, est.DEFAULT_CONFIG), tuple)
+        for i, j in gaps
+    )
+
+
+async def _route_prior(points, flight):
+    # Gap bridges only, and only when a gap is actually bridgeable — else never pay the SWIM read.
+    # to_thread: prepare/eligibility over a 50-60k-point path is ~100 ms of CPU — never on the loop
+    if not flight or not await asyncio.to_thread(_has_bridgeable_gap, points):
+        return None, None
+    callsign, start_s, end_s, origin_icao, dest_icao = flight
+    if not (callsign or "").strip() or start_s is None or end_s is None:
+        return None, None
+    # no reconciled endpoint at all -> nothing to anchor the leg on; GC is the honest bridge (r4)
+    if not (origin_icao or "").strip() and not (dest_icao or "").strip():
+        return None, None
+    try:
+        # wall-clock bound (r9): the CH-side ceiling doesn't cover executor queue time under burst
+        got = await asyncio.wait_for(
+            asyncio.to_thread(_fetch_route, callsign, start_s, end_s, origin_icao, dest_icao),
+            timeout=EST_ROUTE_TIMEOUT_S + 1.0,
+        )
+    except (TimeoutError, asyncio.TimeoutError):
+        return None, None
+    if not got:
+        return None, None
+    return er.parse_route_coords(got[0]) or None, got[1]
+
+
+def _stamp_route_plan(result, plan_ts) -> None:
+    # Stamped before the response is built: the log is a lossless record of the served meta.
+    if plan_ts is None:
+        return
+    for segment in result.segments:
+        route = segment.meta.get("route")
+        if route is not None:
+            route["plan_ts"] = int(plan_ts)
 
 
 def _empty_estimate(flight_id, reason, provisional, as_of) -> dict:
@@ -581,11 +674,43 @@ def _fetch_od(fid: int):
     finally:
         client.close()
     if not res.result_rows:
-        return est.OD()
-    olat, olon, osrc, oagr, dlat, dlon, dsrc, dagr = res.result_rows[0]
+        return est.OD(), None
+    (olat, olon, osrc, oagr, dlat, dlon, dsrc, dagr,
+     callsign, start_s, end_s, origin_icao, dest_icao) = res.result_rows[0]
     origin = est.Endpoint(olat, olon, osrc, oagr) if olat is not None and olon is not None else est.Endpoint()
     dest = est.Endpoint(dlat, dlon, dsrc, dagr) if dlat is not None and dlon is not None else est.Endpoint()
-    return est.OD(origin=origin, dest=dest)
+    return est.OD(origin=origin, dest=dest), (callsign, start_s, end_s, origin_icao, dest_icao)
+
+
+def _fetch_route(callsign, start_time, end_time, origin_icao, dest_icao):
+    # Any failure — no plan, malformed row, CH down, execution timeout — degrades the bridge to pure
+    # GC: the filed route is a prior, never a serving dependency.
+    try:
+        client = _ch_client()
+        try:
+            res = client.query(
+                EST_ROUTE_QUERY,
+                parameters={
+                    "callsign": (callsign or "").strip().upper(),
+                    "start": int(start_time),
+                    "end": int(end_time),
+                    "origin": (origin_icao or "").strip().upper(),
+                    "dest": (dest_icao or "").strip().upper(),
+                },
+                settings={"max_execution_time": EST_ROUTE_TIMEOUT_S},
+            )
+        finally:
+            client.close()
+        if not res.result_rows:
+            return None
+        route, plan_ts = res.result_rows[0][:2]
+        return (route, plan_ts) if route else None
+    except Exception as exc:
+        # once per exception type: a broken grant or a timing tail must not flood stderr per click
+        if type(exc).__name__ not in _est_route_fetch_warned:
+            _est_route_fetch_warned.add(type(exc).__name__)
+            print(f"livemap estimate route fetch skipped: {type(exc).__name__}: {exc}", flush=True)
+        return None
 
 
 def _fetch_path_head():
@@ -1052,12 +1177,14 @@ async def path_estimate(flight_id: str) -> JSONResponse:
     fid = int(flight_id)
     if got["status"] == "provisional":
         try:
-            od = await asyncio.to_thread(_fetch_od, fid)
+            od, flight = await asyncio.to_thread(_fetch_od, fid)
         except Exception as exc:
             print(f"livemap estimate O/D fetch failed: {type(exc).__name__}: {exc}", flush=True)
             return _estimate_response(_empty_estimate(flight_id, "no_input", False, 0))
-        fp = await asyncio.to_thread(ess.input_fingerprint, got["points"], od)
-        r = await asyncio.to_thread(est.estimate, got["points"], od)
+        route_pts, plan_ts = await _route_prior(got["points"], flight)
+        fp = await asyncio.to_thread(ess.input_fingerprint, got["points"], od, route_pts, plan_ts)
+        r = await asyncio.to_thread(est.estimate, got["points"], od, route_pts=route_pts)
+        _stamp_route_plan(r, plan_ts)
         # PR-3: provisional inputs are estimated and served, logged input_provisional=1, and
         # NEVER cached — same invariant (and reason) as the rung-2 _path_cache bypass
         payload = ess.build_response(flight_id, r, True, int(got["as_of"]))
@@ -1081,7 +1208,7 @@ async def path_estimate(flight_id: str) -> JSONResponse:
     if got["status"] == "settled_empty":
         r = est.estimate([], est.OD())
         payload = ess.build_response(flight_id, r, False, int(got["as_of"]))
-        fp = ess.input_fingerprint([], est.OD())
+        fp = ess.input_fingerprint([], est.OD(), None)
         _enqueue_estimate_log(
             ess.build_log_rows(
                 ess.new_estimate_id(),
@@ -1098,12 +1225,13 @@ async def path_estimate(flight_id: str) -> JSONResponse:
         return _estimate_response(payload)
 
     try:
-        od = await asyncio.to_thread(_fetch_od, fid)
+        od, flight = await asyncio.to_thread(_fetch_od, fid)
     except Exception as exc:
         print(f"livemap estimate O/D fetch failed: {type(exc).__name__}: {exc}", flush=True)
         return _estimate_response(_empty_estimate(flight_id, "no_input", False, 0))
 
-    fp = await asyncio.to_thread(ess.input_fingerprint, got["points"], od)
+    route_pts, plan_ts = await _route_prior(got["points"], flight)
+    fp = await asyncio.to_thread(ess.input_fingerprint, got["points"], od, route_pts, plan_ts)
     key = (fid, fp, ess.METHOD_VERSION)
     now = time.time()
     hit = _est_cache.get(key)
@@ -1119,7 +1247,8 @@ async def path_estimate(flight_id: str) -> JSONResponse:
         # the canonical fid key makes 42/042 share an entry — echo the CALLER's spelling, not the seeder's
         return _estimate_response({**hit[1], "flight_id": flight_id})
 
-    r = await asyncio.to_thread(est.estimate, got["points"], od)
+    r = await asyncio.to_thread(est.estimate, got["points"], od, route_pts=route_pts)
+    _stamp_route_plan(r, plan_ts)
     payload = ess.build_response(flight_id, r, False, int(got["as_of"]))
     _est_cache_put(key, payload, now)
     _enqueue_estimate_log(
@@ -1166,7 +1295,8 @@ async def estimate_live(icao24: str) -> JSONResponse:
     anchor = _live_anchor(row)
     r = await asyncio.to_thread(est.estimate, [anchor], est.OD())
     payload = ess.build_live_response(icao24, r, int(snap["server_ts"]))
-    fp = await asyncio.to_thread(ess.input_fingerprint, [anchor], est.OD())
+    # live DR carries no route prior (gap bridges only) — the fingerprint records its absence
+    fp = await asyncio.to_thread(ess.input_fingerprint, [anchor], est.OD(), None)
     eid = ess.new_estimate_id()
     _enqueue_estimate_log(
         ess.build_log_rows(
