@@ -90,14 +90,35 @@ def test_log_rows_request_row_always_first():
     pts = [(t * 60, 35.0, 139.0 + 0.05 * t, 35000.0, 0, 450.0, 90.0, "adsb") for t in range(10)]
     r = est.estimate(pts, est.OD())
     payload = es.build_response("42", r, False, 1765500000)
-    rows = es.build_log_rows(es.new_estimate_id(), 42, "abc123", r, payload, pts,
+    rows = es.build_log_rows(es.new_estimate_id(), 42, "ABC123", r, payload, pts,
                              es.input_fingerprint(pts, est.OD()), es.utcnow())
-    assert rows[0][es.INSERT_COLUMNS.index("kind")] == "request"
-    assert rows[0][es.INSERT_COLUMNS.index("seg_idx")] == 0
-    assert rows[0][es.INSERT_COLUMNS.index("icao24")] == ""   # §7: fid-keyed rows log ''
+    idx = es.INSERT_COLUMNS.index
+    assert rows[0][idx("kind")] == "request"
+    assert rows[0][idx("seg_idx")] == 0
+    # rev 10.4(1): flight_id is a build-generation hash that dies at settlement, so fid-keyed
+    # rows log the durable settlement key — the lowercased hex — on request AND segment rows
+    assert all(row[idx("icao24")] == "abc123" for row in rows)
     assert len(rows) == 1 + len(payload["segments"])
     assert len(es.INSERT_COLUMNS) == len(es.INSERT_TYPES) == 31
     assert "subject_key" not in es.INSERT_COLUMNS
+
+
+def test_log_rows_missing_hex_degrades_to_empty_string_never_none():
+    # icao24 is a non-nullable column: an unresolved hex must land as '' on every arm
+    pts = [(t * 60, 35.0, 139.0 + 0.05 * t, 35000.0, 0, 450.0, 90.0, "adsb") for t in range(10)]
+    r = est.estimate(pts, est.OD())
+    payload = es.build_response("42", r, False, 1765500000)
+    idx = es.INSERT_COLUMNS.index
+    for hexid in (None, ""):
+        rows = es.build_log_rows(es.new_estimate_id(), 42, hexid, r, payload, pts,
+                                 es.input_fingerprint(pts, est.OD()), es.utcnow())
+        assert all(row[idx("icao24")] == "" for row in rows)
+    live = est.estimate(LIVE_ANCHOR, est.OD())
+    live_payload = es.build_live_response("", live, 1765500005)
+    live_rows = es.build_log_rows(es.new_estimate_id(), None, None, live, live_payload,
+                                  LIVE_ANCHOR, es.input_fingerprint(LIVE_ANCHOR, est.OD()),
+                                  es.utcnow(), anchor_ts=1765500000.0)
+    assert all(row[idx("icao24")] == "" for row in live_rows)
 
 
 def test_log_rows_result_none_is_request_row_only():

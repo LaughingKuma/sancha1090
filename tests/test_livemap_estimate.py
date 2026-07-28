@@ -792,3 +792,16 @@ def test_settled_empty_log_rows_carry_sidecar_producer(livemap, monkeypatch):
 
     prod_idx = livemap.ess.INSERT_COLUMNS.index("producer")
     assert enqueued[0][0][prod_idx] == livemap.EST_PRODUCER
+
+
+def test_settled_log_rows_carry_the_auth_hex(livemap, monkeypatch):
+    # rev 10.4(1): the fid dies at settlement, so the endpoint must log the resolved hex it walked
+    _stub_loader(livemap, monkeypatch, _loader_result())
+    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: livemap.est.OD())
+    enqueued = []
+    monkeypatch.setattr(livemap, "_enqueue_estimate_log", enqueued.append)
+
+    TestClient(livemap.app).get("/path/42/estimate")
+
+    hex_idx = livemap.ess.INSERT_COLUMNS.index("icao24")
+    assert enqueued[0][0][hex_idx] == AUTH[0]

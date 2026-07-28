@@ -268,8 +268,9 @@ def build_log_rows(
         "estimate_id": estimate_id,
         "producer": producer,
         "flight_id": fid,
-        # §7: fid-keyed rows log '' — the hex identifies only live (flight_id-NULL) estimates
-        "icao24": "" if fid is not None else icao24,
+        # rev 10.4(1): flight_id is a build-generation hash (dies at settlement);
+        # the hex is the durable settlement key, so fid-keyed rows log it too
+        "icao24": (icao24 or "").lower(),
         "computed_at": computed_at,
         "method_version": METHOD_VERSION,
         "config_hash": CONFIG_HASH,

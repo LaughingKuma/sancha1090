@@ -29,11 +29,13 @@ bronze by the `ch_serving_parity` gate.
 
 `bronze.path_estimates` sits outside that mart flow as append-only serving exhaust. Each
 recorded computation keeps one request row plus one row per emitted segment for 24 months,
-including a request row for logged non-results. Flight-keyed requests carry the flight id;
-live requests log hex-keyed rows instead (`flight_id` NULL, `subject_key h:<icao24>`, the
-anchor-fix timestamp). The livemap writes it through the INSERT-only `livemap_writer`
-identity; estimate geometry never enters the silver/gold flight marts — the only gold
-footprint is serving TELEMETRY (usage counts and distributions, rev 10.3), never
+including a request row for logged non-results. Flight-keyed requests carry the flight id
+AND the aircraft hex (rev 10.4: the flight id is a build-generation hash that does not
+survive settlement — the hex is the durable settlement key); live requests log hex-keyed
+rows (`flight_id` NULL, `subject_key h:<icao24>`, the anchor-fix timestamp). The livemap
+writes it through the INSERT-only `livemap_writer` identity; estimate geometry never
+enters the silver/gold flight marts — the gold footprint is serving TELEMETRY only
+(usage counts, distributions, and scalar settlement scores; rev 10.3/10.4), never
 estimated positions. Rows are sidecar-attributed — the public
 instance stamps `producer='serving-public'`, the private one `'serving-private'` (rows from
 before the split keep the legacy `'serving'`) — and two small analytics marts aggregate the
@@ -41,6 +43,35 @@ exhaust daily: `gold_ch.agg_est_usage_daily` (requests/served/segments/subjects 
 and arm, UTC days) and `gold_ch.agg_est_breakdown_daily` (skip-reason, segment-kind, and
 uncertainty-bin distributions). The standing demand read is
 `SELECT day, requests, served FROM gold_ch.agg_est_usage_daily WHERE producer = 'serving-public' ORDER BY day`.
+
+`gold_ch.fct_est_settlement` closes the loop on estimate quality: it re-keys every served
+gap segment to the settled trajectory mart (hex + time overlap going forward; entry∩exit
+anchor intersection for legacy rows) and scores the estimate polyline against real
+coverage that arrived after serving — per-point errors as scalar arrays, zero coordinate
+columns, full-recompute semantics (scores legitimately move as truth arrives and paths
+repair — never alert on day-over-day deltas). Ambiguous re-keys are excluded from scores
+but counted (`skip_ambiguous`); anchor-re-keyed and provisional-arm rows carry a
+documented causality qualification. The standing drift read pools per-point errors
+deduped to unique inputs — never median-of-medians, which measurably hides drift —
+grouped by `config_hash` (the sole instrument discriminator):
+
+```sql
+SELECT uncertainty_bin, config_hash, count() AS settled_segments,
+       uniqExact(input_fingerprint) AS subjects,
+       arraySort(groupArrayArray(errs_km)) AS pool,
+       if(length(pool) = 0, NULL, pool[toUInt32(ceil(0.5 * length(pool)))]) AS pooled_p50_km,
+       if(length(pool) = 0, NULL, pool[toUInt32(ceil(0.9 * length(pool)))]) AS pooled_p90_km,
+       any(served_p50_km) AS band_p50, any(served_p90_km) AS band_p90
+FROM (SELECT * FROM gold_ch.fct_est_settlement
+      WHERE skip_ambiguous = 0 AND settled = 1
+      ORDER BY computed_at, estimate_id LIMIT 1 BY input_fingerprint, seg_idx)
+GROUP BY uncertainty_bin, config_hash ORDER BY uncertainty_bin, config_hash
+```
+
+The `gap_180m_plus` uncertainty band deliberately keeps its `≥` floor: warehouse-resident
+truth cannot calibrate it (the fully-covered long-duration population is loiter orbits,
+physically disjoint from the transpacific cruise gaps the band serves), so the floor
+stands until served-regime truth accumulates in the settlement mart itself.
 
 <p align="center">
   <picture>

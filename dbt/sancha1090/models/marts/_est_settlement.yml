@@ -1,0 +1,37 @@
+version: 2
+
+models:
+  - name: fct_est_settlement
+    description: >-
+      Per-segment settlement scores for served path estimates (grain (estimate_id, seg_idx)) —
+      permitted gold telemetry over the estimate exhaust under rev 10.4(2): error/coverage/eligibility
+      scalars only, ZERO coordinate columns (exhaust geometry is read inside the SQL to derive scalars,
+      never materialized). Served gap segments are re-keyed to settled flights on two disjoint branches:
+      icao24 + padded time overlap through fct_flights_reconciled (match_via='icao24'), and, for legacy
+      rows logged with icao24='' , the entry-exit anchor candidate-set INTERSECTION (match_via='anchor');
+      n_cand > 1 sets skip_ambiguous=1 (excluded from scores, counted); n_cand = 0 is PENDING,
+      not ambiguous — matched_flight_id=0, no candidates yet (bounded chunk builds / truth not
+      arrived) — and settles on a later tick.
+      CAUSALITY QUALIFICATION (rev 10.4(2)): an estimate's own logged gap span proves absence at serve
+      time, so interior mart points arrived later — EXCEPT for two populations whose serve-time absence
+      was measured against a different fusion than the settled mart: anchor-re-keyed rows
+      (match_via='anchor'; dead spine generation, interior points may reflect re-fusion rather than late
+      arrival) and provisional-arm rows (input_provisional=1; serve-time bronze fusion, a point may have
+      been present-but-unfused). Both markers are columns here — drift queries filter either.
+      SCORE MUTABILITY is a property, not a defect: this is a full recompute over a repairing mart, so
+      scores move as truth arrives and paths repair. Nobody alerts on day-over-day deltas; compare
+      instruments, not days. config_hash is the SOLE instrument discriminator (method_version has not
+      moved); any cross-generation comparison groups by it.
+      Scope: gap segments only (dr/origin_ext/dest_ext scoring is a recorded follow-up).
+      CAVEAT: the first real-missingness numbers (E8) are a 5-subject CASE STUDY over 8 estimates, not a
+      population claim, and were already superseded by data movement at measurement time — re-run the
+      note's verbatim query rather than quoting frozen figures.
+    columns:
+      - name: estimate_id
+        description: "Serving-side estimate id (from bronze.path_estimates)."
+        tests:
+          - not_null
+      - name: seg_idx
+        description: "Segment index within the estimate; with estimate_id forms the grain."
+        tests:
+          - not_null
