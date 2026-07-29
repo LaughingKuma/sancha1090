@@ -29,6 +29,30 @@ def _load_sibling(name):
 est = _load_sibling("estimator")
 ess = _load_sibling("est_serving")
 er = _load_sibling("est_route")
+ladd = _load_sibling("ladd")
+pf = _load_sibling("pathfusion")
+cache = _load_sibling("cache")
+rl = _load_sibling("ratelimit")
+routes_live = _load_sibling("routes_live")
+routes_aircraft = _load_sibling("routes_aircraft")
+routes_path = _load_sibling("routes_path")
+
+# Sibling surface re-exported under this module's names — this module stays the single address
+# for the sidecar's behaviour; the config-bound seams further down bind the rest.
+_EMPTY_SUPPRESS = ladd.EMPTY_SUPPRESS
+_write_ladd_cache = ladd.write_cache
+_read_ladd_cache = ladd.read_cache
+_is_ladd_suppressed = ladd.is_suppressed
+_ladd_filter_flights = ladd.filter_flights
+PATH_HEAD_QUERY = pf.HEAD_QUERY
+PATH_COMPETITOR_QUERY = pf.COMPETITOR_QUERY
+PROVISIONAL_ADSB_QUERY = pf.ADSB_QUERY
+PROVISIONAL_ADSBLOL_QUERY = pf.ADSBLOL_QUERY
+PROVISIONAL_OPENSKY_QUERY = pf.OPENSKY_QUERY
+_contest_keep = pf.contest_keep
+_fuse_points = pf.fuse_points
+_client_ip = rl.client_ip
+_rate_limit_allow = rl.allow
 
 # Server-side cache is the whole point: N browser tabs share ONE RW query stream, never N.
 POLL_SECONDS = float(os.environ.get("LIVEMAP_POLL_SECONDS", "1.0"))
@@ -71,14 +95,9 @@ _est_log_queue = ess.LogQueue(EST_LOG_QUEUE_MAX)
 _est_missing_table_warned = False
 _est_route_fetch_warned: set = set()
 
-# LADD suppression: the live surfaces only need "listed right now" — the OPEN intervals. The mart's
-# window-aware is_ladd covers history. dim_ladd is RMT(_version) so FINAL for current SCD2 state.
-LADD_SUPPRESS_QUERY = "SELECT icao24, callsign FROM dim.dim_ladd FINAL WHERE valid_to IS NULL"
 LADD_REFRESH_SECONDS = float(os.environ.get("LIVEMAP_LADD_REFRESH_SECONDS", "900"))
 LADD_REFRESH_TICKS = max(1, int(LADD_REFRESH_SECONDS / POLL_SECONDS))
-# Last-good suppression sets on disk: a restart mid-CH-cold-start reseeds from this instead of failing open
-# (None). The container FS survives restarts, so the fail-open window collapses to first-ever boot/recreate.
-LADD_CACHE_PATH = os.environ.get("LIVEMAP_LADD_CACHE_PATH", "/tmp/ladd_suppress_cache.json")
+LADD_CACHE_PATH = ladd.CACHE_PATH
 
 # Real antenna is a secret (home rooftop) — from .env; default is the public Carrot Tower landmark.
 FEEDER_LAT = float(os.environ.get("LIVEMAP_FEEDER_LAT", "35.6434"))
@@ -91,10 +110,6 @@ PUBLIC_MODE = os.environ.get("LIVEMAP_PUBLIC_MODE", "0").strip().lower() in {"1"
 EST_PRODUCER = "serving-public" if PUBLIC_MODE else "serving-private"
 # Per-IP token bucket on the per-request DB endpoints only (/aircraft + /history are in-memory reads, free).
 RATE_LIMITED_PREFIXES = ("/track/", "/flights/", "/path/", "/estimate/live/")
-RATE_LIMIT_BURST = float(os.environ.get("LIVEMAP_RATE_LIMIT_BURST", "10"))
-RATE_LIMIT_REFILL_PER_SEC = float(os.environ.get("LIVEMAP_RATE_LIMIT_REFILL_PER_SEC", "1"))
-# Cap on tracked IP buckets; fully-refilled idle ones are swept lazily on access past this cap.
-RATE_BUCKETS_MAX = int(os.environ.get("LIVEMAP_RATE_BUCKETS_MAX", "65536"))
 
 # recv rides the payload end-to-end (the P2 multi-receiver seam); rendered uniformly today.
 QUERY = """
@@ -204,54 +219,6 @@ EST_ROUTE_QUERY = f"""
     LIMIT 1
 """
 
-# Overlapping same-hex windows contest fixes in-process (mart stage-1 rule); deliberately is_ladd-blind — a
-# suppressed neighbor still wins its own fixes away. ov_lo/ov_hi pre-bake ±pad on both windows (2·pad).
-PATH_COMPETITOR_QUERY = f"""
-    SELECT flight_id, toUnixTimestamp(start_time), toUnixTimestamp(end_time)
-    FROM {CH_DB}.fct_flights_reconciled
-    WHERE lower(icao24) = {{hex:String}} AND flight_id != {{fid:UInt64}}
-      AND start_time <= toDateTime({{ov_hi:Int64}}) AND end_time >= toDateTime({{ov_lo:Int64}})
-"""
-
-# The three bronze scans mirror fct_flight_path's fixes CTEs (timestamp choice, units, sentinels) with
-# physical leading-key predicates; uniform projection (ts_s, lat, lon, alt_ft, on_ground, gs_kt, track_deg).
-PROVISIONAL_ADSB_QUERY = """
-    SELECT toUInt32(floor(assumeNotNull(capture_ts))), lat, lon,
-           if(alt_baro = 'ground', 0, toFloat64OrNull(alt_baro)),
-           toUInt8(coalesce(alt_baro, '') = 'ground'), gs, track
-    FROM bronze.adsb_states
-    WHERE capture_date BETWEEN {day_lo:Date} AND {day_hi:Date}
-      AND lower(hex) = {hex:String}
-      AND capture_ts IS NOT NULL AND lat IS NOT NULL AND lon IS NOT NULL
-      AND capture_ts >= {win_lo:Int64} AND capture_ts < {win_hi:Int64} + 1
-"""
-
-PROVISIONAL_ADSBLOL_QUERY = """
-    SELECT toUnixTimestamp(toDateTime(assumeNotNull(ts), 'UTC')), lat, lon, alt_ft,
-           toUInt8(coalesce(on_ground, false)), gs_kt, track_deg
-    FROM bronze.adsblol_flight_paths
-    WHERE trace_day BETWEEN {halo_lo:Date} AND {halo_hi:Date}
-      AND lower(icao24) = {hex:String}
-      AND ts IS NOT NULL AND lat IS NOT NULL AND lon IS NOT NULL
-      AND ts >= toDateTime64({win_lo:Int64}, 6, 'UTC') AND ts < toDateTime64({win_hi:Int64} + 1, 6, 'UTC')
-"""
-
-# snapshot_date halo ±1 AND the broad snapshot_time range (the primary key LEADS with snapshot_time; the
-# 10,300 s skew tail rules out fixed slack). The event-time clip does the precision work.
-PROVISIONAL_OPENSKY_QUERY = """
-    SELECT toUnixTimestamp(toDateTime(assumeNotNull(coalesce(time_position, snapshot_time)), 'UTC')),
-           latitude, longitude, baro_altitude * 3.28084,
-           toUInt8(coalesce(on_ground, false)), velocity * 1.94384, true_track
-    FROM bronze.opensky_states
-    WHERE snapshot_date BETWEEN {halo_lo:Date} AND {halo_hi:Date}
-      AND snapshot_time >= toDateTime64({broad_lo:Int64}, 6, 'UTC')
-      AND snapshot_time < toDateTime64({broad_hi:Int64}, 6, 'UTC')
-      AND lower(icao24) = {hex:String}
-      AND coalesce(time_position, snapshot_time) IS NOT NULL
-      AND latitude IS NOT NULL AND longitude IS NOT NULL
-      AND toDateTime(assumeNotNull(coalesce(time_position, snapshot_time)), 'UTC')
-          BETWEEN toDateTime({win_lo:Int64}, 'UTC') AND toDateTime({win_hi:Int64}, 'UTC')
-"""
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -283,39 +250,6 @@ _routes: dict = {}
 # (server_ts, [[hex, lon, lat, capture_ts, alt_baro], ...]) per successful poll; in-process
 # is fine now — a restart refills the full wake window in ~2 min
 _track_buf: collections.deque = collections.deque(maxlen=max(1, int(HISTORY_BUFFER_S / POLL_SECONDS)))
-# LADD open-interval identities (hex + normalized callsign) refreshed from CH every ~15 min; suppressed on the
-# live surfaces. _EMPTY_SUPPRESS is the sentinel for a real, loaded, currently-empty list.
-_EMPTY_SUPPRESS: dict = {"hex": frozenset(), "callsign": frozenset()}
-
-
-def _write_ladd_cache(suppress, path) -> None:
-    # Atomic last-good write (temp + os.replace) so a crash mid-write never leaves a half-JSON the boot seed trusts.
-    tmp = f"{path}.tmp"
-    with open(tmp, "w") as fh:
-        json.dump({"hex": sorted(suppress["hex"]), "callsign": sorted(suppress["callsign"])}, fh)
-    os.replace(tmp, path)
-
-
-def _read_ladd_cache(path):
-    # Boot seed from the last-good sets so a CH-cold-start restart resumes dim filtering instead of failing open.
-    # Conservative-stale is the right direction (the list mostly grows); missing/corrupt -> None, a never-loaded
-    # cold start exactly as before the cache existed.
-    try:
-        with open(path) as fh:
-            d = json.load(fh)
-        return {"hex": frozenset(d["hex"]), "callsign": frozenset(d["callsign"])}
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-
-
-def _cache_ladd_suppress(suppress) -> None:
-    # Best-effort: a read-only/full FS must never break the live refresh — the in-memory set stays authoritative.
-    try:
-        _write_ladd_cache(suppress, LADD_CACHE_PATH)
-    except Exception as exc:
-        print(f"livemap ladd suppress cache write skipped: {exc}", flush=True)
-
-
 # None = never loaded (fails /track closed, logs once); empty frozensets = a real, loaded, currently-empty list.
 # Boot-seeded from the last-good disk cache so a restart during a CH cold start resumes dim filtering, not None.
 _ladd_suppress: dict | None = _read_ladd_cache(LADD_CACHE_PATH)
@@ -366,42 +300,17 @@ EST_ROUTE_TIMEOUT_S = 3.0
 _LIVE_HEX_RE = re.compile(r"~?[0-9a-f]{6}")
 UINT64_MAX = 2**64 - 1
 
-# Provisional fallback (rung 2): flights newer than the mart's built head get a serve-time fused path.
-# 600 s mirrors dbt path_window_pad_min: 10 — mart windows are observation clips, 5.97% of path rows are pad-only.
-PATH_WINDOW_PAD_S = 600
-PATH_HEAD_QUERY = f"SELECT max(day_key) FROM {CH_DB}.fct_flight_path"
-PATH_HEAD_TTL_S = float(os.environ.get("LIVEMAP_PATH_HEAD_TTL_S", "60"))
 # None = never loaded (callers fail closed); a failed refresh keeps last-good — the head only ever advances,
 # so staleness is bounded and harmless in the historical direction.
 _path_head: dict = {"expiry": 0.0, "head": None}
 
 
-def _path_response(flight_id: str, points, provisional: bool) -> JSONResponse:
-    # no-store on EVERY branch: a future CF rule or edge default must never cache geometry past a LADD flip
-    return JSONResponse(
-        {"flight_id": flight_id, "points": points, "provisional": provisional},
-        headers={"Cache-Control": "no-store"},
-    )
-
-
 def _path_cache_put(fid: int, points, now: float) -> None:
-    _path_cache[fid] = (now + PATH_CACHE_TTL_S, points, now)
-    if len(_path_cache) > PATH_CACHE_MAX:
-        # entries only age out on same-key hits, so a many-flight sweep would grow the dict unboundedly
-        for k in [k for k, v in _path_cache.items() if v[0] <= now]:
-            del _path_cache[k]
-        while len(_path_cache) > PATH_CACHE_MAX:
-            del _path_cache[min(_path_cache, key=lambda k: _path_cache[k][0])]
+    cache.put(_path_cache, fid, (now + PATH_CACHE_TTL_S, points, now), now, PATH_CACHE_MAX)
 
 
 def _est_cache_put(key, payload, now: float) -> None:
-    _est_cache[key] = (now + EST_CACHE_TTL_S, payload)
-    if len(_est_cache) > EST_CACHE_MAX:
-        # entries only age out on same-key hits, so a many-flight sweep would grow the dict unboundedly
-        for k in [k for k, v in _est_cache.items() if v[0] <= now]:
-            del _est_cache[k]
-        while len(_est_cache) > EST_CACHE_MAX:
-            del _est_cache[min(_est_cache, key=lambda k: _est_cache[k][0])]
+    cache.put(_est_cache, key, (now + EST_CACHE_TTL_S, payload), now, EST_CACHE_MAX)
 
 
 def _has_bridgeable_gap(points) -> bool:
@@ -449,48 +358,8 @@ def _stamp_route_plan(result, plan_ts) -> None:
             route["plan_ts"] = int(plan_ts)
 
 
-def _empty_estimate(flight_id, reason, provisional, as_of) -> dict:
-    return ess.build_response(
-        flight_id,
-        est.EstimateResult([], [{"kind": "all", "reason": reason}], []),
-        provisional,
-        as_of,
-    )
-
-
-def _empty_live_estimate(icao24: str) -> dict:
-    return ess.build_live_response(
-        icao24,
-        est.EstimateResult([], [{"kind": "all", "reason": "no_input"}], []),
-        0,
-    )
-
-
-def _live_anchor(row):
-    # alt_baro is the MV's string field: numeric text or the 'ground' sentinel (design §5)
-    raw = row.get("alt_baro")
-    on_ground = isinstance(raw, str) and raw.strip().lower() == "ground"
-    alt_ft = None
-    if not on_ground and raw is not None:
-        try:
-            alt_ft = float(raw)
-        except (TypeError, ValueError):
-            alt_ft = None
-    return (row["capture_ts"], row["lat"], row["lon"], alt_ft, int(on_ground),
-            row.get("gs"), row.get("track"), "live")
-
-
 def _enqueue_estimate_log(rows) -> None:
     _est_log_queue.put(rows)
-
-
-def _estimate_response(payload, estimate_id=None) -> JSONResponse:
-    headers = {"Cache-Control": "no-store"}
-    if estimate_id is not None:
-        # server-generated causal key for deploy verification (gate C queries these exact
-        # UUIDs); only on never-cached provisional/live successes — never settled/empty
-        headers["X-Estimate-Id"] = str(estimate_id)
-    return JSONResponse(payload, headers=headers)
 
 
 def _rw_rows(sql, params=None, cursor_factory=None):
@@ -625,13 +494,6 @@ def _fetch_flights(hex_: str) -> list:
     return out
 
 
-def _ladd_filter_flights(rows, suppress) -> list:
-    # Per-row callsign belt at serve time (around the CH cache): the hex is already cleared upstream, so drop only
-    # rows on a currently-listed callsign — a listing added after the flight escapes the window-scoped mart is_ladd.
-    return [r for r in rows
-            if not _is_ladd_suppressed(None, r.get("callsign"), mv_is_ladd=False, suppress=suppress)]
-
-
 def _valid_flight_id(fid: str) -> bool:
     # len cap MUST be first — it keeps int() under CPython's 4300-digit str->int limit (which raises ValueError,
     # and this runs outside the endpoint's try/except). UInt64 max is 20 digits.
@@ -713,124 +575,26 @@ def _fetch_route(callsign, start_time, end_time, origin_icao, dest_icao):
         return None
 
 
+# The sibling logic is config-free — these bind this module's env-derived settings and CH client
+# factory to it, resolved per call so a rebound factory or path takes effect immediately.
 def _fetch_path_head():
-    client = _ch_client()
-    try:
-        res = client.query(PATH_HEAD_QUERY)
-    finally:
-        client.close()
-    head = res.result_rows[0][0] if res.result_rows else None
-    # empty mart (max → NULL): everything is post-head — the fallback serves until the first build lands
-    return head or datetime.date(1970, 1, 1)
+    return pf.fetch_head(_ch_client)
 
 
 async def _get_path_head(now):
-    if _path_head["head"] is not None and _path_head["expiry"] > now:
-        return _path_head["head"]
-    try:
-        head = await asyncio.to_thread(_fetch_path_head)
-    except Exception as exc:
-        print(f"livemap path head fetch failed: {type(exc).__name__}: {exc}", flush=True)
-        return _path_head["head"]
-    _path_head["expiry"] = now + PATH_HEAD_TTL_S
-    _path_head["head"] = head
-    return head
-
-
-def _contest_keep(ts, fid, start_s, end_s, competitors) -> bool:
-    # Mart stage-1 in-process: each fix goes to the nearest unpadded-window midpoint among PADDED windows
-    # containing it, flight_id tiebreak — a total order, so no ordering ambiguity can flip a winner.
-    best = (abs(ts - (start_s + end_s) // 2), fid)
-    for cfid, cs, ce in competitors:
-        if cs - PATH_WINDOW_PAD_S <= ts <= ce + PATH_WINDOW_PAD_S:
-            cand = (abs(ts - (cs + ce) // 2), cfid)
-            if cand < best:
-                best = cand
-    return best[1] == fid
-
-
-def _fuse_points(rows) -> list:
-    # Mart stage-2: one row per whole second by src_rank then full-tuple total order, NULLS LAST like CH —
-    # a naive tuple sort mixing None and float raises, so nullable fields sort as (is None, value).
-    def key(r):
-        ts, rank, lat, lon, alt, gs, trk, og, _src = r
-        return (ts, rank, lat, lon, (alt is None, alt), (gs is None, gs), (trk is None, trk), og)
-
-    out, last_ts = [], None
-    for ts, _rank, lat, lon, alt, gs, trk, og, src in sorted(rows, key=key):
-        if ts == last_ts:
-            continue
-        last_ts = ts
-        out.append((ts, lat, lon, alt, int(og or 0), gs, trk, src))
-    return out
+    return await pf.get_head(now, _path_head, _fetch_path_head)
 
 
 def _fetch_provisional(fid, icao24, start_s, end_s):
-    # Raises on ANY stage failure — the endpoint catches to empty. A partial fusion must never masquerade as
-    # a complete path, and a failed competitor lookup must never read as "zero competitors".
-    win_lo, win_hi = start_s - PATH_WINDOW_PAD_S, end_s + PATH_WINDOW_PAD_S
-    utc = datetime.timezone.utc
-    day_lo = datetime.datetime.fromtimestamp(win_lo, tz=utc).date()
-    day_hi = datetime.datetime.fromtimestamp(win_hi, tz=utc).date()
-    one = datetime.timedelta(days=1)
-
-    def day_epoch(d):
-        return int(datetime.datetime.combine(d, datetime.time(), tzinfo=utc).timestamp())
-
-    client = _ch_client()
-    try:
-        comp = client.query(PATH_COMPETITOR_QUERY, parameters={
-            "hex": icao24, "fid": fid,
-            "ov_lo": start_s - 2 * PATH_WINDOW_PAD_S, "ov_hi": end_s + 2 * PATH_WINDOW_PAD_S,
-        }).result_rows
-        competitors = [(int(c), int(s), int(e)) for c, s, e in comp]
-        window = {"hex": icao24, "win_lo": win_lo, "win_hi": win_hi}
-        rows = []
-        for src, rank, query, params in (
-            ("adsb", 1, PROVISIONAL_ADSB_QUERY, {"day_lo": day_lo, "day_hi": day_hi}),
-            ("adsblol", 2, PROVISIONAL_ADSBLOL_QUERY, {"halo_lo": day_lo - one, "halo_hi": day_hi + one}),
-            ("opensky", 3, PROVISIONAL_OPENSKY_QUERY,
-             {"halo_lo": day_lo - one, "halo_hi": day_hi + one,
-              "broad_lo": day_epoch(day_lo - one), "broad_hi": day_epoch(day_hi + one) + 86400}),
-        ):
-            for ts, lat, lon, alt, og, gs, trk in client.query(query, parameters={**window, **params}).result_rows:
-                # defensive re-clip + null-geometry drop: the fusion contract owns them, not just the scans
-                if ts is None or lat is None or lon is None:
-                    continue
-                ts = int(ts)
-                if ts < win_lo or ts > win_hi:
-                    continue
-                rows.append((ts, rank, lat, lon, alt, gs, trk, int(og or 0), src))
-    finally:
-        client.close()
-    return _fuse_points([r for r in rows if _contest_keep(r[0], fid, start_s, end_s, competitors)])
-
-
-def _is_ladd_suppressed(hex_, callsign, mv_is_ladd, suppress) -> bool:
-    # Pure: True if the row is LADD-listed by the MV's db_flags bit OR by an open-interval hex/callsign identity.
-    # suppress None = the dim set never loaded; only the MV belt applies here (callers fail /track closed).
-    if mv_is_ladd:
-        return True
-    if suppress is None:
-        return False
-    h = (hex_ or "").strip().lower()
-    if h and h in suppress["hex"]:
-        return True
-    c = (callsign or "").strip().upper()
-    return bool(c and c in suppress["callsign"])
+    return pf.fetch_provisional(_ch_client, fid, icao24, start_s, end_s)
 
 
 def _should_refresh_ladd(state, tick) -> bool:
-    # None = never loaded: retry every poll tick until the first success closes the fail-open window (a host
-    # reboot boots livemap before CH is healthy). Once loaded (even empty) revert to the ~15-min cadence.
-    return state is None or tick % LADD_REFRESH_TICKS == 0
+    return ladd.should_refresh(state, tick, LADD_REFRESH_TICKS)
 
 
 def _track_belt_suppressed(hex_, now, mv_ladd_hexes) -> bool:
-    # Pure: /track can't see the MV is_ladd bit (mv_track_positions carries no dbFlags), so honor the live belt
-    # _fetch maintains — a hex dropped for mv_is_ladd within the last HISTORY_BUFFER_S.
-    ts = mv_ladd_hexes.get((hex_ or "").strip().lower())
-    return ts is not None and (now - ts) <= HISTORY_BUFFER_S
+    return ladd.track_belt_suppressed(hex_, now, mv_ladd_hexes, HISTORY_BUFFER_S)
 
 
 def _is_unknown_table_error(exc) -> bool:
@@ -893,63 +657,15 @@ async def _est_flusher() -> None:
 
 
 def _ladd_missing_table(exc) -> bool:
-    # Pre-deploy, dim.dim_ladd doesn't exist yet — expected cold-start, not an outage. Scope the UNKNOWN_TABLE
-    # signal to dim_ladd so any *other* missing relation still surfaces as a real error.
-    return "dim_ladd" in str(exc).lower() and _is_unknown_table_error(exc)
+    return ladd.missing_table(exc, _is_unknown_table_error)
 
 
 def _fetch_ladd_suppress() -> dict:
-    client = _ch_client()
-    try:
-        res = client.query(LADD_SUPPRESS_QUERY)
-    finally:
-        client.close()
-    hexes = {i.strip().lower() for i, _ in res.result_rows if i}
-    calls = {c.strip().upper() for _, c in res.result_rows if c}
-    return {"hex": frozenset(hexes), "callsign": frozenset(calls)}
+    return ladd.fetch_suppress(_ch_client)
 
 
 def _refresh_ladd_suppress(current):
-    # Graduated fail-closed: a real refresh error keeps the current state (None stays None -> the surfaces fail
-    # closed; a loaded set stays as-is). A MISSING dim_ladd is the pre-deploy state — a *successful* empty load,
-    # so None -> empty and live filtering resumes normal (belt-only) behavior.
-    try:
-        fresh = _fetch_ladd_suppress()
-    except Exception as exc:
-        if _ladd_missing_table(exc):
-            print(f"livemap ladd suppress: dim_ladd absent (pre-deploy) -> empty load: {exc}", flush=True)
-            return _EMPTY_SUPPRESS
-        print(f"livemap ladd suppress refresh kept current: {type(exc).__name__}: {exc}", flush=True)
-        return current
-    _cache_ladd_suppress(fresh)   # persist last-good so a cold-start restart reseeds instead of failing open
-    return fresh
-
-
-# value shape: ip -> (tokens, last_seen_ts)
-_rate_buckets: collections.OrderedDict = collections.OrderedDict()
-
-
-def _client_ip(request) -> str:
-    # Only Cloudflare can reach the public instance (tunnel-only ingress), so CF-Connecting-IP is the real
-    # client; fall back to the socket peer for a direct/local hit.
-    cf = request.headers.get("CF-Connecting-IP")
-    if cf:
-        return cf.strip()
-    return request.client.host if request.client else "unknown"
-
-
-def _rate_limit_allow(key, now, buckets, burst=RATE_LIMIT_BURST,
-                      refill=RATE_LIMIT_REFILL_PER_SEC, max_buckets=RATE_BUCKETS_MAX) -> bool:
-    tokens, last = buckets.pop(key, (burst, now))   # pop+reinsert = move-to-end, so dict order IS recency
-    tokens = min(burst, tokens + (now - last) * refill)
-    allowed = tokens >= 1.0
-    buckets[key] = (tokens - 1.0 if allowed else tokens, now)
-    # Hard LRU ceiling, O(1) per request: evicting the least-recently-seen bucket only re-grants that IP a
-    # fresh burst — acceptable for a backstop limiter, unlike unbounded growth plus a full-map scan per
-    # request under exactly the distributed load the limiter exists to absorb.
-    while len(buckets) > max_buckets:
-        del buckets[next(iter(buckets))]
-    return allowed
+    return ladd.refresh_suppress(current, _fetch_ladd_suppress, LADD_CACHE_PATH, _ladd_missing_table)
 
 
 async def _poller() -> None:
@@ -989,9 +705,9 @@ if PUBLIC_MODE:
     @app.middleware("http")
     async def _public_hardening(request, call_next):
         path = request.url.path
-        if path.startswith(RATE_LIMITED_PREFIXES) and not _rate_limit_allow(
+        if path.startswith(RATE_LIMITED_PREFIXES) and not rl.allow_request(
             # monotonic, not wall-clock: an NTP step backwards would make elapsed negative and over-deny
-            _client_ip(request), time.monotonic(), _rate_buckets
+            _client_ip(request), time.monotonic()
         ):
             # Generic body: the limit is rate-based, not identity-based, so a 429 can't be a privacy oracle.
             resp = JSONResponse({"detail": "rate limited"}, status_code=429)
@@ -1008,11 +724,6 @@ if PUBLIC_MODE:
             # rate-limit 429s bypass the endpoint's envelope — keep the every-response no-store belt intact
             resp.headers.setdefault("Cache-Control", "no-store")
         return resp
-
-
-@app.get("/aircraft")
-async def aircraft() -> JSONResponse:
-    return JSONResponse(_snapshot)
 
 
 def _ring_centroid(ring):
@@ -1033,71 +744,6 @@ def _ring_centroid(ring):
     if abs(a2) < 1e-9:
         return None
     return [cx / (3 * a2) / k, cy / (3 * a2)]
-
-
-@app.get("/range-outline")
-async def range_outline() -> JSONResponse:
-    # Public anchors at the coverage-outline centroid (Amit ruling 2026-07-24): a pure function
-    # of the already-served ring leaks nothing the polygon doesn't; the real receiver stays private.
-    if PUBLIC_MODE:
-        return JSONResponse({"center": _ring_centroid(_outline), "center_kind": "coverage",
-                             "ring": _outline})
-    return JSONResponse({"center": [FEEDER_LON, FEEDER_LAT], "center_kind": "receiver",
-                         "ring": _outline})
-
-
-@app.get("/track/{icao}")
-async def track(icao: str) -> JSONResponse:
-    # None state = suppression never loaded → fail closed for ALL hexes (this surface has no MV belt of its own).
-    if _ladd_suppress is None:
-        return JSONResponse({"hex": icao, "points": []})
-    # LADD: a currently-listed hex returns empty — indistinguishable from "no track", so no privacy oracle.
-    # Honor the dim identity set AND the live MV belt (mv_track_positions carries no dbFlags bit).
-    if _is_ladd_suppressed(icao, None, mv_is_ladd=False, suppress=_ladd_suppress) \
-            or _track_belt_suppressed(icao, time.time(), _mv_ladd_hexes):
-        return JSONResponse({"hex": icao, "points": []})
-    # psycopg2 is sync; offload like the poller. Clicks are rare — a per-click query is cheap.
-    try:
-        points = await asyncio.to_thread(_fetch_track, icao)
-    except Exception as exc:  # RW down → empty track; selection and wake still render
-        print(f"livemap track fetch failed: {exc}", flush=True)
-        points = []
-    # unknown hex → empty points, 200: absence is a normal state, never a 404
-    return JSONResponse({"hex": icao, "points": points})
-
-
-@app.get("/flights/{hex}")
-async def flights(hex: str) -> JSONResponse:
-    # recent origin→dest history from CH; on-click like /track, never polled. CH down → empty, never 500.
-    key = hex.lower()
-    # Live-set LADD gate runs per-request around the CH cache (the mart's is_ladd is batch-refreshed): a newly
-    # listed airframe would else keep serving history here while /aircraft, /track, /path already suppress it.
-    suppress = _ladd_suppress
-    # None = suppression never loaded → fail closed for every hex (mirrors /track); empty is indistinguishable
-    # from no-history, so no privacy oracle.
-    if suppress is None:
-        return JSONResponse({"hex": hex, "flights": []})
-    # Requested hex listed right now → empty before we read cache or touch CH, warm cache or not.
-    if _is_ladd_suppressed(key, None, mv_is_ladd=False, suppress=suppress):
-        return JSONResponse({"hex": hex, "flights": []})
-    now = time.time()
-    hit = _flights_cache.get(key)
-    if hit and hit[0] > now:
-        return JSONResponse({"hex": hex, "flights": _ladd_filter_flights(hit[1], suppress)})
-    try:
-        rows = await asyncio.to_thread(_fetch_flights, key)
-        _flights_cache[key] = (now + FLIGHTS_CACHE_TTL_S, rows)  # cache only successes
-        if len(_flights_cache) > FLIGHTS_CACHE_MAX:
-            # entries only age out on same-key hits, so a many-hex sweep would grow the dict unboundedly
-            for k in [k for k, v in _flights_cache.items() if v[0] <= now]:
-                del _flights_cache[k]
-            while len(_flights_cache) > FLIGHTS_CACHE_MAX:
-                del _flights_cache[min(_flights_cache, key=lambda k: _flights_cache[k][0])]
-    except Exception as exc:
-        # type name distinguishes a real CH outage from a bug the broad never-500 catch would mask
-        print(f"livemap flights fetch failed: {type(exc).__name__}: {exc}", flush=True)
-        rows = []
-    return JSONResponse({"hex": hex, "flights": _ladd_filter_flights(rows, suppress)})
 
 
 async def _load_path_input(flight_id: str) -> dict:
@@ -1161,189 +807,23 @@ async def _load_path_input(flight_id: str) -> dict:
     return result("provisional", points, auth, time.time())
 
 
-@app.get("/path/{flight_id}")
-async def path(flight_id: str) -> JSONResponse:
-    got = await _load_path_input(flight_id)
-    # provisional rides EVERY provisional-arm response, empty included — the client owns the n>0 logic
-    return _path_response(flight_id, _lean_points(got["points"]), got["status"] == "provisional")
+class _Ctx:
+    # Late binding: the router modules resolve every name here at call time, so a test (or a
+    # runtime rebind) that patches this module's attributes still steers the handlers.
+    def __init__(self, g):
+        object.__setattr__(self, "_g", g)
 
-
-@app.get("/path/{flight_id}/estimate")
-async def path_estimate(flight_id: str) -> JSONResponse:
-    got = await _load_path_input(flight_id)
-    if got["status"] == "denied":
-        return _estimate_response(_empty_estimate(flight_id, "no_input", False, 0))
-
-    fid = int(flight_id)
-    if got["status"] == "provisional":
+    def __getattr__(self, name):
         try:
-            od, flight = await asyncio.to_thread(_fetch_od, fid)
-        except Exception as exc:
-            print(f"livemap estimate O/D fetch failed: {type(exc).__name__}: {exc}", flush=True)
-            return _estimate_response(_empty_estimate(flight_id, "no_input", False, 0))
-        route_pts, plan_ts = await _route_prior(got["points"], flight)
-        fp = await asyncio.to_thread(ess.input_fingerprint, got["points"], od, route_pts, plan_ts)
-        r = await asyncio.to_thread(est.estimate, got["points"], od, route_pts=route_pts)
-        _stamp_route_plan(r, plan_ts)
-        # PR-3: provisional inputs are estimated and served, logged input_provisional=1, and
-        # NEVER cached — same invariant (and reason) as the rung-2 _path_cache bypass
-        payload = ess.build_response(flight_id, r, True, int(got["as_of"]))
-        eid = ess.new_estimate_id()
-        _enqueue_estimate_log(
-            ess.build_log_rows(
-                eid,
-                fid,
-                got["auth"][0],
-                r,
-                payload,
-                got["points"],
-                fp,
-                ess.utcnow(),
-                producer=EST_PRODUCER,
-            )
-        )
-        # the causal key rides only segments-bearing responses — empties stay header-uniform
-        return _estimate_response(payload, eid if payload["segments"] else None)
-
-    if got["status"] == "settled_empty":
-        r = est.estimate([], est.OD())
-        payload = ess.build_response(flight_id, r, False, int(got["as_of"]))
-        fp = ess.input_fingerprint([], est.OD(), None)
-        _enqueue_estimate_log(
-            ess.build_log_rows(
-                ess.new_estimate_id(),
-                fid,
-                got["auth"][0],
-                r,
-                payload,
-                [],
-                fp,
-                ess.utcnow(),
-                producer=EST_PRODUCER,
-            )
-        )
-        return _estimate_response(payload)
-
-    try:
-        od, flight = await asyncio.to_thread(_fetch_od, fid)
-    except Exception as exc:
-        print(f"livemap estimate O/D fetch failed: {type(exc).__name__}: {exc}", flush=True)
-        return _estimate_response(_empty_estimate(flight_id, "no_input", False, 0))
-
-    route_pts, plan_ts = await _route_prior(got["points"], flight)
-    fp = await asyncio.to_thread(ess.input_fingerprint, got["points"], od, route_pts, plan_ts)
-    key = (fid, fp, ess.METHOD_VERSION)
-    now = time.time()
-    hit = _est_cache.get(key)
-    if hit and hit[0] > now:
-        icao24, callsign, mart_ladd = got["auth"][:3]
-        if _is_ladd_suppressed(
-            icao24,
-            callsign,
-            mv_is_ladd=mart_ladd,
-            suppress=_ladd_suppress,
-        ):
-            return _estimate_response(_empty_estimate(flight_id, "no_input", False, 0))
-        # the canonical fid key makes 42/042 share an entry — echo the CALLER's spelling, not the seeder's
-        return _estimate_response({**hit[1], "flight_id": flight_id})
-
-    r = await asyncio.to_thread(est.estimate, got["points"], od, route_pts=route_pts)
-    _stamp_route_plan(r, plan_ts)
-    payload = ess.build_response(flight_id, r, False, int(got["as_of"]))
-    _est_cache_put(key, payload, now)
-    _enqueue_estimate_log(
-        ess.build_log_rows(
-            ess.new_estimate_id(),
-            fid,
-            got["auth"][0],
-            r,
-            payload,
-            got["points"],
-            fp,
-            ess.utcnow(),
-            producer=EST_PRODUCER,
-        )
-    )
-    return _estimate_response(payload)
+            return self._g[name]
+        except KeyError:
+            raise AttributeError(name) from None
 
 
-@app.get("/estimate/live/{icao24}")
-async def estimate_live(icao24: str) -> JSONResponse:
-    # Every denial — unknown, stale, aged, LADD, suppress-None, and computed non-results —
-    # serves this ONE shape; the truthful record of post-gate computations lives in the log only.
-    empty = _empty_live_estimate(icao24)
-    key = icao24.strip().lower()
-    if not _LIVE_HEX_RE.fullmatch(key):
-        return _estimate_response(empty)   # invalid input is a PRE-GATE denial (rev 9)
-    suppress = _ladd_suppress
-    if suppress is None:
-        return _estimate_response(empty)
-    now = time.time()
-    snap = _snapshot
-    if not (-EST_LIVE_FUTURE_SKEW_S <= now - snap["server_ts"] <= EST_LIVE_SNAP_FRESH_S):
-        return _estimate_response(empty)
-    row = next((a for a in snap["aircraft"] if (a.get("hex") or "").strip().lower() == key), None)
-    if row is None:
-        return _estimate_response(empty)
-    if _is_ladd_suppressed(key, row.get("flight"), mv_is_ladd=False, suppress=suppress) \
-            or _track_belt_suppressed(key, now, _mv_ladd_hexes):
-        return _estimate_response(empty)
-    ct = row.get("capture_ts")
-    # the chained comparison also rejects NaN ages (any comparison with NaN is False)
-    if ct is None or not (-EST_LIVE_FUTURE_SKEW_S <= now - ct <= EST_LIVE_MAX_AGE_S):
-        return _estimate_response(empty)
-    anchor = _live_anchor(row)
-    r = await asyncio.to_thread(est.estimate, [anchor], est.OD())
-    payload = ess.build_live_response(icao24, r, int(snap["server_ts"]))
-    # live DR carries no route prior (gap bridges only) — the fingerprint records its absence
-    fp = await asyncio.to_thread(ess.input_fingerprint, [anchor], est.OD(), None)
-    eid = ess.new_estimate_id()
-    _enqueue_estimate_log(
-        ess.build_log_rows(
-            eid,
-            None,
-            key,
-            r,
-            payload,
-            [anchor],
-            fp,
-            ess.utcnow(),
-            anchor_ts=anchor[0],
-            producer=EST_PRODUCER,
-        )
-    )
-    if not payload["segments"]:
-        return _estimate_response(empty)
-    return _estimate_response(payload, eid)
-
-
-@app.get("/history")
-async def history(s: float = 90.0) -> JSONResponse:
-    # clamp to the wake buffer — backfill serves the 90 s wake, never the full 30 min ring
-    s = min(s if s > 0 else 90.0, HISTORY_BUFFER_S)
-    cutoff = time.time() - s
-    snaps = [[ts, rows] for ts, rows in _track_buf if ts >= cutoff]
-    return JSONResponse({"snapshots": snaps})
-
-
-@app.get("/healthz")
-async def healthz() -> JSONResponse:
-    fresh = (time.time() - _snapshot["server_ts"]) < 10
-    payload = {
-        "ok": fresh,
-        "count": len(_snapshot["aircraft"]),
-        "server_ts": _snapshot["server_ts"],
-    }
-    # counters tick synchronously per enqueue and pre-gate denials never enqueue — public
-    # exposure would let callers bracket a probe and pierce the uniform denial wire (rev 10.2)
-    if not PUBLIC_MODE:
-        payload["est_log"] = {
-            "queued": _est_log_queue.groups,
-            "dropped": _est_log_queue.dropped,
-            "accepted": _est_log_queue.accepted,
-            "written": _est_log_queue.written,
-        }
-    return JSONResponse(payload, status_code=200 if fresh else 503)
+_ctx = _Ctx(globals())
+app.include_router(routes_live.build_router(_ctx))
+app.include_router(routes_aircraft.build_router(_ctx))
+app.include_router(routes_path.build_router(_ctx))
 
 
 # Header-less statics get heuristic-cached by browsers — a stale map.js once outlived its index.html
