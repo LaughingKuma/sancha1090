@@ -1,3 +1,6 @@
+import asyncio
+import collections
+import contextlib
 import importlib.util
 import json
 import re
@@ -104,6 +107,7 @@ def test_boot_seeds_from_cache_counts_as_loaded(tmp_path, monkeypatch):
     cache = tmp_path / "ladd_cache.json"
     cache.write_text(json.dumps({"hex": ["abc123"], "callsign": ["ANA1"]}))
     monkeypatch.setenv("LIVEMAP_LADD_CACHE_PATH", str(cache))
+    monkeypatch.setenv("LIVEMAP_PUBLIC_MODE", "1")   # suppression (and its boot seed) is public-only
     spec = importlib.util.spec_from_file_location("livemap_boot", REPO_ROOT / "livemap" / "app.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -115,6 +119,18 @@ def test_boot_seeds_from_cache_counts_as_loaded(tmp_path, monkeypatch):
     r = TestClient(mod.app).get("/track/CLEAN9")
     assert r.status_code == 200
     assert r.json() == {"hex": "CLEAN9", "points": [[1.0, 2.0, 3.0, 4]]}
+
+
+def test_private_boot_never_seeds_from_cache(tmp_path, monkeypatch):
+    cache = tmp_path / "ladd_cache.json"
+    cache.write_text(json.dumps({"hex": ["abc123"], "callsign": ["ANA1"]}))
+    monkeypatch.setenv("LIVEMAP_LADD_CACHE_PATH", str(cache))
+    monkeypatch.delenv("LIVEMAP_PUBLIC_MODE", raising=False)
+    spec = importlib.util.spec_from_file_location("livemap_boot_private", REPO_ROOT / "livemap" / "app.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # private suppresses nothing, so it never even reads the last-good disk cache
+    assert mod._ladd_suppress is None
 
 
 def test_refresh_error_keeps_current(livemap, monkeypatch):
@@ -158,66 +174,143 @@ def test_track_belt_suppressed_ttl(livemap):
     assert livemap._track_belt_suppressed("other", now, fresh) is False
 
 
-def test_fetch_drops_suppressed_rows_and_records_mv_belt(livemap, monkeypatch):
-    monkeypatch.setattr(livemap, "_ladd_suppress",
-                        {"hex": frozenset({"deadbe"}), "callsign": frozenset({"SECRET1"})})
-    monkeypatch.setattr(livemap, "_mv_ladd_hexes", {})
-    rows = [
-        {"capture_ts": None, "hex": "deadbe", "flight": "AAA1", "is_ladd": False, "nav_modes": None},     # hex
-        {"capture_ts": None, "hex": "abc123", "flight": "SECRET1 ", "is_ladd": False, "nav_modes": None},  # callsign
-        {"capture_ts": None, "hex": "beef00", "flight": "ANA55", "is_ladd": True, "nav_modes": None},      # MV flag
-        {"capture_ts": None, "hex": "cafe11", "flight": "JAL9", "is_ladd": False, "nav_modes": None},      # clean
-    ]
-    monkeypatch.setattr(livemap, "_rw_rows", lambda *_a, **_k: rows)
-    out = livemap._fetch()["aircraft"]
+MV_ROWS = [
+    {"capture_ts": None, "hex": "deadbe", "flight": "AAA1", "is_ladd": False, "nav_modes": None},      # hex
+    {"capture_ts": None, "hex": "abc123", "flight": "SECRET1 ", "is_ladd": False, "nav_modes": None},  # callsign
+    {"capture_ts": None, "hex": "beef00", "flight": "ANA55", "is_ladd": True, "nav_modes": None},      # MV flag
+    {"capture_ts": None, "hex": "cafe11", "flight": "JAL9", "is_ladd": False, "nav_modes": None},      # clean
+]
+LISTED = {"hex": frozenset({"deadbe"}), "callsign": frozenset({"SECRET1"})}
+
+
+def test_fetch_drops_suppressed_rows_and_records_mv_belt(livemap_public, monkeypatch):
+    monkeypatch.setattr(livemap_public, "_ladd_suppress", LISTED)
+    monkeypatch.setattr(livemap_public, "_mv_ladd_hexes", {})
+    monkeypatch.setattr(livemap_public, "_rw_rows", lambda *_a, **_k: [dict(r) for r in MV_ROWS])
+    out = livemap_public._fetch()["aircraft"]
     assert [a["hex"] for a in out] == ["cafe11"]
-    assert "is_ladd" not in out[0]                    # the flag must never ride the client payload
-    assert "beef00" in livemap._mv_ladd_hexes         # MV-belt drop recorded so /track can fail closed for it
+    assert "is_ladd" not in out[0]                        # the flag must never ride the client payload
+    assert "beef00" in livemap_public._mv_ladd_hexes      # MV-belt drop recorded so /track can fail closed for it
 
 
-def test_track_suppressed_hex_returns_empty_without_hitting_rw(livemap, monkeypatch):
-    monkeypatch.setattr(livemap, "_ladd_suppress", {"hex": frozenset({"abc123"}), "callsign": frozenset()})
-    monkeypatch.setattr(livemap, "_mv_ladd_hexes", {})
+def test_track_suppressed_hex_returns_empty_without_hitting_rw(livemap_public, monkeypatch):
+    monkeypatch.setattr(livemap_public, "_ladd_suppress",
+                        {"hex": frozenset({"abc123"}), "callsign": frozenset()})
+    monkeypatch.setattr(livemap_public, "_mv_ladd_hexes", {})
 
     def boom(_icao):
         raise AssertionError("a suppressed hex must not reach RW")
 
-    monkeypatch.setattr(livemap, "_fetch_track", boom)
-    r = TestClient(livemap.app).get("/track/ABC123")
+    monkeypatch.setattr(livemap_public, "_fetch_track", boom)
+    r = TestClient(livemap_public.app).get("/track/ABC123")
     assert r.status_code == 200
     assert r.json() == {"hex": "ABC123", "points": []}
 
 
-def test_track_belt_suppressed_hex_returns_empty_without_hitting_rw(livemap, monkeypatch):
+def test_track_belt_suppressed_hex_returns_empty_without_hitting_rw(livemap_public, monkeypatch):
     # loaded-but-empty dim set, yet the hex is on the live MV belt -> /track still fails closed
-    monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)
-    monkeypatch.setattr(livemap, "_mv_ladd_hexes", {"beef00": time.time()})
+    monkeypatch.setattr(livemap_public, "_ladd_suppress", livemap_public._EMPTY_SUPPRESS)
+    monkeypatch.setattr(livemap_public, "_mv_ladd_hexes", {"beef00": time.time()})
 
     def boom(_icao):
         raise AssertionError("a belt-suppressed hex must not reach RW")
 
-    monkeypatch.setattr(livemap, "_fetch_track", boom)
-    r = TestClient(livemap.app).get("/track/BEEF00")
+    monkeypatch.setattr(livemap_public, "_fetch_track", boom)
+    r = TestClient(livemap_public.app).get("/track/BEEF00")
     assert r.status_code == 200
     assert r.json() == {"hex": "BEEF00", "points": []}
 
 
-def test_track_none_state_fails_closed_for_all(livemap, monkeypatch):
-    monkeypatch.setattr(livemap, "_ladd_suppress", None)
+def test_track_none_state_fails_closed_for_all(livemap_public, monkeypatch):
+    monkeypatch.setattr(livemap_public, "_ladd_suppress", None)
 
     def boom(_icao):
         raise AssertionError("None-state /track must not reach RW")
 
-    monkeypatch.setattr(livemap, "_fetch_track", boom)
-    r = TestClient(livemap.app).get("/track/ANY999")
+    monkeypatch.setattr(livemap_public, "_fetch_track", boom)
+    r = TestClient(livemap_public.app).get("/track/ANY999")
     assert r.status_code == 200
     assert r.json() == {"hex": "ANY999", "points": []}
 
 
-def test_flights_query_excludes_ladd(livemap):
-    assert "is_ladd = 0" in livemap.FLIGHTS_QUERY   # window-aware mart flag filters history
+def test_flights_query_excludes_ladd(livemap_public):
+    assert "is_ladd = 0" in livemap_public.FLIGHTS_QUERY   # window-aware mart flag filters history
+
+
+def test_path_query_excludes_ladd(livemap_public):
+    assert "is_ladd = 0" in livemap_public.PATH_QUERY      # window-aware gate rides the subquery
 
 
 def test_aircraft_query_selects_is_ladd(livemap):
     m = re.search(r"SELECT(?P<sel>.*?)FROM\s+mv_current_aircraft", livemap.QUERY, flags=re.I | re.S)
     assert m and re.search(r"\bis_ladd\b", m.group("sel"), flags=re.I)
+
+
+# ---- private instance: LADD suppression is a PUBLIC obligation (ruling 2026-07-29). The LAN map must
+# ---- show every airframe the antenna receives; these pins block a silent re-unconditionalization. ----
+
+def test_private_fetch_keeps_listed_rows_and_still_hides_the_flag(livemap, monkeypatch):
+    monkeypatch.setattr(livemap, "_ladd_suppress", LISTED)
+    monkeypatch.setattr(livemap, "_mv_ladd_hexes", {})
+    monkeypatch.setattr(livemap, "_rw_rows", lambda *_a, **_k: [dict(r) for r in MV_ROWS])
+    out = livemap._fetch()["aircraft"]
+    assert [a["hex"] for a in out] == ["deadbe", "abc123", "beef00", "cafe11"]
+    assert all("is_ladd" not in a for a in out)   # wire shape stays identical: the flag never reaches clients
+    assert livemap._mv_ladd_hexes == {}           # no belt recorded — private has nothing to fail closed for
+
+
+def test_private_track_serves_listed_and_belted_hexes(livemap, monkeypatch):
+    monkeypatch.setattr(livemap, "_ladd_suppress", {"hex": frozenset({"abc123"}), "callsign": frozenset()})
+    monkeypatch.setattr(livemap, "_mv_ladd_hexes", {"abc123": time.time()})
+    monkeypatch.setattr(livemap, "_fetch_track", lambda _icao: [[1.0, 2.0, 3.0, 4]])
+    j = TestClient(livemap.app).get("/track/ABC123").json()
+    assert j == {"hex": "ABC123", "points": [[1.0, 2.0, 3.0, 4]]}
+
+
+def test_private_track_serves_with_suppress_never_loaded(livemap, monkeypatch):
+    # the sharpest edge: private never loads a set, so a None fail-closed would break /track forever
+    monkeypatch.setattr(livemap, "_ladd_suppress", None)
+    monkeypatch.setattr(livemap, "_mv_ladd_hexes", {})
+    monkeypatch.setattr(livemap, "_fetch_track", lambda _icao: [[1.0, 2.0, 3.0, 4]])
+    j = TestClient(livemap.app).get("/track/ANY999").json()
+    assert j == {"hex": "ANY999", "points": [[1.0, 2.0, 3.0, 4]]}
+
+
+def test_private_queries_carry_no_ladd_filter(livemap):
+    assert "is_ladd" not in livemap.FLIGHTS_QUERY
+    assert "is_ladd" not in livemap.PATH_QUERY
+    assert "{fid:UInt64}" in livemap.PATH_QUERY          # still a valid parameterized query
+    assert f"{livemap.CH_DB}.fct_flight_path" in livemap.PATH_QUERY
+
+
+def test_private_poller_never_reads_dim_ladd_nor_writes_cache(livemap, monkeypatch, tmp_path):
+    cache = tmp_path / "c.json"
+    calls = {"n": 0}
+
+    def counted():
+        calls["n"] += 1
+        return livemap._EMPTY_SUPPRESS
+
+    monkeypatch.setattr(livemap, "LADD_CACHE_PATH", str(cache))
+    monkeypatch.setattr(livemap, "_ladd_suppress", None)
+    monkeypatch.setattr(livemap, "_fetch_ladd_suppress", counted)
+    monkeypatch.setattr(livemap, "_fetch", lambda: {"server_ts": 1.0, "aircraft": []})
+    monkeypatch.setattr(livemap, "_fetch_outline", lambda: [])
+    monkeypatch.setattr(livemap, "_fetch_routes", lambda: {})
+    monkeypatch.setattr(livemap, "_track_buf", collections.deque(maxlen=4))
+    # the poller reassigns these module globals during the tick — register them so teardown restores them
+    monkeypatch.setattr(livemap, "_snapshot", livemap._snapshot)
+    monkeypatch.setattr(livemap, "_outline", livemap._outline)
+    monkeypatch.setattr(livemap, "_routes", livemap._routes)
+
+    async def one_tick():
+        task = asyncio.create_task(livemap._poller())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(one_tick())
+    assert calls["n"] == 0                 # dim_ladd is never read on the private instance
+    assert livemap._ladd_suppress is None  # ... so the set stays never-loaded, harmlessly
+    assert not cache.exists()              # ... and no last-good cache is written

@@ -100,17 +100,19 @@ def test_flights_cached_after_first_call(livemap, monkeypatch):
     assert calls["n"] == 1   # second request served from cache
 
 
-def test_flights_query_runs_against_live_ch(livemap, ch_cur):
+def test_flights_query_runs_against_live_ch(livemap, livemap_public, ch_cur):
     # busiest airframe → guaranteed history; ch_cur skips when CH is unreachable
     ch_cur.execute("SELECT icao24 FROM gold_ch.fact_flights GROUP BY icao24 ORDER BY count() DESC LIMIT 1")
     hex_ = ch_cur.fetchall()[0][0]
-    ch_cur.execute(livemap.FLIGHTS_QUERY, {"hex": hex_})
-    rows = ch_cur.fetchall()
-    assert len(rows) <= 10
-    tss = [r[1] for r in rows]                 # ts is the 2nd projected column
-    assert tss == sorted(tss, reverse=True)    # newest-first (the wrapped ORDER BY works)
-    # the filter admits ICAO-only rows, so the coalesce must surface a code on the side that has one
-    assert all(r[2] is not None or r[4] is not None for r in rows)
+    # both mode variants must stay executable — the LADD filter is the only difference between them
+    for query in (livemap.FLIGHTS_QUERY, livemap_public.FLIGHTS_QUERY):
+        ch_cur.execute(query, {"hex": hex_})
+        rows = ch_cur.fetchall()
+        assert len(rows) <= 10
+        tss = [r[1] for r in rows]                 # ts is the 2nd projected column
+        assert tss == sorted(tss, reverse=True)    # newest-first (the wrapped ORDER BY works)
+        # the filter admits ICAO-only rows, so the coalesce must surface a code on the side that has one
+        assert all(r[2] is not None or r[4] is not None for r in rows)
 
 
 def test_flights_cache_bounded(livemap, monkeypatch):
@@ -137,46 +139,81 @@ def test_flights_zero_cap_disables_cache_but_serves_rows(livemap, monkeypatch):
     assert livemap._flights_cache == {}   # cap 0 = cache disabled, loop still terminates
 
 
-def test_flights_none_state_fails_closed(livemap, monkeypatch):
+def test_flights_none_state_fails_closed(livemap_public, monkeypatch):
     # suppression never loaded → fail closed for every hex (mirrors /track), never reaching CH
-    monkeypatch.setattr(livemap, "_ladd_suppress", None)
-    monkeypatch.setattr(livemap, "_flights_cache", {})
+    monkeypatch.setattr(livemap_public, "_ladd_suppress", None)
+    monkeypatch.setattr(livemap_public, "_flights_cache", {})
 
     def boom(_h):
         raise AssertionError("None-state /flights must not reach CH")
 
-    monkeypatch.setattr(livemap, "_fetch_flights", boom)
-    r = TestClient(livemap.app).get("/flights/ABC123")
+    monkeypatch.setattr(livemap_public, "_fetch_flights", boom)
+    r = TestClient(livemap_public.app).get("/flights/ABC123")
     assert r.status_code == 200
     assert r.json() == {"hex": "ABC123", "flights": []}
 
 
-def test_flights_listed_hex_empty_even_when_cache_warm(livemap, monkeypatch):
+LISTED_ROW = {"src": "reconciled", "ts": 2.0, "origin": {"code": "HND", "name": "Tokyo"},
+              "dest": {"code": "HKG", "name": "Hong Kong"}, "callsign": "SECRET1 ", "flight_id": "2"}
+CLEAN_ROW = {"src": "reconciled", "ts": 1.0, "origin": {"code": "HND", "name": "Tokyo"},
+             "dest": {"code": "ITM", "name": "Osaka"}, "callsign": "ANA1", "flight_id": "1"}
+
+
+def test_flights_listed_hex_empty_even_when_cache_warm(livemap_public, monkeypatch):
     # a newly-listed hex yields empty even if the CH cache already holds its history — the live gate runs
     # before the cache read, and empty is indistinguishable from no-history (no privacy oracle).
     row = {"src": "reconciled", "ts": 1.0, "origin": {"code": "HND", "name": "Tokyo"},
            "dest": {"code": "HKG", "name": "Hong Kong"}, "callsign": "ANA1", "flight_id": "1"}
-    monkeypatch.setattr(livemap, "_flights_cache", {"abc123": (float("inf"), [row])})
-    monkeypatch.setattr(livemap, "_ladd_suppress", {"hex": frozenset({"abc123"}), "callsign": frozenset()})
+    monkeypatch.setattr(livemap_public, "_flights_cache", {"abc123": (float("inf"), [row])})
+    monkeypatch.setattr(livemap_public, "_ladd_suppress",
+                        {"hex": frozenset({"abc123"}), "callsign": frozenset()})
     monkeypatch.setattr(
-        livemap, "_fetch_flights",
+        livemap_public, "_fetch_flights",
         lambda _h: (_ for _ in ()).throw(AssertionError("a listed hex must not reach CH")),
     )
-    r = TestClient(livemap.app).get("/flights/ABC123")
+    r = TestClient(livemap_public.app).get("/flights/ABC123")
     assert r.status_code == 200
     assert r.json() == {"hex": "ABC123", "flights": []}
 
 
-def test_flights_listed_callsign_row_dropped_hex_clean(livemap, monkeypatch):
+def test_flights_listed_callsign_row_dropped_hex_clean(livemap_public, monkeypatch):
     # per-row callsign belt: the requested hex isn't listed, but one returned flight broadcast a currently-listed
     # callsign — drop only that row (trim+upper before match), keep the clean sibling.
+    monkeypatch.setattr(livemap_public, "_flights_cache", {})
+    monkeypatch.setattr(livemap_public, "_ladd_suppress",
+                        {"hex": frozenset(), "callsign": frozenset({"SECRET1"})})
+    monkeypatch.setattr(livemap_public, "_fetch_flights", lambda _h: [LISTED_ROW, CLEAN_ROW])
+    j = TestClient(livemap_public.app).get("/flights/abc123").json()
+    assert j == {"hex": "abc123", "flights": [CLEAN_ROW]}   # only the listed-callsign row is suppressed
+
+
+# ---- private instance: every airframe the antenna receives stays visible on the LAN map ----
+
+def test_private_flights_serves_listed_hex_and_callsign(livemap, monkeypatch):
     monkeypatch.setattr(livemap, "_flights_cache", {})
     monkeypatch.setattr(livemap, "_ladd_suppress",
-                        {"hex": frozenset(), "callsign": frozenset({"SECRET1"})})
-    listed = {"src": "reconciled", "ts": 2.0, "origin": {"code": "HND", "name": "Tokyo"},
-              "dest": {"code": "HKG", "name": "Hong Kong"}, "callsign": "SECRET1 ", "flight_id": "2"}
-    clean = {"src": "reconciled", "ts": 1.0, "origin": {"code": "HND", "name": "Tokyo"},
-             "dest": {"code": "ITM", "name": "Osaka"}, "callsign": "ANA1", "flight_id": "1"}
-    monkeypatch.setattr(livemap, "_fetch_flights", lambda _h: [listed, clean])
+                        {"hex": frozenset({"abc123"}), "callsign": frozenset({"SECRET1"})})
+    monkeypatch.setattr(livemap, "_fetch_flights", lambda _h: [LISTED_ROW, CLEAN_ROW])
     j = TestClient(livemap.app).get("/flights/abc123").json()
-    assert j == {"hex": "abc123", "flights": [clean]}   # only the listed-callsign row is suppressed
+    assert j == {"hex": "abc123", "flights": [LISTED_ROW, CLEAN_ROW]}   # neither gate nor per-row belt runs
+
+
+def test_private_flights_serves_when_suppress_never_loaded(livemap, monkeypatch):
+    monkeypatch.setattr(livemap, "_flights_cache", {})
+    monkeypatch.setattr(livemap, "_ladd_suppress", None)
+    monkeypatch.setattr(livemap, "_fetch_flights", lambda _h: [CLEAN_ROW])
+    j = TestClient(livemap.app).get("/flights/ABC123").json()
+    assert j == {"hex": "ABC123", "flights": [CLEAN_ROW]}
+
+
+def test_private_flights_cache_hit_serves_listed_callsign(livemap, monkeypatch):
+    # the belt also has to stay off the warm-cache return path, not just the fresh-fetch one
+    monkeypatch.setattr(livemap, "_flights_cache", {"abc123": (float("inf"), [LISTED_ROW])})
+    monkeypatch.setattr(livemap, "_ladd_suppress",
+                        {"hex": frozenset(), "callsign": frozenset({"SECRET1"})})
+    monkeypatch.setattr(
+        livemap, "_fetch_flights",
+        lambda _h: (_ for _ in ()).throw(AssertionError("a warm cache must not re-read CH")),
+    )
+    j = TestClient(livemap.app).get("/flights/abc123").json()
+    assert j == {"hex": "abc123", "flights": [LISTED_ROW]}

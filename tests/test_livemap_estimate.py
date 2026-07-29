@@ -16,16 +16,22 @@ def livemap():
     return mod
 
 
-@pytest.fixture(autouse=True)
-def allow_path_auth(livemap, monkeypatch):
-    monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)
+def _seed(mod, monkeypatch):
+    monkeypatch.setattr(mod, "_ladd_suppress", mod._EMPTY_SUPPRESS)
     monkeypatch.setattr(
-        livemap,
+        mod,
         "_fetch_path_auth",
         lambda _fid: ("abc123", "ANA1", False, 1765500000, 1765503600, datetime.date(2026, 6, 1)),
     )
     # Far-future head keeps the existing settled-path classification stable for this harness.
-    monkeypatch.setattr(livemap, "_path_head", {"expiry": float("inf"), "head": datetime.date(2100, 1, 1)})
+    monkeypatch.setattr(mod, "_path_head", {"expiry": float("inf"), "head": datetime.date(2100, 1, 1)})
+
+
+@pytest.fixture(autouse=True)
+def allow_path_auth(livemap, livemap_public, monkeypatch):
+    # both instances are seeded identically: the LADD tests differ only in which app they drive
+    _seed(livemap, monkeypatch)
+    _seed(livemap_public, monkeypatch)
 
 
 def test_fetch_od_maps_reconciled_row(livemap, monkeypatch):
@@ -337,22 +343,22 @@ def test_path_estimate_cache_hit_echoes_request_spelling(livemap, monkeypatch, s
     assert aliased["segments"] == seeded["segments"]   # same cached estimate, different echo
 
 
-def test_path_estimate_cache_hit_rechecks_ladd(livemap, monkeypatch):
+def test_path_estimate_cache_hit_rechecks_ladd(livemap_public, monkeypatch):
     state = {"result": _loader_result()}
 
     async def load(_flight_id):
         return state["result"]
 
-    monkeypatch.setattr(livemap, "_load_path_input", load)
-    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: (livemap.est.OD(), None))
-    monkeypatch.setattr(livemap, "_est_cache", {})
+    monkeypatch.setattr(livemap_public, "_load_path_input", load)
+    monkeypatch.setattr(livemap_public, "_fetch_od", lambda _fid: (livemap_public.est.OD(), None))
+    monkeypatch.setattr(livemap_public, "_est_cache", {})
     enqueued = []
-    monkeypatch.setattr(livemap, "_enqueue_estimate_log", enqueued.append)
-    client = TestClient(livemap.app)
+    monkeypatch.setattr(livemap_public, "_enqueue_estimate_log", enqueued.append)
+    client = TestClient(livemap_public.app)
     seeded = client.get("/path/42/estimate")
     assert seeded.json()["segments"]
 
-    monkeypatch.setattr(livemap, "_is_ladd_suppressed", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(livemap_public, "_is_ladd_suppressed", lambda *_args, **_kwargs: True)
     suppressed = client.get("/path/42/estimate")
     state["result"] = _loader_result(status="denied", points=[], auth=AUTH)
     denied = client.get("/path/42/estimate")
@@ -362,6 +368,21 @@ def test_path_estimate_cache_hit_rechecks_ladd(livemap, monkeypatch):
     _assert_no_store(seeded)
     _assert_no_store(suppressed)
     _assert_no_store(denied)
+
+
+def test_private_path_estimate_cache_hit_serves_listed_flight(livemap, monkeypatch):
+    # private has no re-check at all: a listed airframe keeps serving its cached estimate
+    _stub_loader(livemap, monkeypatch, _loader_result())
+    monkeypatch.setattr(livemap, "_fetch_od", lambda _fid: (livemap.est.OD(), None))
+    monkeypatch.setattr(livemap, "_enqueue_estimate_log", lambda _rows: None)
+    client = TestClient(livemap.app)
+    seeded = client.get("/path/42/estimate")
+    assert seeded.json()["segments"]
+
+    monkeypatch.setattr(livemap, "_is_ladd_suppressed", lambda *_args, **_kwargs: True)
+    hit = client.get("/path/42/estimate")
+
+    assert hit.json()["segments"] == seeded.json()["segments"]
 
 
 def test_est_flush_failure_drops_drained_group_count_from_health(livemap, monkeypatch):
@@ -575,9 +596,10 @@ def test_estimate_live_serves_single_dr_and_logs_with_anchor(livemap, monkeypatc
     _assert_no_store(response)
 
 
-def test_estimate_live_all_denials_are_byte_equal_and_pregate_unlogged(livemap, monkeypatch):
+def test_estimate_live_all_denials_are_byte_equal_and_pregate_unlogged(livemap_public, monkeypatch):
     # design §5: stale, on-ground, invalid, unknown, LADD, suppress-None -> ONE empty shape.
     # Ruling 1: only the post-gate computations (on-ground, invalid motion) leave log rows.
+    livemap = livemap_public   # the LADD arms are public-only; every other denial is mode-independent
     enqueued = []
     monkeypatch.setattr(livemap, "_enqueue_estimate_log", enqueued.append)
     client = TestClient(livemap.app)
@@ -617,19 +639,38 @@ def test_estimate_live_all_denials_are_byte_equal_and_pregate_unlogged(livemap, 
     assert all(len(g) == 1 for g in enqueued)                              # request row only
 
 
-def test_estimate_live_belt_suppressed_hex_denied_unlogged(livemap, monkeypatch):
-    now = livemap.time.time()
-    _live_snapshot(livemap, monkeypatch, row={})
-    monkeypatch.setattr(livemap, "_mv_ladd_hexes", {"abc123": now})
+def test_estimate_live_belt_suppressed_hex_denied_unlogged(livemap_public, monkeypatch):
+    now = livemap_public.time.time()
+    _live_snapshot(livemap_public, monkeypatch, row={})
+    monkeypatch.setattr(livemap_public, "_mv_ladd_hexes", {"abc123": now})
     enqueued = []
-    monkeypatch.setattr(livemap, "_enqueue_estimate_log", enqueued.append)
+    monkeypatch.setattr(livemap_public, "_enqueue_estimate_log", enqueued.append)
 
-    response = TestClient(livemap.app).get("/estimate/live/abc123")
+    response = TestClient(livemap_public.app).get("/estimate/live/abc123")
 
     assert response.json()["segments"] == []
     assert enqueued == []
     assert "x-estimate-id" not in response.headers
     _assert_no_store(response)
+
+
+# ---- private instance: live DR is served for listed airframes too ----
+
+def test_private_estimate_live_serves_listed_hex_belt_and_unloaded_state(livemap, monkeypatch):
+    now = livemap.time.time()
+    _live_snapshot(livemap, monkeypatch, row={})
+    monkeypatch.setattr(livemap, "_ladd_suppress",
+                        {"hex": frozenset({"abc123"}), "callsign": frozenset({"ANA1"})})
+    monkeypatch.setattr(livemap, "_mv_ladd_hexes", {"abc123": now})
+    monkeypatch.setattr(livemap, "_enqueue_estimate_log", lambda _rows: None)
+    client = TestClient(livemap.app)
+
+    listed = client.get("/estimate/live/abc123").json()
+    monkeypatch.setattr(livemap, "_ladd_suppress", None)   # never-loaded must not deny either
+    unloaded = client.get("/estimate/live/abc123").json()
+
+    assert [s["kind"] for s in listed["segments"]] == ["dr"]
+    assert [s["kind"] for s in unloaded["segments"]] == ["dr"]
 
 
 def test_estimate_live_malformed_hex_is_pregate_denied_even_when_present(livemap, monkeypatch):

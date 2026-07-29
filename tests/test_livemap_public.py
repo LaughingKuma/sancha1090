@@ -173,7 +173,8 @@ def test_private_no_aircraft_cache_header(private_app):
 
 
 def test_private_no_rate_limit(private_app, monkeypatch):
-    monkeypatch.setattr(private_app, "_ladd_suppress", None)
+    # private never suppresses, so /track reaches the RW read — stub it rather than dial the warehouse
+    monkeypatch.setattr(private_app, "_fetch_track", lambda _icao: [])
     client = TestClient(private_app.app)
     assert all(client.get("/track/ABC").status_code == 200 for _ in range(30))
 
@@ -230,8 +231,7 @@ def test_public_estimate_live_rate_limited_and_429_no_store(public_app, monkeypa
     assert "x-estimate-id" not in resps[10].headers
 
 
-def test_private_estimate_live_not_rate_limited(private_app, monkeypatch):
-    monkeypatch.setattr(private_app, "_ladd_suppress", None)
+def test_private_estimate_live_not_rate_limited(private_app):
     client = TestClient(private_app.app)
     assert all(client.get("/estimate/live/abc").status_code == 200 for _ in range(30))
 

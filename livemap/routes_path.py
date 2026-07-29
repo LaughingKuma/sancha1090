@@ -130,14 +130,16 @@ def build_router(ctx) -> APIRouter:
         now = time.time()
         hit = ctx._est_cache.get(key)
         if hit and hit[0] > now:
-            icao24, callsign, mart_ladd = got["auth"][:3]
-            if ctx._is_ladd_suppressed(
-                icao24,
-                callsign,
-                mv_is_ladd=mart_ladd,
-                suppress=ctx._ladd_suppress,
-            ):
-                return _estimate_response(_empty_estimate(ctx, flight_id, "no_input", False, 0))
+            # public-only re-check: private suppresses nothing, so a cache hit is always servable there
+            if ctx.PUBLIC_MODE:
+                icao24, callsign, mart_ladd = got["auth"][:3]
+                if ctx._is_ladd_suppressed(
+                    icao24,
+                    callsign,
+                    mv_is_ladd=mart_ladd,
+                    suppress=ctx._ladd_suppress,
+                ):
+                    return _estimate_response(_empty_estimate(ctx, flight_id, "no_input", False, 0))
             # the canonical fid key makes 42/042 share an entry — echo the CALLER's spelling, not the seeder's
             return _estimate_response({**hit[1], "flight_id": flight_id})
 
@@ -169,7 +171,8 @@ def build_router(ctx) -> APIRouter:
         if not ctx._LIVE_HEX_RE.fullmatch(key):
             return _estimate_response(empty)   # invalid input is a PRE-GATE denial (rev 9)
         suppress = ctx._ladd_suppress
-        if suppress is None:
+        # public-only fail-closed: private never loads a set, so the None check would deny every request
+        if ctx.PUBLIC_MODE and suppress is None:
             return _estimate_response(empty)
         now = time.time()
         snap = ctx._snapshot
@@ -178,8 +181,10 @@ def build_router(ctx) -> APIRouter:
         row = next((a for a in snap["aircraft"] if (a.get("hex") or "").strip().lower() == key), None)
         if row is None:
             return _estimate_response(empty)
-        if ctx._is_ladd_suppressed(key, row.get("flight"), mv_is_ladd=False, suppress=suppress) \
-                or ctx._track_belt_suppressed(key, now, ctx._mv_ladd_hexes):
+        if ctx.PUBLIC_MODE and (
+            ctx._is_ladd_suppressed(key, row.get("flight"), mv_is_ladd=False, suppress=suppress)
+            or ctx._track_belt_suppressed(key, now, ctx._mv_ladd_hexes)
+        ):
             return _estimate_response(empty)
         ct = row.get("capture_ts")
         # the chained comparison also rejects NaN ages (any comparison with NaN is False)

@@ -20,21 +20,27 @@ def livemap():
     return mod
 
 
-@pytest.fixture(autouse=True)
-def base(livemap, monkeypatch):
-    original = livemap._fetch_provisional
-    monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)
-    monkeypatch.setattr(livemap, "_path_cache", {})
+def _seed(mod, monkeypatch):
+    monkeypatch.setattr(mod, "_ladd_suppress", mod._EMPTY_SUPPRESS)
+    monkeypatch.setattr(mod, "_path_cache", {})
     monkeypatch.setattr(
-        livemap, "_fetch_path_auth",
+        mod, "_fetch_path_auth",
         lambda _fid: ("abc123", "ANA1", False, START_S, END_S, START_DAY),
     )
-    monkeypatch.setattr(livemap, "_fetch_path_rich", lambda _fid: [])
-    monkeypatch.setattr(livemap, "_path_head", {"expiry": float("inf"), "head": HEAD_BEFORE})
+    monkeypatch.setattr(mod, "_fetch_path_rich", lambda _fid: [])
+    monkeypatch.setattr(mod, "_path_head", {"expiry": float("inf"), "head": HEAD_BEFORE})
     monkeypatch.setattr(
-        livemap, "_fetch_provisional",
+        mod, "_fetch_provisional",
         lambda *_a: (_ for _ in ()).throw(AssertionError("test must stub _fetch_provisional explicitly")),
     )
+
+
+@pytest.fixture(autouse=True)
+def base(livemap, livemap_public, monkeypatch):
+    # both instances are seeded identically: the LADD tests differ only in which app they drive
+    original = livemap._fetch_provisional
+    _seed(livemap, monkeypatch)
+    _seed(livemap_public, monkeypatch)
     return original
 
 
@@ -197,36 +203,55 @@ def test_provisional_failure_fails_closed(livemap, monkeypatch):
     assert livemap._path_cache == {}
 
 
-def test_ladd_mart_bit_blocks_provisional(livemap, monkeypatch):
-    monkeypatch.setattr(livemap, "_fetch_path_auth",
+def test_ladd_mart_bit_blocks_provisional(livemap_public, monkeypatch):
+    monkeypatch.setattr(livemap_public, "_fetch_path_auth",
                         lambda _fid: ("abc123", "ANA1", True, START_S, END_S, START_DAY))
-    monkeypatch.setattr(livemap, "_fetch_provisional",
+    monkeypatch.setattr(livemap_public, "_fetch_provisional",
                         lambda *_a: (_ for _ in ()).throw(AssertionError("suppressed must not fetch")))
-    r = _get(livemap)
+    r = _get(livemap_public)
     assert r.json() == {"flight_id": "42", "points": [], "provisional": False}
     assert r.headers["cache-control"] == "no-store"   # the suppressed branch asserts no-store too
 
 
-def test_ladd_live_hex_blocks_provisional(livemap, monkeypatch):
-    monkeypatch.setattr(livemap, "_ladd_suppress", {"hex": frozenset({"abc123"}), "callsign": frozenset()})
-    monkeypatch.setattr(livemap, "_fetch_provisional",
+def test_ladd_live_hex_blocks_provisional(livemap_public, monkeypatch):
+    monkeypatch.setattr(livemap_public, "_ladd_suppress",
+                        {"hex": frozenset({"abc123"}), "callsign": frozenset()})
+    monkeypatch.setattr(livemap_public, "_fetch_provisional",
                         lambda *_a: (_ for _ in ()).throw(AssertionError("suppressed must not fetch")))
-    assert _get(livemap).json() == {"flight_id": "42", "points": [], "provisional": False}
+    assert _get(livemap_public).json() == {"flight_id": "42", "points": [], "provisional": False}
 
 
-def test_ladd_live_callsign_only_blocks_provisional(livemap, monkeypatch):
+def test_ladd_live_callsign_only_blocks_provisional(livemap_public, monkeypatch):
     # the 47k-row class: LADD rows with callsign but no hex — a hex-only belt silently drops two-thirds
-    monkeypatch.setattr(livemap, "_ladd_suppress", {"hex": frozenset(), "callsign": frozenset({"ANA1"})})
-    monkeypatch.setattr(livemap, "_fetch_provisional",
+    monkeypatch.setattr(livemap_public, "_ladd_suppress",
+                        {"hex": frozenset(), "callsign": frozenset({"ANA1"})})
+    monkeypatch.setattr(livemap_public, "_fetch_provisional",
                         lambda *_a: (_ for _ in ()).throw(AssertionError("suppressed must not fetch")))
-    assert _get(livemap).json() == {"flight_id": "42", "points": [], "provisional": False}
+    assert _get(livemap_public).json() == {"flight_id": "42", "points": [], "provisional": False}
 
 
-def test_ladd_never_loaded_blocks_provisional(livemap, monkeypatch):
-    monkeypatch.setattr(livemap, "_ladd_suppress", None)
-    monkeypatch.setattr(livemap, "_fetch_provisional",
+def test_ladd_never_loaded_blocks_provisional(livemap_public, monkeypatch):
+    monkeypatch.setattr(livemap_public, "_ladd_suppress", None)
+    monkeypatch.setattr(livemap_public, "_fetch_provisional",
                         lambda *_a: (_ for _ in ()).throw(AssertionError("must fail closed before auth")))
-    assert _get(livemap).json() == {"flight_id": "42", "points": [], "provisional": False}
+    assert _get(livemap_public).json() == {"flight_id": "42", "points": [], "provisional": False}
+
+
+# ---- private instance: the provisional arm serves listed airframes too ----
+
+def test_private_serves_provisional_for_listed_airframe(livemap, monkeypatch):
+    monkeypatch.setattr(livemap, "_fetch_path_auth",
+                        lambda _fid: ("abc123", "ANA1", True, START_S, END_S, START_DAY))
+    monkeypatch.setattr(livemap, "_ladd_suppress",
+                        {"hex": frozenset({"abc123"}), "callsign": frozenset({"ANA1"})})
+    monkeypatch.setattr(livemap, "_fetch_provisional", lambda *_a: RICH_PTS)
+    assert _get(livemap).json() == {"flight_id": "42", "points": PTS, "provisional": True}
+
+
+def test_private_serves_provisional_with_suppress_never_loaded(livemap, monkeypatch):
+    monkeypatch.setattr(livemap, "_ladd_suppress", None)
+    monkeypatch.setattr(livemap, "_fetch_provisional", lambda *_a: RICH_PTS)
+    assert _get(livemap).json() == {"flight_id": "42", "points": PTS, "provisional": True}
 
 
 class _StageClient:

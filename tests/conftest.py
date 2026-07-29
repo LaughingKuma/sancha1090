@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 
@@ -83,6 +84,45 @@ def ch_cur():
         yield _Cur(client)
     finally:
         client.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _private_default_env():
+    # The private-mode spec loads scattered across test files must not inherit an ambient
+    # LIVEMAP_PUBLIC_MODE (e.g. tests run inside the public container) — the inverse pins would silently flip.
+    os.environ.pop("LIVEMAP_PUBLIC_MODE", None)
+
+
+@pytest.fixture(scope="module")
+def livemap_public_mod():
+    # LADD serve-time suppression is a PUBLIC-instance obligation, and PUBLIC_MODE is read from env at import —
+    # so the public sidecar must be spec-loaded with the env set. os.environ, not monkeypatch: the latter is
+    # function-scoped and cannot back a module-scoped fixture. A nonexistent cache path keeps the boot seed
+    # deterministic (no stray container cache steering the tests).
+    env = {"LIVEMAP_PUBLIC_MODE": "1", "LIVEMAP_LADD_CACHE_PATH": "/nonexistent/ladd_cache.json"}
+    prev = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "livemap_app_public", REPO_ROOT / "livemap" / "app.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        for key, value in prev.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    return mod
+
+
+@pytest.fixture
+def livemap_public(livemap_public_mod):
+    # Public mode registers the per-IP limiter and its buckets are per-instance state — clear them so
+    # unrelated tests sharing this module-scoped app can't drain each other's burst into 429s.
+    livemap_public_mod.rl._buckets.clear()
+    return livemap_public_mod
 
 
 @pytest.fixture

@@ -133,26 +133,31 @@ TRACK_QUERY = """
 # "Where else has it been": one clean source now — the reconciled consensus mart (SP2) carries
 # resolved O/D + endpoint geo + provenance, so no read-time fact_flights/legs UNION or watermark.
 # flight_id is cityHash64 → UInt64; toString keeps it exact (JS Number can't hold it) and keys /path.
+# LADD serve-time suppression is a PUBLIC-instance obligation (Amit ruling 2026-07-29) — the private LAN
+# instance shows every airframe the antenna receives, so both mart-flag filters are selected at import.
+_FLIGHTS_LADD_FILTER = "AND is_ladd = 0 " if PUBLIC_MODE else ""
+_PATH_LADD_GATE = f"""
+      AND flight_id IN (
+        SELECT flight_id FROM {CH_DB}.fct_flights_reconciled
+        WHERE flight_id = {{fid:UInt64}} AND is_ladd = 0
+      )""" if PUBLIC_MODE else ""
+
 FLIGHTS_QUERY = f"""
     SELECT 'reconciled' AS src, end_time AS ts,
            coalesce(origin_iata, origin_icao) AS o_code, coalesce(origin_city, origin_name) AS o_name,
            coalesce(dest_iata,   dest_icao)   AS d_code, coalesce(dest_city,   dest_name)   AS d_name, callsign,
            toString(flight_id) AS flight_id
     FROM {CH_DB}.fct_flights_reconciled
-    WHERE icao24 = {{hex:String}} AND is_ladd = 0 AND (origin_icao IS NOT NULL OR dest_icao IS NOT NULL)
+    WHERE icao24 = {{hex:String}} {_FLIGHTS_LADD_FILTER}AND (origin_icao IS NOT NULL OR dest_icao IS NOT NULL)
     ORDER BY ts DESC LIMIT 10
 """
 
-# Historical fused trajectory for one reconciled flight; LADD suppression rides the is_ladd=0 subquery
-# (window-aware) so a listed flight yields zero rows — indistinguishable from no-path, no privacy oracle.
+# Historical fused trajectory for one reconciled flight; on public, LADD suppression rides the is_ladd=0
+# subquery (window-aware) so a listed flight yields zero rows — indistinguishable from no-path, no oracle.
 PATH_QUERY = f"""
     SELECT toUnixTimestamp(ts), lat, lon, alt_ft, on_ground, gs_kt, track_deg, source
     FROM {CH_DB}.fct_flight_path
-    WHERE flight_id = {{fid:UInt64}}
-      AND flight_id IN (
-        SELECT flight_id FROM {CH_DB}.fct_flights_reconciled
-        WHERE flight_id = {{fid:UInt64}} AND is_ladd = 0
-      )
+    WHERE flight_id = {{fid:UInt64}}{_PATH_LADD_GATE}
     ORDER BY ts
 """
 
@@ -250,12 +255,12 @@ _routes: dict = {}
 # (server_ts, [[hex, lon, lat, capture_ts, alt_baro], ...]) per successful poll; in-process
 # is fine now — a restart refills the full wake window in ~2 min
 _track_buf: collections.deque = collections.deque(maxlen=max(1, int(HISTORY_BUFFER_S / POLL_SECONDS)))
-# None = never loaded (fails /track closed, logs once); empty frozensets = a real, loaded, currently-empty list.
-# Boot-seeded from the last-good disk cache so a restart during a CH cold start resumes dim filtering, not None.
-_ladd_suppress: dict | None = _read_ladd_cache(LADD_CACHE_PATH)
+# None = never loaded (public fails /track closed, logs once); empty frozensets = a real loaded-empty list.
+# Public boot-seeds from the last-good disk cache; private never suppresses, so it never loads the set at all.
+_ladd_suppress: dict | None = _read_ladd_cache(LADD_CACHE_PATH) if PUBLIC_MODE else None
 _ladd_none_warned: bool = False
-# Hexes _fetch dropped for the MV's is_ladd bit, keyed to the time last seen. mv_track_positions carries no
-# dbFlags, so /track fails closed on a hex still in this TTL'd set (retained for HISTORY_BUFFER_S).
+# Hexes _fetch dropped for the MV's is_ladd bit (public only — stays empty on private), keyed to time last
+# seen; mv_track_positions carries no dbFlags, so public /track fails closed on a hex still in this TTL'd set.
 _mv_ladd_hexes: dict = {}
 # /flights is on-click + rarely changing (the reconciled mart is batch) — cache per hex.
 _flights_cache: dict = {}
@@ -382,7 +387,7 @@ def _fetch() -> dict:
     now = time.time()
     rows = _rw_rows(QUERY, cursor_factory=psycopg2.extras.RealDictCursor)
     suppress = _ladd_suppress
-    if suppress is None and not _ladd_none_warned:
+    if PUBLIC_MODE and suppress is None and not _ladd_none_warned:
         # Visible-once window: /aircraft leans on the MV is_ladd belt below; /track fails closed until loaded.
         print("livemap ladd suppress: not loaded yet -> /aircraft on MV belt, /track fail-closed", flush=True)
         _ladd_none_warned = True
@@ -393,17 +398,18 @@ def _fetch() -> dict:
         a["capture_ts"] = ct.timestamp() if ct is not None else None
         flight = (a["flight"] or "").strip() or None
         a["flight"] = flight
-        # LADD: drop currently-listed airframes before they reach any client (belt to the mart's flag).
-        # pop so the flag never rides the payload; .get/.pop tolerate a partial row (test doubles).
+        # pop in BOTH modes so the flag never rides the payload; .get/.pop tolerate a partial row (test doubles).
         mv_is_ladd = a.pop("is_ladd", None)
         hex_ = a.get("hex")
-        if mv_is_ladd:
-            # record the belt-suppressed hex so /track (dbFlags-blind) can also fail closed for it
-            h = (hex_ or "").strip().lower()
-            if h:
-                _mv_ladd_hexes[h] = now
-        if _is_ladd_suppressed(hex_, flight, mv_is_ladd=mv_is_ladd, suppress=suppress):
-            continue
+        if PUBLIC_MODE:
+            # LADD: drop currently-listed airframes before they reach any client (belt to the mart's flag).
+            if mv_is_ladd:
+                # record the belt-suppressed hex so /track (dbFlags-blind) can also fail closed for it
+                h = (hex_ or "").strip().lower()
+                if h:
+                    _mv_ladd_hexes[h] = now
+            if _is_ladd_suppressed(hex_, flight, mv_is_ladd=mv_is_ladd, suppress=suppress):
+                continue
         a["route"] = _routes.get(flight)
         # jsonb arrives as JSON text over pgwire — coerce to a list (or None); never raise
         nm = a.get("nav_modes")
@@ -673,8 +679,9 @@ async def _poller() -> None:
     n = 0
     while True:
         try:
-            # refresh the suppression set before _fetch so even the first snapshot is already filtered
-            if _should_refresh_ladd(_ladd_suppress, n):
+            # refresh the suppression set before _fetch so even the first snapshot is already filtered;
+            # private suppresses nothing, so it never reads dim_ladd nor the disk cache
+            if PUBLIC_MODE and _should_refresh_ladd(_ladd_suppress, n):
                 _ladd_suppress = await asyncio.to_thread(_refresh_ladd_suppress, _ladd_suppress)
             # psycopg2 is sync; offload so the ~1s query never blocks the event loop
             _snapshot = await asyncio.to_thread(_fetch)
@@ -755,7 +762,8 @@ async def _load_path_input(flight_id: str) -> dict:
     if not _valid_flight_id(flight_id):
         return result("denied", [], None, time.time())
     suppress = _ladd_suppress
-    if suppress is None:
+    # Public-only obligation: private serves every airframe, so it never fails closed on an unloaded set.
+    if PUBLIC_MODE and suppress is None:
         return result("denied", [], None, time.time())
     try:
         auth = await asyncio.to_thread(_fetch_path_auth, flight_id)
@@ -765,7 +773,7 @@ async def _load_path_input(flight_id: str) -> dict:
     if auth is None:
         return result("denied", [], None, time.time())
     icao24, callsign, mart_ladd, start_s, end_s, start_day = auth
-    if _is_ladd_suppressed(icao24, callsign, mv_is_ladd=mart_ladd, suppress=suppress):
+    if PUBLIC_MODE and _is_ladd_suppressed(icao24, callsign, mv_is_ladd=mart_ladd, suppress=suppress):
         return result("denied", [], auth, time.time())
     fid = int(flight_id)  # canonical cache key: leading-zero aliases must not mint distinct entries
     now = time.time()

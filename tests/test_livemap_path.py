@@ -16,26 +16,32 @@ def livemap():
     return mod
 
 
-@pytest.fixture(autouse=True)
-def allow_path_auth(livemap, monkeypatch):
-    original = livemap._fetch_path_auth
-    monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)
+def _seed(mod, monkeypatch):
+    monkeypatch.setattr(mod, "_ladd_suppress", mod._EMPTY_SUPPRESS)
     monkeypatch.setattr(
-        livemap, "_fetch_path_auth",
+        mod, "_fetch_path_auth",
         lambda _fid: ("abc123", "ANA1", False, 1765500000, 1765503600, datetime.date(2026, 6, 1)),
     )
     # far-future head classifies every flight historical, preserving today's settled-arm semantics
-    monkeypatch.setattr(livemap, "_path_head", {"expiry": float("inf"), "head": datetime.date(2100, 1, 1)})
+    monkeypatch.setattr(mod, "_path_head", {"expiry": float("inf"), "head": datetime.date(2100, 1, 1)})
+
+
+@pytest.fixture(autouse=True)
+def allow_path_auth(livemap, livemap_public, monkeypatch):
+    # both instances are seeded identically: the LADD tests differ only in which app they drive
+    original = livemap._fetch_path_auth
+    _seed(livemap, monkeypatch)
+    _seed(livemap_public, monkeypatch)
     return original
 
 
-def test_path_query_shape(livemap):
-    q = livemap.PATH_QUERY
+def test_path_query_shape(livemap_public):
+    q = livemap_public.PATH_QUERY
     # schema comes from LIVEMAP_CH_DB so the env knob really governs the query, not just the client
-    assert f"{livemap.CH_DB}.fct_flight_path" in q
-    assert "{fid:UInt64}" in q                                  # parameterized, never interpolated
-    assert f"{livemap.CH_DB}.fct_flights_reconciled" in q       # LADD gate joins the reconciled mart
-    assert "is_ladd = 0" in q                                   # window-aware suppression rides the subquery
+    assert f"{livemap_public.CH_DB}.fct_flight_path" in q
+    assert "{fid:UInt64}" in q                                        # parameterized, never interpolated
+    assert f"{livemap_public.CH_DB}.fct_flights_reconciled" in q      # LADD gate joins the reconciled mart
+    assert "is_ladd = 0" in q                                         # window-aware suppression in the subquery
     assert "ORDER BY ts" in q
 
 
@@ -147,42 +153,70 @@ def test_path_points_passthrough(livemap, monkeypatch):
     assert j == {"flight_id": "42", "points": pts, "provisional": False}
 
 
-def test_path_ladd_suppressed_returns_empty(livemap, monkeypatch):
+def test_path_ladd_suppressed_returns_empty(livemap_public, monkeypatch):
     # Current open-list authorization runs before both the trajectory query and any geometry-cache hit.
-    monkeypatch.setattr(livemap, "_path_cache", {})
+    monkeypatch.setattr(livemap_public, "_path_cache", {})
     monkeypatch.setattr(
-        livemap,
+        livemap_public,
         "_ladd_suppress",
         {"hex": frozenset({"abc123"}), "callsign": frozenset()},
     )
     monkeypatch.setattr(
-        livemap,
+        livemap_public,
         "_fetch_path_rich",
         lambda _fid: (_ for _ in ()).throw(AssertionError("suppressed path must not be fetched")),
     )
-    r = TestClient(livemap.app).get("/path/42")
+    r = TestClient(livemap_public.app).get("/path/42")
     assert r.status_code == 200
     assert r.json() == {"flight_id": "42", "points": [], "provisional": False}
 
 
-def test_path_mart_ladd_flag_suppresses_cached_geometry(livemap, monkeypatch):
+def test_path_mart_ladd_flag_suppresses_cached_geometry(livemap_public, monkeypatch):
     rich = [(1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb")]
-    monkeypatch.setattr(livemap, "_path_cache", {42: (float("inf"), rich, 123.0)})
+    monkeypatch.setattr(livemap_public, "_path_cache", {42: (float("inf"), rich, 123.0)})
+    monkeypatch.setattr(
+        livemap_public, "_fetch_path_auth",
+        lambda _fid: ("abc123", "ANA1", True, 1765500000, 1765503600, datetime.date(2026, 6, 1)),
+    )
+    assert TestClient(livemap_public.app).get("/path/42").json()["points"] == []
+
+
+def test_path_unloaded_ladd_state_fails_closed_before_query(livemap_public, monkeypatch):
+    monkeypatch.setattr(livemap_public, "_ladd_suppress", None)
+    monkeypatch.setattr(
+        livemap_public,
+        "_fetch_path_auth",
+        lambda _fid: (_ for _ in ()).throw(AssertionError("auth must not run before LADD loads")),
+    )
+    assert TestClient(livemap_public.app).get("/path/42").json()["points"] == []
+
+
+# ---- private instance: the LAN map keeps every trajectory, listed or not ----
+
+def test_private_path_serves_mart_flagged_flight(livemap, monkeypatch):
+    rich = [(1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb")]
+    pts = [[139.7, 35.6, 1765500000, 38000.0, "adsb"]]
+    monkeypatch.setattr(livemap, "_path_cache", {})
     monkeypatch.setattr(
         livemap, "_fetch_path_auth",
         lambda _fid: ("abc123", "ANA1", True, 1765500000, 1765503600, datetime.date(2026, 6, 1)),
     )
-    assert TestClient(livemap.app).get("/path/42").json()["points"] == []
+    monkeypatch.setattr(livemap, "_fetch_path_rich", lambda _fid: rich)
+    r = TestClient(livemap.app).get("/path/42")
+    assert r.json() == {"flight_id": "42", "points": pts, "provisional": False}
+    assert r.headers["cache-control"] == "no-store"   # the envelope is mode-independent
 
 
-def test_path_unloaded_ladd_state_fails_closed_before_query(livemap, monkeypatch):
-    monkeypatch.setattr(livemap, "_ladd_suppress", None)
-    monkeypatch.setattr(
-        livemap,
-        "_fetch_path_auth",
-        lambda _fid: (_ for _ in ()).throw(AssertionError("auth must not run before LADD loads")),
-    )
-    assert TestClient(livemap.app).get("/path/42").json()["points"] == []
+def test_private_path_serves_listed_hex_and_unloaded_state(livemap, monkeypatch):
+    rich = [(1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb")]
+    monkeypatch.setattr(livemap, "_path_cache", {})
+    monkeypatch.setattr(livemap, "_fetch_path_rich", lambda _fid: rich)
+    monkeypatch.setattr(livemap, "_ladd_suppress",
+                        {"hex": frozenset({"abc123"}), "callsign": frozenset({"ANA1"})})
+    assert TestClient(livemap.app).get("/path/42").json()["points"] != []
+    monkeypatch.setattr(livemap, "_ladd_suppress", None)   # never-loaded must not fail closed here either
+    monkeypatch.setattr(livemap, "_path_cache", {})
+    assert TestClient(livemap.app).get("/path/42").json()["points"] != []
 
 
 def test_path_missing_auth_row_suppresses_cached_geometry(livemap, monkeypatch):
@@ -270,7 +304,7 @@ def test_path_zero_cap_disables_cache_but_serves_points(livemap, monkeypatch):
     assert livemap._path_cache == {}   # cap 0 = cache disabled, loop still terminates
 
 
-def test_path_query_runs_against_live_ch(livemap, ch_cur):
+def test_path_query_runs_against_live_ch(livemap, livemap_public, ch_cur):
     # skip until the mart exists (pre-first-build); ch_cur itself skips when CH is unreachable
     ch_cur.execute(f"EXISTS {livemap.CH_DB}.fct_flight_path")
     if not ch_cur.fetchall()[0][0]:
@@ -279,29 +313,31 @@ def test_path_query_runs_against_live_ch(livemap, ch_cur):
     rows = ch_cur.fetchall()
     if not rows:
         pytest.skip("fct_flight_path is empty")
-    ch_cur.execute(livemap.PATH_QUERY, {"fid": int(rows[0][0])})
-    pts = ch_cur.fetchall()
-    tss = [r[0] for r in pts]                  # ts_epoch is the 1st projected column
-    assert tss == sorted(tss)                  # ascending (the ORDER BY ts holds)
+    # both mode variants must stay executable — the LADD subquery is the only difference between them
+    for query in (livemap.PATH_QUERY, livemap_public.PATH_QUERY):
+        ch_cur.execute(query, {"fid": int(rows[0][0])})
+        pts = ch_cur.fetchall()
+        tss = [r[0] for r in pts]              # ts_epoch is the 1st projected column
+        assert tss == sorted(tss)              # ascending (the ORDER BY ts holds)
     ch_cur.execute(livemap.PATH_AUTH_QUERY, {"fid": int(rows[0][0])})
     assert len(ch_cur.fetchall()) == 1
 
 
-def test_path_no_store_on_every_branch(livemap, monkeypatch):
+def test_path_no_store_on_every_branch(livemap_public, monkeypatch):
     # tunnel checks can't prove early returns — every branch must assert no-store itself
-    monkeypatch.setattr(livemap, "_path_cache", {})
-    c = TestClient(livemap.app)
+    monkeypatch.setattr(livemap_public, "_path_cache", {})
+    c = TestClient(livemap_public.app)
     assert c.get("/path/notanumber").headers["cache-control"] == "no-store"          # malformed
     rich = [(1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb")]
-    monkeypatch.setattr(livemap, "_fetch_path_rich", lambda _fid: rich)
+    monkeypatch.setattr(livemap_public, "_fetch_path_rich", lambda _fid: rich)
     assert c.get("/path/42").headers["cache-control"] == "no-store"                  # settled
     monkeypatch.setattr(
-        livemap, "_fetch_path_rich", lambda _fid: (_ for _ in ()).throw(RuntimeError("down"))
+        livemap_public, "_fetch_path_rich", lambda _fid: (_ for _ in ()).throw(RuntimeError("down"))
     )
     assert c.get("/path/43").headers["cache-control"] == "no-store"                  # CH error
-    monkeypatch.setattr(livemap, "_fetch_path_auth", lambda _fid: None)
+    monkeypatch.setattr(livemap_public, "_fetch_path_auth", lambda _fid: None)
     assert c.get("/path/44").headers["cache-control"] == "no-store"                  # unknown
-    monkeypatch.setattr(livemap, "_ladd_suppress", None)
+    monkeypatch.setattr(livemap_public, "_ladd_suppress", None)
     assert c.get("/path/45").headers["cache-control"] == "no-store"                  # fail-closed
 
 
@@ -329,10 +365,21 @@ def test_rich_loader_settled_points_carry_motion_fields(livemap, monkeypatch):
     assert got["auth"][0] == "abc123"
 
 
-def test_rich_loader_denied_on_suppress_none(livemap, monkeypatch):
+def test_rich_loader_denied_on_suppress_none(livemap_public, monkeypatch):
     import asyncio
+    monkeypatch.setattr(livemap_public, "_ladd_suppress", None)
+    assert asyncio.run(livemap_public._load_path_input("42"))["status"] == "denied"
+
+
+def test_private_rich_loader_settles_on_suppress_none(livemap, monkeypatch):
+    # the private loader must reach auth + geometry with a never-loaded set, not deny
+    import asyncio
+    rich = [(1765500000, 35.0, 139.0, 35000.0, 0, 450.0, 90.0, "adsb")]
     monkeypatch.setattr(livemap, "_ladd_suppress", None)
-    assert asyncio.run(livemap._load_path_input("42"))["status"] == "denied"
+    monkeypatch.setattr(livemap, "_path_cache", {})
+    monkeypatch.setattr(livemap, "_fetch_path_rich", lambda _fid: rich)
+    got = asyncio.run(livemap._load_path_input("42"))
+    assert got["status"] == "settled" and got["points"] == rich
 
 
 def test_lean_projection_is_the_frozen_wire(livemap):
