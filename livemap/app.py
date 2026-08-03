@@ -15,6 +15,7 @@ import psycopg2.extras
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 def _load_sibling(name):
@@ -270,6 +271,33 @@ try:
     FLIGHTS_CACHE_MAX = max(0, int(os.environ.get("LIVEMAP_FLIGHTS_CACHE_MAX", "512")))
 except ValueError:
     FLIGHTS_CACHE_MAX = 512
+
+# Workbench evidence layer (private-only) — caches keyed by the fetcher's own arg tuple, same
+# eviction policy as _flights_cache. Max sizes are fixed (the design gives no per-cache env knob).
+_wb_airlines_cache: dict = {}
+_wb_services_cache: dict = {}
+_wb_instances_cache: dict = {}
+_wb_search_cache: dict = {}
+WB_AIRLINES_CACHE_MAX = 64
+WB_SERVICES_CACHE_MAX = 256
+WB_INSTANCES_CACHE_MAX = 512
+WB_SEARCH_CACHE_MAX = 256
+try:
+    WB_AIRLINES_CACHE_TTL_S = float(os.environ.get("LIVEMAP_WB_AIRLINES_CACHE_TTL_S", "300"))
+except ValueError:
+    WB_AIRLINES_CACHE_TTL_S = 300.0
+try:
+    WB_SERVICES_CACHE_TTL_S = float(os.environ.get("LIVEMAP_WB_SERVICES_CACHE_TTL_S", "300"))
+except ValueError:
+    WB_SERVICES_CACHE_TTL_S = 300.0
+try:
+    WB_INSTANCES_CACHE_TTL_S = float(os.environ.get("LIVEMAP_WB_INSTANCES_CACHE_TTL_S", "120"))
+except ValueError:
+    WB_INSTANCES_CACHE_TTL_S = 120.0
+try:
+    WB_SEARCH_CACHE_TTL_S = float(os.environ.get("LIVEMAP_WB_SEARCH_CACHE_TTL_S", "120"))
+except ValueError:
+    WB_SEARCH_CACHE_TTL_S = 120.0
 
 # /path geometry is expensive but authorization is cheap; only geometry rides this longer cache.
 _path_cache: dict = {}
@@ -616,6 +644,107 @@ def _is_unknown_table_error(exc) -> bool:
     return "code: 60" in s or "unknown_table" in s or "unknown table" in s or "doesn't exist" in s
 
 
+# Workbench thin fetchers (private-only): SQL text + row shaping live in wb; this layer only owns
+# the CH round trip and the tier-mart-absent degradation (query, and on unknown-table, requery).
+def _fetch_wb_airlines(q, limit, offset) -> dict:
+    params = {"q": (q or "").strip(), "limit": limit, "offset": offset}
+    client = _ch_client()
+    try:
+        try:
+            rows = client.query(wb.AIRLINES_QUERY_TIER, parameters=params).result_rows
+            with_tier = True
+        except Exception as exc:
+            if not _is_unknown_table_error(exc):
+                raise
+            rows = client.query(wb.AIRLINES_QUERY_NO_TIER, parameters=params).result_rows
+            with_tier = False
+        total = client.query(wb.AIRLINES_COUNT_QUERY, parameters={"q": params["q"]}).result_rows[0][0]
+    finally:
+        client.close()
+    return {"airlines": [wb.shape_airline_row(r, with_tier) for r in rows],
+            "total": total, "limit": limit, "offset": offset}
+
+
+def _fetch_wb_services(airline, q, limit, offset) -> dict:
+    params = {"airline": (airline or "").strip(), "q": (q or "").strip().upper(),
+              "limit": limit, "offset": offset}
+    client = _ch_client()
+    try:
+        try:
+            rows = client.query(wb.SERVICES_QUERY_TIER, parameters=params).result_rows
+            with_tier = True
+        except Exception as exc:
+            if not _is_unknown_table_error(exc):
+                raise
+            rows = client.query(wb.SERVICES_QUERY_NO_TIER, parameters=params).result_rows
+            with_tier = False
+        total = client.query(
+            wb.SERVICES_COUNT_QUERY, parameters={"airline": params["airline"], "q": params["q"]}
+        ).result_rows[0][0]
+        callsigns = [r[0] for r in rows]
+        top_od_rows = (
+            client.query(wb.SERVICES_TOP_OD_QUERY, parameters={"callsigns": callsigns}).result_rows
+            if callsigns else []
+        )
+    finally:
+        client.close()
+    top_od = wb.group_top_od(top_od_rows)
+    return {"services": [wb.shape_service_row(r, with_tier, top_od) for r in rows],
+            "total": total, "limit": limit, "offset": offset}
+
+
+def _fetch_wb_instances(callsign, airline, hex_, reg, airport, od, type_, military,
+                         day_from, day_to, sort, limit, offset) -> dict:
+    params = wb.instances_params(callsign, airline, hex_, reg, airport, od, type_, military,
+                                  day_from, day_to)
+    params["limit"] = limit
+    params["offset"] = offset
+    main_tier = wb.INSTANCES_QUERY_TIER_ASC if sort == "day_asc" else wb.INSTANCES_QUERY_TIER_DESC
+    main_no_tier = wb.INSTANCES_QUERY_NO_TIER_ASC if sort == "day_asc" else wb.INSTANCES_QUERY_NO_TIER_DESC
+    client = _ch_client()
+    try:
+        try:
+            rows = client.query(main_tier, parameters=params,
+                                settings=wb.INSTANCES_QUERY_SETTINGS).result_rows
+            total = client.query(wb.INSTANCES_COUNT_QUERY_TIER, parameters=params).result_rows[0][0]
+            od_rows = client.query(wb.INSTANCES_OD_BREAKDOWN_QUERY_TIER, parameters=params).result_rows
+        except Exception as exc:
+            if not _is_unknown_table_error(exc):
+                raise
+            # military filtering has no meaning without the tier mart — an honest empty, not a silent no-op
+            if params["military"]:
+                return {"instances": [], "od_breakdown": [], "total": 0, "limit": limit, "offset": offset,
+                        "military_filter_available": False}
+            rows = client.query(main_no_tier, parameters=params,
+                                settings=wb.INSTANCES_QUERY_SETTINGS).result_rows
+            total = client.query(wb.INSTANCES_COUNT_QUERY_NO_TIER, parameters=params).result_rows[0][0]
+            od_rows = client.query(wb.INSTANCES_OD_BREAKDOWN_QUERY_NO_TIER, parameters=params).result_rows
+    finally:
+        client.close()
+    return {"instances": [wb.shape_instance_row(r) for r in rows],
+            "od_breakdown": wb.shape_od_breakdown(od_rows),
+            "total": total, "limit": limit, "offset": offset}
+
+
+def _fetch_wb_search(q, limit) -> dict:
+    params = wb.search_params(q)
+    params["limit"] = limit
+    client = _ch_client()
+    try:
+        airlines = client.query(wb.SEARCH_AIRLINES_QUERY, parameters=params).result_rows
+        services = client.query(wb.SEARCH_SERVICES_QUERY, parameters=params).result_rows
+        airframes = client.query(wb.SEARCH_AIRFRAMES_QUERY, parameters=params).result_rows
+        airports = client.query(wb.SEARCH_AIRPORTS_QUERY, parameters=params).result_rows
+    finally:
+        client.close()
+    return {
+        "airlines": [wb.shape_search_airline(r) for r in airlines],
+        "services": [wb.shape_search_service(r) for r in services],
+        "airframes": [wb.shape_search_airframe(r) for r in airframes],
+        "airports": [wb.shape_search_airport(r) for r in airports],
+    }
+
+
 async def _flush_once() -> None:
     queue = _est_log_queue
 
@@ -833,6 +962,11 @@ app.include_router(routes_live.build_router(_ctx))
 app.include_router(routes_aircraft.build_router(_ctx))
 app.include_router(routes_path.build_router(_ctx))
 
+if not PUBLIC_MODE:
+    wb = _load_sibling("workbench")
+    routes_workbench = _load_sibling("routes_workbench")
+    app.include_router(routes_workbench.build_router(_ctx))
+
 
 # Header-less statics get heuristic-cached by browsers — a stale map.js once outlived its index.html
 class RevalidatedStatic(StaticFiles):
@@ -842,9 +976,19 @@ class RevalidatedStatic(StaticFiles):
         return resp
 
 
+class PublicStatic(RevalidatedStatic):
+    # The privacy boundary lives in the filesystem layer: get_path has already collapsed // and ..
+    # by the time this runs, and StaticFiles serves GET and HEAD alike — no per-route arm to miss.
+    async def get_response(self, path: str, scope):
+        if path == "features" or path.startswith("features/"):
+            raise StarletteHTTPException(status_code=404)
+        return await super().get_response(path, scope)
+
+
 # Mounted last so /aircraft and /healthz win; serves index.html at /
 app.mount(
     "/",
-    RevalidatedStatic(directory=os.path.join(os.path.dirname(__file__), "static"), html=True),
+    (PublicStatic if PUBLIC_MODE else RevalidatedStatic)(
+        directory=os.path.join(os.path.dirname(__file__), "static"), html=True),
     name="static",
 )

@@ -990,8 +990,17 @@ are exempt by construction (canary-pinned in the test suite).
   exactly where that endpoint's ICAO is unresolved, not a defect. **SP3b** added `swim` as a 4th
   vote source (rank 1 — the only source that can resolve the *foreign* endpoint on a US-touching
   international leg) and the `is_ladd` column: a window-aware suppression flag, not a data
-  deletion — the row stays in the warehouse either way; only the livemap's serve-time surfaces
-  (`/aircraft`, `/flights`, `/track`) drop a listed airframe. The join is deploy-order guarded
+  deletion — the row stays in the warehouse either way. Only the public livemap acts on it, and the
+  two surface classes use different mechanisms: **live** (`/aircraft`, `/track`,
+  `/estimate/live/{icao24}`) checks the open-interval identity set (`valid_to IS NULL`, refreshed
+  ~15 min) plus the live MV belt, never `is_ladd`; **historical** (`/flights`, `/path`,
+  `/path/{flight_id}/estimate`) gates on the mart's `is_ladd` *and* applies that same open-interval
+  set on top (`/path` auth does both at `app.py`), so a newly listed airframe drops out of history
+  immediately rather than waiting for the next `transform_marts` build. Note
+  `is_ladd`'s own asymmetry (`fct_flights_reconciled.sql`): an **open** interval matches *every*
+  flight of that airframe, so a current listing suppresses its whole reconciled history; the
+  `valid_from <= end_time AND valid_to >= start_time` overlap test only narrows things once the
+  interval **closes**. The private LAN instance drops nothing. The join is deploy-order guarded
   (`{% if ladd_rel is not none %}` on `dim.dim_ladd`'s existence) so a fresh `clickhouse-init`
   doesn't have to race the next `transform_marts` build — `is_ladd` reads a guarded `0` literal
   until then and self-heals on the first build after.
@@ -1015,7 +1024,7 @@ are exempt by construction (canary-pinned in the test suite).
 | `registration` / `typecode` | `varchar` | Airframe attrs from `dim_aircraft`. |
 | `airline_name` / `airline_country` | `varchar` | Operating airline (callsign prefix → `dim_airlines`). |
 | `reg_country` | `varchar` | Registration country (hex-block lookup). |
-| `is_ladd` | `UInt8` | 1 when the airframe (hex or normalized callsign) matched an open or window-overlapping `dim.dim_ladd` interval (**SP3b**). Flag only — livemap drops `is_ladd = 1` at serve time; the warehouse keeps the row. |
+| `is_ladd` | `UInt8` | 1 when the airframe (hex or normalized callsign) matched a `dim.dim_ladd` interval that is **open** (matches all of that airframe's flights) or, once **closed**, overlaps `[start_time, end_time]` (**SP3b**). Flag only — the warehouse keeps the row regardless; the public livemap's historical surfaces (`/flights`, `/path`, `/path/{flight_id}/estimate`) gate on `is_ladd = 0` at serve time *and* apply the open-interval identity set on top. The private instance drops nothing, and the live surfaces (`/aircraft`, `/track`, `/estimate/live/{icao24}`) use that open-interval set alone, never this column. |
 
 ### `dim.dim_ladd` — FAA LADD privacy-list SCD2
 
@@ -1107,6 +1116,14 @@ are exempt by construction (canary-pinned in the test suite).
   sighting density, not a direct identifier — an ambiguous match (within 1 sighting of the
   runner-up) is withheld rather than guessed, so SWIM's vote share is smaller than its raw
   message volume would suggest.
-- **LADD suppression is display-time only, not data deletion.** `is_ladd` / the livemap
-  suppression hide a currently- or formerly-listed airframe from what's served; the row itself
-  stays in the warehouse with the flag set, auditable, never dropped at ingest.
+- **LADD suppression is display-time only, not data deletion, and public-instance only.** The row
+  itself always stays in the warehouse, auditable, never dropped at ingest. Only the public livemap
+  suppresses, and the mechanism differs by surface class: live (`/aircraft`, `/track`,
+  `/estimate/live/{icao24}`) uses the open-interval identity set, historical (`/flights`, `/path`,
+  `/path/{flight_id}/estimate`) gates on the mart's `is_ladd` *and* the open set. While a listing is
+  **open** it suppresses that airframe's entire reconciled
+  history, not just the listed window — the overlap test only narrows it after the interval closes,
+  which is what leaves a delisted airframe's past listed-period flights suppressed while it becomes
+  visible live again. Neither transition is instant: it takes the next weekly `ingest_ladd` pull, then
+  the ~15-minute serving refresh for the live set and the next `transform_marts` build for `is_ladd`.
+  The private LAN instance suppresses nothing, on either kind of surface.

@@ -47,7 +47,7 @@ models:
       - name: dest_lon
         description: Dest longitude (dim_airports); NULL when dest_icao is NULL.
       - name: is_ladd
-        description: "FAA LADD suppression flag (SP3b): 1 when the airframe's icao24 or normalized callsign matched a dim_ladd interval that was open or overlapped [start_time, end_time]. Flag only — the warehouse keeps the row; livemap drops is_ladd=1 at serve time. 0 until dim.dim_ladd is deployed (guarded literal)."
+        description: "FAA LADD suppression flag (SP3b): 1 when the airframe's icao24 or normalized callsign matched a dim_ladd interval that was open or overlapped [start_time, end_time]. Flag only — the warehouse keeps the row; the public livemap drops is_ladd=1 at serve time (private instance shows every airframe). 0 until dim.dim_ladd is deployed (guarded literal)."
         tests:
           - not_null
           - accepted_values:

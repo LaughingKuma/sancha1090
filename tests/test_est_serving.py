@@ -136,7 +136,8 @@ def test_dockerfile_bakes_estimator_modules():
     df = (REPO_ROOT / "livemap" / "Dockerfile").read_text()
     assert ("COPY app.py estimator.py est_serving.py est_route.py "
             "ladd.py pathfusion.py cache.py ratelimit.py "
-            "routes_live.py routes_aircraft.py routes_path.py ." in df)
+            "routes_live.py routes_aircraft.py routes_path.py "
+            "workbench.py routes_workbench.py ." in df)
 
 
 def test_log_queue_full_drops_arriving_group_and_preserves_order():

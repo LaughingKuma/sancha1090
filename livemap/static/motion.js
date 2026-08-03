@@ -1,8 +1,8 @@
-import { S, serverNow } from "./state.js?v=6.36";
-import { KT_TO_MS, MAX_DR_S, DR_HOLD_S, DR_PARK_S, WINDOW_S, MIL } from "./constants.js?v=6.36";
-import { silShape, sizeFor } from "./silhouettes.js?v=6.36";
-import { parseAlt, altTint } from "./altitude.js?v=6.36";
-import { verticalRate, vsState } from "./telemetry.js?v=6.36";
+import { S, serverNow } from "./state.js?v=6.41";
+import { KT_TO_MS, MAX_DR_S, DR_HOLD_S, DR_PARK_S, WINDOW_S, MIL } from "./constants.js?v=6.41";
+import { silShape, sizeFor } from "./silhouettes.js?v=6.41";
+import { parseAlt, altTint } from "./altitude.js?v=6.41";
+import { verticalRate, vsState } from "./telemetry.js?v=6.41";
 
 // glide 0→15 s of lead, hold to 20 s, settle back onto the fix by 26 s — continuous, no jumps
 function drSeconds(age) {

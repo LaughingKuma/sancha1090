@@ -1,0 +1,24 @@
+version: 2
+
+models:
+  - name: fct_flight_recon_tier
+    description: "One row per reconciled flight: the workbench's precomputed reconstruction-tier badge (+ military flag)."
+    columns:
+      - name: flight_id
+        tests: [not_null, unique]
+      - name: effective_gap_s
+        description: "greatest(largest inter-fix gap, start_time -> first fix, last fix -> end_time): the worst uncovered span over the whole reconciled window. largest_gap_s alone is inter-fix only (0 for a one-point path), so edge-clustered fixes would read as settled without this. NULL when the flight has no path."
+      - name: tier
+        description: "settled = a path summary exists with effective_gap_s <= recon_tier_gap_s (dense enough to trust point-to-point). estimated = a path summary exists but its effective gap exceeds the seam (needs the estimate overlay). provisional = no path summary yet and the flight started after the fct_flight_path head day (too fresh to have settled). none = no path summary and not fresh (orphaned/uncovered flight)."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['settled', 'estimated', 'provisional', 'none']
+      - name: is_military
+        description: "1 when icao24 is military per rooftop-observed readsb dbFlags OR the latest ADSBx registry mil bit; 0 otherwise (including hosts where the optional ADSBx DDL is not yet applied — the guarded arm is simply absent)."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]

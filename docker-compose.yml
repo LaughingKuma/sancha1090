@@ -544,8 +544,8 @@ services:
       # PR-2 estimate-log writer identity (INSERT-only; reads stay on superset_ro above)
       LIVEMAP_CH_WRITER_USER: livemap_writer
       LIVEMAP_CH_WRITER_PASSWORD: ${CH_LIVEMAP_WRITER_PASSWORD:?CH_LIVEMAP_WRITER_PASSWORD must be set in .env}
-    volumes:
-      - ./livemap/static:/app/static:ro
+    # NO static bind-mount (unlike the private twin): public serves the image-baked copy only, so a
+    # branch checkout can never publish private-feature assets ahead of an image rebuild + review.
     # default keeps RW/CH reachable; edge is the tunnel-only network shared with cloudflared. Listing
     # networks drops the implicit default, so default must be named explicitly here.
     networks: ["default", "edge"]

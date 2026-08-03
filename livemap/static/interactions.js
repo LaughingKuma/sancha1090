@@ -1,7 +1,7 @@
-import { S } from "./state.js?v=6.36";
-import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.36";
-import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.36";
-import { map, overlay } from "./mapsetup.js?v=6.36";
+import { S } from "./state.js?v=6.41";
+import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.41";
+import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.41";
+import { map, overlay } from "./mapsetup.js?v=6.41";
 
 // Spotlight panel (v5.6) — pure reader of S.selected + S.snap.
 const spEl = (id) => document.getElementById(id);
@@ -154,7 +154,7 @@ function fetchLiveEstimate(hex) {
 // A path far from the current view must visibly do something — frame the whole journey unless both ends are
 // already on-screen. Endpoints, not a point-count fraction: dense per-second approach fixes cluster at one end
 // and would fool a fraction test into thinking a trans-ocean flight is "mostly in view".
-function maybeFitHistPath(pts) {
+export function maybeFitHistPath(pts) {
   if (pts.length < 2) return;
   let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
   for (const p of pts) { w = Math.min(w, p.lon); e = Math.max(e, p.lon); s = Math.min(s, p.lat); n = Math.max(n, p.lat); }
@@ -382,7 +382,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") clearSelection();
 });
 
-function clearSelection() {
+export function clearSelection() {
   if (!S.selected) return;
   S.selected = null;
   S.trackFetchSeq++; // a deselect must orphan any in-flight /track fetch

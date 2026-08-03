@@ -110,11 +110,18 @@ overflight, with both endpoints outside the box, stays unresolved instead of pic
 filed-plan stamp that no in-box source can corroborate.
 
 A second, independent obligation rides the same feed's identity data: the FAA's LADD
-privacy list. Any airframe currently listed is tracked SCD2 in `dim.dim_ladd` (a manual
-weekly pull) and suppressed at display time everywhere the platform serves live or
-historical positions. The livemap's `/aircraft`, `/flights`, and `/track` endpoints all drop
-a listed airframe before it reaches a client, the same way the reconciled mart flags it
-(`is_ladd`) rather than deleting the row. This is the pipeline's own read of a public FAA
+privacy list, tracked SCD2 in `dim.dim_ladd` from a weekly pull and applied at display time
+on the public livemap only. Live surfaces (`/aircraft`, `/track`, `/estimate/live/{icao24}`)
+drop any airframe carrying a currently-open listing. Historical surfaces (`/flights`,
+`/path`, `/path/{flight_id}/estimate`) additionally gate on the reconciled mart's `is_ladd`
+flag, which covers an airframe's whole history for as long as its listing stays open and
+narrows to just the flights overlapping the listed window once that listing closes — they
+apply the current open set on top of it, so a newly listed airframe is dropped there without
+waiting for a rebuild. Either way the mart flags rather than deletes, so the row stays in the
+warehouse; the private LAN instance suppresses nothing, since LADD is a public-display
+obligation rather than a data-access restriction. A listing change reaches the live surfaces
+on the next weekly pull plus a ~15-minute refresh, and the mart's `is_ladd` only on the next
+`transform_marts` build — neither is instant. This is the pipeline's own read of a public FAA
 system-wide information feed and a public FAA privacy list. The FAA neither publishes nor
 endorses it.
 
@@ -289,6 +296,17 @@ computed in the ClickHouse batch lane and shipped to the map, so the hot path st
 drawn path, settled or provisional, plus an `[estimate ahead]` control that appears only while
 the selected aircraft is still in the live snapshot.
 
+The private instance additionally hosts an **analysis workbench**: a left-rail console with an
+airline → service (callsign) → flight-instance drill, a flat filterable flight log, and typed
+search (callsign / registration / airline / airport), all served by private-only `/workbench/*`
+endpoints over the reconciled ClickHouse marts. Every instance row carries a precomputed
+reconstruction-tier badge (settled / estimated / provisional / none) so a dead-end click is
+visible before it happens, and selecting an instance enters a focus mode that dims the live
+fleet and draws that flight's reconstructed path alone. Workbench state is URL-addressable
+(deep links key instances by airframe + start time, which survive mart rebuilds). The feature
+is gated by a `/features` endpoint that only the private instance registers — the public map
+serves none of the workbench, not even its static modules.
+
 `/path` itself follows a three-rung freshness ladder. Live position always comes from the
 120-second RisingWave window above. A click on a flight that reconciled after
 `fct_flight_path`'s own settled build head gets a provisional trajectory instead: the endpoint
@@ -298,8 +316,8 @@ same-hex flights), returned with `"provisional": true` and a PROVISIONAL badge o
 Once the mart's daily settlement build reaches that flight's start day, the same click resolves
 to the settled, mart-served path instead — a flight with no trace at all still returns an empty
 path either way. Every `/path` response, provisional or settled, carries `Cache-Control:
-no-store`, and the livemap's LADD suppression (mart flag plus the live hex and callsign sets)
-guards both arms identically.
+no-store`, and the public livemap's LADD suppression (mart flag plus the live hex and callsign
+sets) guards both arms identically (private instance shows every airframe, unguarded).
 
 `GET /path/{flight_id}/estimate` runs the pure estimator over the settled or provisional rich
 loader, drawing great-circle gap bridges and endpoint extensions plus capped dead-reckoning as

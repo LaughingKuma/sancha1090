@@ -95,3 +95,4 @@ vars:
   japan_box_lomin: 122
   japan_box_lamax: 50
   japan_box_lomax: 165
+  recon_tier_gap_s: 900  # settled/estimated seam: largest path gap the eye bridges without the estimate overlay (measured p50 690s / 61% <=900s, 2026-07-30)

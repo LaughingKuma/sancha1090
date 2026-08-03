@@ -1,12 +1,12 @@
-import { S, serverNow } from "./state.js?v=6.36";
+import { S, serverNow } from "./state.js?v=6.41";
 import {
   RING_NM, AIRPORTS, RUNWAY_PATHS, RUNWAY_ENDS, AMBER, MIL, TEAL, HISTORY, ESTIMATE,
-} from "./constants.js?v=6.36";
-import { SIL, CHEV_UP, CHEV_DOWN, zoomMult } from "./silhouettes.js?v=6.36";
-import { LABEL_ZOOM, LABEL_MAX, labelText, shadowPx, SHADOW_DIR } from "./altitude.js?v=6.36";
-import { frameData, metresBetween } from "./motion.js?v=6.36";
-import { emergencyOf } from "./telemetry.js?v=6.36";
-import { map, overlay } from "./mapsetup.js?v=6.36";
+} from "./constants.js?v=6.41";
+import { SIL, CHEV_UP, CHEV_DOWN, zoomMult } from "./silhouettes.js?v=6.41";
+import { LABEL_ZOOM, LABEL_MAX, labelText, shadowPx, SHADOW_DIR } from "./altitude.js?v=6.41";
+import { frameData, metresBetween } from "./motion.js?v=6.41";
+import { emergencyOf } from "./telemetry.js?v=6.41";
+import { map, overlay } from "./mapsetup.js?v=6.41";
 
 const { IconLayer, ScatterplotLayer, PolygonLayer, PathLayer, TextLayer, PathStyleExtension } = deck;
 
@@ -61,6 +61,10 @@ function buildLayers() {
   const labelZoom = LABEL_ZOOM + (S.snap.aircraft.length > LABEL_MAX ? 1 : 0);
   const showLabels = map.getZoom() >= labelZoom;
   const data = frameData(zoomMult(map.getZoom()));
+  // focus mode: the live fleet recedes to context (and stops taking picks) while a drawn path is the subject
+  const dimF = 1 - (S.dimLive || 0);
+  if (dimF < 1) for (const d of data) d.alpha *= dimF;
+  const dimA = (c) => (dimF === 1 ? c : [c[0], c[1], c[2], Math.round(c[3] * dimF)]);
   const emergencyData = data.filter((d) => emergencyOf(d.a));
   // free-running pulse (independent of poll freshness); frozen under reduced-motion
   const pulsePhase = REDUCED_MOTION ? 0 : ((performance.now() / 1000) % 1.8) / 1.8;
@@ -246,7 +250,7 @@ function buildLayers() {
       id: "selected-track",
       data: S.selectedSegments,
       getPath: (d) => d.path,
-      getColor: (d) => d.color,
+      getColor: (d) => dimA(d.color),
       getWidth: 2.2,
       widthUnits: "pixels",
       capRounded: true,
@@ -259,7 +263,7 @@ function buildLayers() {
       id: "trails",
       data: S.trailSegments,
       getPath: (d) => d.path,
-      getColor: (d) => d.color,
+      getColor: (d) => dimA(d.color),
       getWidth: 1.8,
       widthUnits: "pixels",
       capRounded: true,
@@ -302,7 +306,7 @@ function buildLayers() {
       radiusUnits: "pixels",
       stroked: true,
       filled: false,
-      getLineColor: (p) => [...(p.mil ? MIL : AMBER), Math.round(160 * (1 - (tNow - p.t0) / PING_LIFE_S))],
+      getLineColor: (p) => [...(p.mil ? MIL : AMBER), Math.round(160 * (1 - (tNow - p.t0) / PING_LIFE_S) * dimF)],
       getLineWidth: 1.5,
       lineWidthUnits: "pixels",
       parameters: { depthTest: false },
@@ -341,7 +345,7 @@ function buildLayers() {
       getSize: (d) => d.size,
       sizeUnits: "pixels",
       billboard: true,
-      pickable: true,
+      pickable: dimF === 1, // dimmed fleet is context — hover/click must not pull focus off the drawn path
       parameters: { depthTest: false },
     }),
     // ▲/▼ beside the icon; data is re-filtered every frame so tint/alpha stay live
@@ -408,7 +412,9 @@ function buildLayers() {
       radiusUnits: "pixels",
       stroked: true,
       filled: false,
-      getLineColor: REDUCED_MOTION ? [...MIL, 210] : [...MIL, Math.round(210 * (1 - pulsePhase))],
+      getLineColor: REDUCED_MOTION
+        ? [...MIL, Math.round(210 * dimF)]
+        : [...MIL, Math.round(210 * (1 - pulsePhase) * dimF)],
       getLineWidth: 2,
       lineWidthUnits: "pixels",
       parameters: { depthTest: false },
