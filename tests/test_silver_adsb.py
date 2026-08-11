@@ -49,8 +49,10 @@ def test_ga_callsign_never_matches_airline(ch_cur):
 
 def test_top_airlines_match_doc_targets(ch_cur):
     # callsign_filled (the model's airline join key) not raw flight: else v5.12 backfilled blank-flight airframes clump under a NULL prefix and outrank ANA.
+    # WITH TIES (#142) + window 15: counts only grow but ranks swap — EVA slid to 13th (74 vs a 75
+    # boundary, 2026-08-10), so the window carries margin; anchors pin join health, not exact rank.
     rows = _q(ch_cur, "SELECT substr(trimBoth(callsign_filled),1,3) d, count(DISTINCT hex) n FROM silver_ch.fct_adsb_state "
-                      "WHERE airline_name IS NOT NULL GROUP BY d ORDER BY n DESC LIMIT 12")
+                      "WHERE airline_name IS NOT NULL GROUP BY d ORDER BY n DESC LIMIT 15 WITH TIES")
     top = [r[0] for r in rows]
     assert top[0] == "ANA", f"expected ANA as #1 airline, got {top[:3]}"
     assert TOP_AIRLINE_ANCHORS <= set(top), f"missing doc anchors: {TOP_AIRLINE_ANCHORS - set(top)}"

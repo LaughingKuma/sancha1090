@@ -54,6 +54,10 @@ models:
         tests: [not_null, unique]
   - name: int_flight_attach
     description: Each source opinion attached to its single best-overlap spine flight (callsign-guarded).
+    tests:
+      - grain:
+          arguments:
+            column_names: [flight_id, source]
     columns:
       - name: flight_id
         tests: [not_null]

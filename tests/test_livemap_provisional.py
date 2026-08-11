@@ -1,23 +1,12 @@
 import datetime
-import importlib.util
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 START_S, END_S = 1784163600, 1784167200
 START_DAY = datetime.date(2026, 7, 16)
 HEAD_BEFORE = datetime.date(2026, 7, 15)   # start_day > head → post-head, provisional-eligible
 HEAD_AFTER = datetime.date(2026, 7, 16)    # start_day <= head → historical pathless
-
-
-@pytest.fixture(scope="module")
-def livemap():
-    spec = importlib.util.spec_from_file_location("livemap_app_prov", REPO_ROOT / "livemap" / "app.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _seed(mod, monkeypatch):

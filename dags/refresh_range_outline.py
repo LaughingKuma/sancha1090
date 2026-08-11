@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pendulum
 
 from airflow.sdk import dag, task
+
+from include.dag_defaults import default_args
 
 
 @dag(
@@ -14,11 +14,7 @@ from airflow.sdk import dag, task
     schedule="40 5 * * *",  # daily; the coverage envelope only grows slowly, off the maintenance slots
     catchup=False,
     max_active_runs=1,
-    default_args={
-        "owner": "amit",
-        "retries": 2,
-        "retry_delay": timedelta(minutes=10),
-    },
+    default_args=default_args(retries=2, delay_min=10),
     tags=["sancha1090", "risingwave", "adsb", "livemap", "v4"],
 )
 def refresh_range_outline():

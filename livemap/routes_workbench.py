@@ -1,7 +1,7 @@
 import asyncio
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 
@@ -9,8 +9,26 @@ def _wb_response(payload) -> JSONResponse:
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
-def build_router(ctx) -> APIRouter:
+async def _serve_cached(store, name, key, fetcher, empty) -> JSONResponse:
+    # One check/fetch/degrade/put cycle for every endpoint; `key` doubles as the fetcher's args
+    # (cache identity IS the fetch identity). Never 500 — the empty envelope is honest degradation.
+    cached = store.caches[name]
+    now = time.time()
+    hit = cached.get(key)
+    if hit and hit[0] > now:
+        return _wb_response(hit[1])
+    try:
+        payload = await asyncio.to_thread(fetcher, *key)
+    except Exception as exc:
+        print(f"livemap workbench {name} fetch failed: {exc.__class__.__name__}", flush=True)
+        return _wb_response(empty)
+    store.cache_put(cached, key, (now + store.ttls[name], payload), now, store.max_sizes[name])
+    return _wb_response(payload)
+
+
+def build_router(store) -> APIRouter:
     router = APIRouter()
+    wb = store.wb
 
     @router.get("/features")
     async def features() -> JSONResponse:
@@ -18,87 +36,80 @@ def build_router(ctx) -> APIRouter:
 
     @router.get("/workbench/airlines")
     async def airlines(q: str = "", limit: int = 50, offset: int = 0) -> JSONResponse:
-        limit = ctx.wb.clamp(limit, 200)
+        limit = wb.clamp(limit, 200)
         offset = max(0, offset)
-        key = (q, limit, offset)
-        now = time.time()
-        hit = ctx._wb_airlines_cache.get(key)
-        if hit and hit[0] > now:
-            return _wb_response(hit[1])
-        try:
-            payload = await asyncio.to_thread(ctx._fetch_wb_airlines, q, limit, offset)
-        except Exception as exc:  # never 500 — the empty envelope is a servable, honest degradation
-            print(f"livemap workbench airlines fetch failed: {type(exc).__name__}", flush=True)
-            return _wb_response({"airlines": [], "total": 0, "limit": limit, "offset": offset})
-        ctx.cache.put(ctx._wb_airlines_cache, key, (now + ctx.WB_AIRLINES_CACHE_TTL_S, payload),
-                      now, ctx.WB_AIRLINES_CACHE_MAX)
-        return _wb_response(payload)
+        return await _serve_cached(
+            store, "airlines", (q, limit, offset), store.fetch_airlines,
+            {"airlines": [], "total": 0, "limit": limit, "offset": offset})
 
     @router.get("/workbench/services")
     async def services(airline: str = "", q: str = "", limit: int = 100, offset: int = 0) -> JSONResponse:
-        limit = ctx.wb.clamp(limit, 500)
+        limit = wb.clamp(limit, 500)
         offset = max(0, offset)
-        key = (airline, q, limit, offset)
-        now = time.time()
-        hit = ctx._wb_services_cache.get(key)
-        if hit and hit[0] > now:
-            return _wb_response(hit[1])
-        try:
-            payload = await asyncio.to_thread(ctx._fetch_wb_services, airline, q, limit, offset)
-        except Exception as exc:
-            print(f"livemap workbench services fetch failed: {type(exc).__name__}", flush=True)
-            return _wb_response({"services": [], "total": 0, "limit": limit, "offset": offset})
-        ctx.cache.put(ctx._wb_services_cache, key, (now + ctx.WB_SERVICES_CACHE_TTL_S, payload),
-                      now, ctx.WB_SERVICES_CACHE_MAX)
-        return _wb_response(payload)
+        return await _serve_cached(
+            store, "services", (airline, q, limit, offset), store.fetch_services,
+            {"services": [], "total": 0, "limit": limit, "offset": offset})
 
     @router.get("/workbench/instances")
     async def instances(callsign: str = "", airline: str = "", hex: str = "", reg: str = "",
                         airport: str = "", od: str = "", type: str = "", military: int = 0,
                         day_from: str = "", day_to: str = "", sort: str = "day_desc",
                         limit: int = 50, offset: int = 0) -> JSONResponse:
-        limit = ctx.wb.clamp(limit, 500)
+        limit = wb.clamp(limit, 500)
         offset = max(0, offset)
-        df = ctx.wb.parse_day(day_from)
-        dt = ctx.wb.parse_day(day_to)
+        df = wb.parse_day(day_from)
+        dt = wb.parse_day(day_to)
         mil = bool(military)
-        key = (callsign, airline, hex, reg, airport, od, type, mil, df, dt, sort, limit, offset)
-        now = time.time()
-        hit = ctx._wb_instances_cache.get(key)
-        if hit and hit[0] > now:
-            return _wb_response(hit[1])
-        try:
-            payload = await asyncio.to_thread(
-                ctx._fetch_wb_instances, callsign, airline, hex, reg, airport, od, type,
-                mil, df, dt, sort, limit, offset,
-            )
-        except Exception as exc:
-            # NOT type(exc) — the `type` query param shadows the builtin in this handler's scope
-            print(f"livemap workbench instances fetch failed: {exc.__class__.__name__}", flush=True)
-            return _wb_response({"instances": [], "od_breakdown": [], "total": 0,
-                                 "limit": limit, "offset": offset})
-        ctx.cache.put(ctx._wb_instances_cache, key, (now + ctx.WB_INSTANCES_CACHE_TTL_S, payload),
-                      now, ctx.WB_INSTANCES_CACHE_MAX)
-        return _wb_response(payload)
+        return await _serve_cached(
+            store, "instances", (callsign, airline, hex, reg, airport, od, type, mil, df, dt, sort,
+                                 limit, offset), store.fetch_instances,
+            {"instances": [], "od_breakdown": [], "total": 0, "limit": limit, "offset": offset})
+
+    @router.get("/workbench/summary")
+    async def summary(day_from: str = "", day_to: str = "") -> JSONResponse:
+        df = wb.parse_day(day_from)
+        dt = wb.parse_day(day_to)
+        # complete:false marks a transient fetch failure — distinct from a section's
+        # available:false, which means the optional mart is not deployed
+        return await _serve_cached(store, "summary", (df, dt), store.fetch_summary,
+                                   wb.empty_summary() | {"complete": False})
+
+    @router.get("/workbench/trends")
+    async def trends(dim: str = "route", day_from: str = "", day_to: str = "",
+                     _grain: str = Query("", alias="grain"),
+                     limit: int = 20, offset: int = 0) -> JSONResponse:
+        limit = wb.clamp(limit, 50)
+        offset = max(0, offset)
+        # normalize here so the cache key is canonical; grain is accepted and ignored (v1 has one grain)
+        dim = dim if dim in ("route", "airline", "airport") else "route"
+        df = wb.parse_day(day_from)
+        dt = wb.parse_day(day_to)
+        return await _serve_cached(
+            store, "trends", (dim, df, dt, limit, offset), store.fetch_trends,
+            wb.empty_trends(dim, limit, offset) | {"complete": False})
+
+    @router.get("/workbench/flags")
+    async def flags(flag_class: str = Query("", alias="class"), day_from: str = "", day_to: str = "",
+                    limit: int = 50, offset: int = 0) -> JSONResponse:
+        limit = wb.clamp(limit, 500)
+        offset = max(0, offset)
+        # canonicalize before keying (the trends-dim precedent): the fetcher strips too, so
+        # whitespace-padded aliases must not mint distinct cache entries for one result
+        flag_class = (flag_class or "").strip()
+        df = wb.parse_day(day_from)
+        dt = wb.parse_day(day_to)
+        # available:false stays reserved for the missing mart; complete:false is the outage signal
+        return await _serve_cached(
+            store, "flags", (flag_class, df, dt, limit, offset), store.fetch_flags,
+            {"available": True, "complete": False, "flags": [], "classes": {},
+             "total": 0, "limit": limit, "offset": offset})
 
     @router.get("/workbench/search")
     async def search(q: str = "", limit: int = 20) -> JSONResponse:
         empty = {"airlines": [], "services": [], "airframes": [], "airports": []}
         if len((q or "").strip()) < 2:
             return _wb_response(empty)
-        limit = ctx.wb.clamp(limit, 100)
-        key = (q, limit)
-        now = time.time()
-        hit = ctx._wb_search_cache.get(key)
-        if hit and hit[0] > now:
-            return _wb_response(hit[1])
-        try:
-            payload = await asyncio.to_thread(ctx._fetch_wb_search, q, limit)
-        except Exception as exc:
-            print(f"livemap workbench search fetch failed: {type(exc).__name__}", flush=True)
-            return _wb_response(empty)
-        ctx.cache.put(ctx._wb_search_cache, key, (now + ctx.WB_SEARCH_CACHE_TTL_S, payload),
-                      now, ctx.WB_SEARCH_CACHE_MAX)
-        return _wb_response(payload)
+        limit = wb.clamp(limit, 100)
+        return await _serve_cached(store, "search", (q, limit), store.fetch_search, empty)
 
     return router

@@ -1,5 +1,6 @@
 import datetime
 import importlib.util
+import uuid
 from pathlib import Path
 
 import pytest
@@ -8,17 +9,11 @@ from fastapi.testclient import TestClient
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-@pytest.fixture(scope="module")
-def livemap():
-    spec = importlib.util.spec_from_file_location("livemap_app_wb", REPO_ROOT / "livemap" / "app.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def _reset_wb_caches(livemap, monkeypatch):
-    for name in ("_wb_airlines_cache", "_wb_services_cache", "_wb_instances_cache", "_wb_search_cache"):
-        monkeypatch.setattr(livemap, name, {})
+@pytest.fixture(autouse=True)
+def _wb_caches_reset(livemap, monkeypatch):
+    # every test shares the module-scoped private app — start each from cold store caches
+    for name in livemap.wb_store.caches:
+        monkeypatch.setitem(livemap.wb_store.caches, name, {})
 
 
 # ---- registration / gating ----
@@ -26,7 +21,8 @@ def _reset_wb_caches(livemap, monkeypatch):
 def test_private_route_table_includes_workbench(livemap):
     paths = {getattr(r, "path", None) for r in livemap.app.routes}
     assert "/features" in paths
-    for p in ("/workbench/airlines", "/workbench/services", "/workbench/instances", "/workbench/search"):
+    for p in ("/workbench/airlines", "/workbench/services", "/workbench/instances", "/workbench/search",
+              "/workbench/summary", "/workbench/trends", "/workbench/flags"):
         assert p in paths
 
 
@@ -39,6 +35,7 @@ def test_public_route_table_excludes_workbench(livemap_public):
 @pytest.mark.parametrize("path", [
     "/features", "/workbench/airlines", "/workbench/services",
     "/workbench/instances", "/workbench/search",
+    "/workbench/summary", "/workbench/trends", "/workbench/flags",
 ])
 def test_public_workbench_paths_404(livemap_public, path):
     r = TestClient(livemap_public.app).get(path)
@@ -79,75 +76,92 @@ def test_features_contract(livemap):
     assert r.headers["cache-control"] == "no-store"
 
 
-# ---- shapes (fetcher monkeypatched on the app module — pins ctx late-binding) ----
+# ---- endpoint contract tables (fetcher monkeypatched on the store instance — handlers resolve
+# ---- it at request time); per-endpoint one-off asserts stay as dedicated tests below ----
 
-def test_airlines_shape(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-    payload = {"airlines": [{"name": "ANA", "n_flights": 5, "n_services": 2,
-                             "first_day": "2026-07-01", "last_day": "2026-07-30",
-                             "tiers": {"settled": 3, "estimated": 1, "provisional": 1, "none": 0}}],
-              "total": 1, "limit": 50, "offset": 0}
-    monkeypatch.setattr(livemap, "_fetch_wb_airlines", lambda _q, _limit, _offset: payload)
-    r = TestClient(livemap.app).get("/workbench/airlines")
+_SHAPE_CASES = {
+    "airlines": ("/workbench/airlines",
+                 {"airlines": [{"name": "ANA", "n_flights": 5, "n_services": 2,
+                                "first_day": "2026-07-01", "last_day": "2026-07-30",
+                                "tiers": {"settled": 3, "estimated": 1, "provisional": 1, "none": 0}}],
+                  "total": 1, "limit": 50, "offset": 0}),
+    "services": ("/workbench/services",
+                 {"services": [{"callsign": "ANA1", "n_instances": 10,
+                                "top_od": [{"o": "HND", "d": "ITM", "n": 5}],
+                                "first_day": "2026-07-01", "last_day": "2026-07-30",
+                                "tiers": {"settled": 5, "estimated": 3, "provisional": 1, "none": 1}}],
+                  "total": 1, "limit": 100, "offset": 0}),
+    "instances": ("/workbench/instances",
+                  {"instances": [{"flight_id": "12345678901234567890", "day": "2026-07-29",
+                                  "start_ts": 1.0, "end_ts": 2.0, "icao24": "abc123",
+                                  "registration": "JA123", "typecode": "B738", "callsign": "ANA1",
+                                  "airline": "ANA",
+                                  "origin": {"icao": "RJTT", "iata": "HND", "city": "Tokyo"},
+                                  "dest": {"icao": "RJBB", "iata": "ITM", "city": "Osaka"},
+                                  "tier": "settled", "effective_gap_s": 10, "n_points": 500,
+                                  "is_military": False}],
+                   "od_breakdown": [{"o": "HND", "d": "ITM", "n": 5}],
+                   "total": 1, "limit": 50, "offset": 0}),
+    "search": ("/workbench/search?q=an",
+               {"airlines": [{"name": "ANA", "n_flights": 10}],
+                "services": [{"callsign": "ANA1", "airline": "ANA", "n_instances": 5}],
+                "airframes": [{"icao24": "abc123", "registration": "JA123", "typecode": "B738",
+                               "n_instances": 3}],
+                "airports": [{"icao": "RJTT", "iata": "HND", "name": "Haneda", "city": "Tokyo"}]}),
+    "summary": ("/workbench/summary",
+                {"flights": 178553, "aircraft": 6893, "services": 10784,
+                 "daily": [["2026-07-10", 5434]],
+                 "flags": {"available": True, "flagged": 22259,
+                           "classes": {"tiebreak_endpoint": 8400, "diversion": 487}},
+                 "tiers": {"available": True, "mix": {"settled": 101673, "estimated": 68834},
+                           "daily": [["2026-07-10", {"settled": 3511, "estimated": 1923}]]},
+                 "est": {"available": True, "err_p50_km": 0.57, "n": 232,
+                         "daily": [["2026-07-24", 4.47, 10]]},
+                 "movers": [{"key": "GMP-CJU", "n": 3072, "prev_n": 2734, "delta_pct": 12.4}]}),
+    "trends": ("/workbench/trends",
+               {"dim": "route", "grain": "day",
+                "series": [{"key": "GMP-CJU", "points": [["2026-07-10", 98]]}],
+                "rank": [{"key": "GMP-CJU", "n": 3072, "distinct_aircraft": 289, "prev_n": 2734,
+                          "delta_pct": 12.4}],
+                "total": 493, "limit": 20, "offset": 0}),
+    "flags": ("/workbench/flags",
+              {"available": True,
+               "flags": [{"flight_id": "12345678901234567890", "day": "2026-07-29",
+                          "start_ts": 1.0, "end_ts": 2.0, "icao24": "abc123",
+                          "registration": "JA123", "typecode": "B738", "callsign": "ANA1",
+                          "airline": "ANA", "origin": {"icao": "RJTT", "iata": "HND", "city": "Tokyo"},
+                          "dest": {"icao": "RJBB", "iata": "ITM", "city": "Osaka"},
+                          "tier": "settled", "effective_gap_s": 10, "n_points": 500,
+                          "is_military": False, "flag_class": "diversion",
+                          "detail": "dest RJNA vs modal RJGG 79/87"}],
+               "classes": {"one_sided_intl": 6922, "single_source": 5662},
+               "total": 486, "limit": 50, "offset": 0}),
+}
+
+
+@pytest.mark.parametrize("name", list(_SHAPE_CASES))
+def test_endpoint_shape(livemap, monkeypatch, name):
+    path, payload = _SHAPE_CASES[name]
+    monkeypatch.setattr(livemap.wb_store, f"fetch_{name}", lambda *_a, **_kw: payload)
+    r = TestClient(livemap.app).get(path)
     assert r.status_code == 200
     assert r.json() == payload
     assert r.headers["cache-control"] == "no-store"
 
 
-def test_services_shape(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-    payload = {"services": [{"callsign": "ANA1", "n_instances": 10,
-                             "top_od": [{"o": "HND", "d": "ITM", "n": 5}],
-                             "first_day": "2026-07-01", "last_day": "2026-07-30",
-                             "tiers": {"settled": 5, "estimated": 3, "provisional": 1, "none": 1}}],
-              "total": 1, "limit": 100, "offset": 0}
-    monkeypatch.setattr(livemap, "_fetch_wb_services", lambda _airline, _q, _limit, _offset: payload)
-    r = TestClient(livemap.app).get("/workbench/services")
-    assert r.status_code == 200
-    assert r.json() == payload
-    assert r.headers["cache-control"] == "no-store"
-
-
-def test_instances_shape(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-    payload = {"instances": [{"flight_id": "12345678901234567890", "day": "2026-07-29",
-                              "start_ts": 1.0, "end_ts": 2.0, "icao24": "abc123",
-                              "registration": "JA123", "typecode": "B738", "callsign": "ANA1",
-                              "airline": "ANA", "origin": {"icao": "RJTT", "iata": "HND", "city": "Tokyo"},
-                              "dest": {"icao": "RJBB", "iata": "ITM", "city": "Osaka"},
-                              "tier": "settled", "effective_gap_s": 10, "n_points": 500,
-                              "is_military": False}],
-              "od_breakdown": [{"o": "HND", "d": "ITM", "n": 5}], "total": 1, "limit": 50, "offset": 0}
-    monkeypatch.setattr(livemap, "_fetch_wb_instances", lambda *_a, **_kw: payload)
-    r = TestClient(livemap.app).get("/workbench/instances")
-    assert r.status_code == 200
-    assert r.json() == payload
-    assert r.headers["cache-control"] == "no-store"
+def test_instances_flight_id_is_str(livemap, monkeypatch):
     # flight_id must survive the wire as a string — cityHash64 overflows JS Number
+    path, payload = _SHAPE_CASES["instances"]
+    monkeypatch.setattr(livemap.wb_store, "fetch_instances", lambda *_a, **_kw: payload)
+    r = TestClient(livemap.app).get(path)
     assert isinstance(r.json()["instances"][0]["flight_id"], str)
 
 
-def test_search_shape(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-    payload = {"airlines": [{"name": "ANA", "n_flights": 10}],
-              "services": [{"callsign": "ANA1", "airline": "ANA", "n_instances": 5}],
-              "airframes": [{"icao24": "abc123", "registration": "JA123", "typecode": "B738",
-                            "n_instances": 3}],
-              "airports": [{"icao": "RJTT", "iata": "HND", "name": "Haneda", "city": "Tokyo"}]}
-    monkeypatch.setattr(livemap, "_fetch_wb_search", lambda _q, _limit: payload)
-    r = TestClient(livemap.app).get("/workbench/search?q=an")
-    assert r.status_code == 200
-    assert r.json() == payload
-    assert r.headers["cache-control"] == "no-store"
-
-
 def test_search_below_min_length_short_circuits(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-
     def boom(_q, _limit):
         raise AssertionError("q shorter than 2 chars must never reach the fetcher")
 
-    monkeypatch.setattr(livemap, "_fetch_wb_search", boom)
+    monkeypatch.setattr(livemap.wb_store, "fetch_search", boom)
     for q in ("", "a"):
         r = TestClient(livemap.app).get(f"/workbench/search?q={q}")
         assert r.status_code == 200
@@ -156,59 +170,73 @@ def test_search_below_min_length_short_circuits(livemap, monkeypatch):
 
 # ---- pagination ----
 
-def test_airlines_limit_clamped_offset_passthrough(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-    seen = {}
-
-    def fake(_q, limit, offset):
-        seen["limit"], seen["offset"] = limit, offset
-        return {"airlines": [], "total": 0, "limit": limit, "offset": offset}
-
-    monkeypatch.setattr(livemap, "_fetch_wb_airlines", fake)
-    TestClient(livemap.app).get("/workbench/airlines?limit=99999&offset=40")
-    assert seen["limit"] == 200   # clamped to the airlines cap
-    assert seen["offset"] == 40
+# (query string, clamped limit, offset passthrough or None for offset-less search); limits are the
+# per-endpoint caps — airlines 200, trends 50, search 100 (defensive, no spec number), else 500.
+_CLAMP_CASES = {
+    "airlines": ("/workbench/airlines?limit=99999&offset=40", 200, 40),
+    "services": ("/workbench/services?limit=99999&offset=7", 500, 7),
+    "instances": ("/workbench/instances?limit=99999&offset=13", 500, 13),
+    "search": ("/workbench/search?q=ana&limit=99999", 100, None),
+    "trends": ("/workbench/trends?limit=99999&offset=60&dim=airport&grain=hour", 50, 60),
+    "flags": ("/workbench/flags?limit=99999&offset=11&class=diversion", 500, 11),
+}
 
 
-def test_services_limit_clamped_offset_passthrough(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-    seen = {}
-
-    def fake(_airline, _q, limit, offset):
-        seen["limit"], seen["offset"] = limit, offset
-        return {"services": [], "total": 0, "limit": limit, "offset": offset}
-
-    monkeypatch.setattr(livemap, "_fetch_wb_services", fake)
-    TestClient(livemap.app).get("/workbench/services?limit=99999&offset=7")
-    assert seen["limit"] == 500
-    assert seen["offset"] == 7
-
-
-def test_instances_limit_clamped_offset_passthrough(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
+@pytest.mark.parametrize("name", list(_CLAMP_CASES))
+def test_limit_clamped_offset_passthrough(livemap, monkeypatch, name):
+    path, want_limit, want_offset = _CLAMP_CASES[name]
     seen = {}
 
     def fake(*a, **_kw):
-        seen["limit"], seen["offset"] = a[-2], a[-1]
-        return {"instances": [], "od_breakdown": [], "total": 0, "limit": a[-2], "offset": a[-1]}
+        seen["args"] = a
+        return {}
 
-    monkeypatch.setattr(livemap, "_fetch_wb_instances", fake)
-    TestClient(livemap.app).get("/workbench/instances?limit=99999&offset=13")
-    assert seen["limit"] == 500
-    assert seen["offset"] == 13
+    monkeypatch.setattr(livemap.wb_store, f"fetch_{name}", fake)
+    TestClient(livemap.app).get(path)
+    if want_offset is None:
+        assert seen["args"][-1] == want_limit
+    else:
+        assert seen["args"][-2:] == (want_limit, want_offset)
 
 
-def test_search_limit_clamped(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
+def test_trends_dim_passes_through_to_fetcher(livemap, monkeypatch):
     seen = {}
 
-    def fake(_q, limit):
-        seen["limit"] = limit
-        return {"airlines": [], "services": [], "airframes": [], "airports": []}
+    def fake(dim, _df, _dt, limit, offset):
+        seen["dim"] = dim
+        return {"dim": dim, "grain": "day", "series": [], "rank": [], "total": 0,
+                "limit": limit, "offset": offset}
 
-    monkeypatch.setattr(livemap, "_fetch_wb_search", fake)
-    TestClient(livemap.app).get("/workbench/search?q=ana&limit=99999")
-    assert seen["limit"] == 100   # search has no spec-given cap number; 100 chosen defensively (see report)
+    monkeypatch.setattr(livemap.wb_store, "fetch_trends", fake)
+    TestClient(livemap.app).get("/workbench/trends?dim=airport&grain=hour")
+    assert seen["dim"] == "airport"
+
+
+def test_trends_unknown_dim_normalizes_to_route(livemap, monkeypatch):
+    seen = {}
+
+    def fake(dim, _df, _dt, limit, offset):
+        seen["dim"] = dim
+        return {"dim": dim, "grain": "day", "series": [], "rank": [], "total": 0,
+                "limit": limit, "offset": offset}
+
+    monkeypatch.setattr(livemap.wb_store, "fetch_trends", fake)
+    r = TestClient(livemap.app).get("/workbench/trends?dim=nonsense")
+    assert seen["dim"] == "route"
+    assert r.json()["dim"] == "route"
+
+
+def test_flags_class_alias_reaches_fetcher(livemap, monkeypatch):
+    seen = {}
+
+    def fake(class_, _df, _dt, limit, offset):
+        seen["class"] = class_
+        return {"available": True, "flags": [], "classes": {}, "total": 0,
+                "limit": limit, "offset": offset}
+
+    monkeypatch.setattr(livemap.wb_store, "fetch_flags", fake)
+    TestClient(livemap.app).get("/workbench/flags?class=diversion")
+    assert seen["class"] == "diversion"   # `class` is a Python keyword — it rides an alias
 
 
 # ---- bound-param safety: hostile values must never touch the SQL text ----
@@ -237,207 +265,152 @@ class _CapturingClient:
         pass
 
 
-def test_airlines_hostile_query_only_ever_bound(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-    hostile = "'; DROP TABLE flights--\" 日本語"
-    client = _CapturingClient()
-    monkeypatch.setattr(livemap, "_ch_client", lambda: client)
-    TestClient(livemap.app).get("/workbench/airlines", params={"q": hostile})
-    assert len(client.calls) == 2   # list + count both ran; neither aborted before being checked
-    for sql, _params in client.calls:
-        assert hostile not in sql
-    assert any(hostile in params.values() for _sql, params in client.calls)
-
-
-def test_instances_hostile_reg_only_ever_bound(livemap, monkeypatch):
-    # reg/callsign are upper-cased before binding — an all-uppercase hostile string survives that intact
-    _reset_wb_caches(livemap, monkeypatch)
-    hostile = "'; DROP TABLE--\" 日本語"
-    client = _CapturingClient()
-    monkeypatch.setattr(livemap, "_ch_client", lambda: client)
-    TestClient(livemap.app).get("/workbench/instances", params={"reg": hostile})
-    assert len(client.calls) == 3   # list + count + od-breakdown
-    assert any("AS o," in sql for sql, _p in client.calls)   # the od-breakdown SQL was really reached
-    for sql, _params in client.calls:
-        assert hostile not in sql
-    assert any(hostile in params.values() for _sql, params in client.calls)
-
-
-def test_services_hostile_filters_only_ever_bound(livemap, monkeypatch):
-    # q is upper-cased before binding, airline is not — an uppercase hostile string survives both
-    _reset_wb_caches(livemap, monkeypatch)
-    hostile = "'; DROP TABLE--\" 日本語"
-    client = _CapturingClient()
-    monkeypatch.setattr(livemap, "_ch_client", lambda: client)
-    TestClient(livemap.app).get("/workbench/services", params={"airline": hostile, "q": hostile})
-    assert len(client.calls) == 3   # list + count + top-OD
-    assert any("rn <= 3" in sql for sql, _p in client.calls)   # the top-OD SQL was really reached
-    for sql, _params in client.calls:
-        assert hostile not in sql
-    assert any(hostile in params.values() for _sql, params in client.calls)
-
-
-def test_search_hostile_query_only_ever_bound(livemap, monkeypatch):
+# hostile strings survive reg/callsign/q normalization intact; marker pins that the endpoint's
+# LAST query form really ran, and every_bound=True (search) demands the value on ALL queries.
+_HOSTILE_CASES = {
+    "airlines": {"params": {"q": "'; DROP TABLE flights--\" 日本語"},
+                 "n_calls": 2,   # list + count both ran; neither aborted before being checked
+                 "marker": None, "every_bound": False},
+    "instances": {"params": {"reg": "'; DROP TABLE--\" 日本語"},
+                  "n_calls": 3,   # list + count + od-breakdown
+                  "marker": "AS o,", "every_bound": False},
+    "services": {"params": {"airline": "'; DROP TABLE--\" 日本語", "q": "'; DROP TABLE--\" 日本語"},
+                 "n_calls": 3,   # list + count + top-OD
+                 "marker": "rn <= 3", "every_bound": False},
     # search fans the same q into five derived params (svc/hex/reg/code) — none may reach SQL text
-    _reset_wb_caches(livemap, monkeypatch)
-    hostile = "'; DROP TABLE--\" 日本語"
+    "search": {"params": {"q": "'; DROP TABLE--\" 日本語"},
+               "n_calls": 4,   # all four search queries ran with the hostile value bound
+               "marker": None, "every_bound": True},
+    "flags": {"params": {"class": "'; DROP TABLE--\" 日本語"},
+              "n_calls": 3,   # feed + count + class histogram
+              "marker": "GROUP BY f.flag_class", "every_bound": False},
+}
+
+
+@pytest.mark.parametrize("name", list(_HOSTILE_CASES))
+def test_hostile_filters_only_ever_bound(livemap, monkeypatch, name):
+    case = _HOSTILE_CASES[name]
+    hostile_values = set(case["params"].values())
     client = _CapturingClient()
-    monkeypatch.setattr(livemap, "_ch_client", lambda: client)
-    TestClient(livemap.app).get("/workbench/search", params={"q": hostile})
-    assert len(client.calls) == 4   # all four search queries ran with the hostile value bound
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: client)
+    TestClient(livemap.app).get(f"/workbench/{name}", params=case["params"])
+    assert len(client.calls) == case["n_calls"]
+    if case["marker"]:
+        assert any(case["marker"] in sql for sql, _p in client.calls)
     for sql, _params in client.calls:
+        assert all(hostile not in sql for hostile in hostile_values)
+    check = all if case["every_bound"] else any
+    assert check(any(hostile in params.values() for hostile in hostile_values)
+                 for _sql, params in client.calls)
+
+
+def test_trends_hostile_dim_never_reaches_sql_or_params(livemap, monkeypatch):
+    # dim is not bound at all — it only picks among three pre-built query texts, so a hostile
+    # value must vanish at the Python layer rather than survive as a parameter
+    hostile = "'; DROP--"
+    client = _CapturingClient()
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: client)
+    out = livemap.wb_store.fetch_trends(hostile, None, None, 20, 0)
+    assert out["dim"] == "route"
+    assert client.calls
+    for sql, params in client.calls:
         assert hostile not in sql
-    assert all(hostile in params.values() for _sql, params in client.calls)
+        assert hostile not in params.values()
 
 
 # ---- caching ----
 
-def test_airlines_cache_hit_then_miss_on_new_args(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-    calls = {"n": 0}
-
-    def fake(_q, limit, offset):
-        calls["n"] += 1
-        return {"airlines": [], "total": 0, "limit": limit, "offset": offset}
-
-    monkeypatch.setattr(livemap, "_fetch_wb_airlines", fake)
-    c = TestClient(livemap.app)
-    c.get("/workbench/airlines?q=ana")
-    c.get("/workbench/airlines?q=ana")
-    assert calls["n"] == 1     # same args -> served from cache
-    c.get("/workbench/airlines?q=jal")
-    assert calls["n"] == 2     # different args -> re-invoked
+# (repeated request, different-args request) per endpoint
+_CACHE_CASES = {
+    "airlines": ("/workbench/airlines?q=ana", "/workbench/airlines?q=jal"),
+    "services": ("/workbench/services?airline=ANA", "/workbench/services?airline=JAL"),
+    "instances": ("/workbench/instances?callsign=ANA1", "/workbench/instances?callsign=ANA2"),
+    "search": ("/workbench/search?q=ana", "/workbench/search?q=jal"),
+    "summary": ("/workbench/summary?day_from=2026-07-10&day_to=2026-08-08",
+                "/workbench/summary?day_from=2026-07-11&day_to=2026-08-08"),
+    "trends": ("/workbench/trends?dim=route", "/workbench/trends?dim=airline"),
+    "flags": ("/workbench/flags?class=diversion", "/workbench/flags?class=military"),
+}
 
 
-def test_airlines_cache_ttl_expiry_reinvokes(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
+@pytest.mark.parametrize("name", list(_CACHE_CASES))
+def test_cache_hit_then_miss_and_ttl_expiry(livemap, monkeypatch, name):
+    path_a, path_b = _CACHE_CASES[name]
     # a fixed-value clock, not a 2-item iterator: the full ASGI stack (anyio/starlette) calls
     # time.time() an unpredictable extra number of times per request and would exhaust it
     clock = {"t": 1000.0}
     monkeypatch.setattr(livemap.time, "time", lambda: clock["t"])
     calls = {"n": 0}
 
-    def fake(_q, limit, offset):
+    def fake(*_a, **_kw):
         calls["n"] += 1
-        return {"airlines": [], "total": 0, "limit": limit, "offset": offset}
+        return {}
 
-    monkeypatch.setattr(livemap, "_fetch_wb_airlines", fake)
+    monkeypatch.setattr(livemap.wb_store, f"fetch_{name}", fake)
     c = TestClient(livemap.app)
-    c.get("/workbench/airlines?q=ana")
-    clock["t"] = 1000.0 + livemap.WB_AIRLINES_CACHE_TTL_S + 1.0
-    c.get("/workbench/airlines?q=ana")
-    assert calls["n"] == 2     # the second call landed past TTL expiry
-
-
-def test_services_cache_hit_then_miss_and_ttl_expiry(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-    clock = {"t": 1000.0}
-    monkeypatch.setattr(livemap.time, "time", lambda: clock["t"])
-    calls = {"n": 0}
-
-    def fake(_airline, _q, limit, offset):
-        calls["n"] += 1
-        return {"services": [], "total": 0, "limit": limit, "offset": offset}
-
-    monkeypatch.setattr(livemap, "_fetch_wb_services", fake)
-    c = TestClient(livemap.app)
-    c.get("/workbench/services?airline=ANA")
-    c.get("/workbench/services?airline=ANA")
+    c.get(path_a)
+    c.get(path_a)
     assert calls["n"] == 1     # same args -> served from cache
-    c.get("/workbench/services?airline=JAL")
+    c.get(path_b)
     assert calls["n"] == 2     # different args -> re-invoked
-    clock["t"] = 1000.0 + livemap.WB_SERVICES_CACHE_TTL_S + 1.0
-    c.get("/workbench/services?airline=ANA")
+    clock["t"] = 1000.0 + livemap.wb_store.ttls[name] + 1.0
+    c.get(path_a)
     assert calls["n"] == 3     # past TTL -> re-invoked
 
 
-def test_search_cache_hit_then_miss_and_ttl_expiry(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-    clock = {"t": 1000.0}
-    monkeypatch.setattr(livemap.time, "time", lambda: clock["t"])
+def test_trends_grain_not_in_cache_key(livemap, monkeypatch):
     calls = {"n": 0}
 
-    def fake(_q, _limit):
+    def fake(dim, _df, _dt, limit, offset):
         calls["n"] += 1
-        return {"airlines": [], "services": [], "airframes": [], "airports": []}
+        return livemap.wb.empty_trends(dim, limit, offset)
 
-    monkeypatch.setattr(livemap, "_fetch_wb_search", fake)
+    monkeypatch.setattr(livemap.wb_store, "fetch_trends", fake)
     c = TestClient(livemap.app)
-    c.get("/workbench/search?q=ana")
-    c.get("/workbench/search?q=ana")
-    assert calls["n"] == 1
-    c.get("/workbench/search?q=jal")
-    assert calls["n"] == 2
-    clock["t"] = 1000.0 + livemap.WB_SEARCH_CACHE_TTL_S + 1.0
-    c.get("/workbench/search?q=ana")
-    assert calls["n"] == 3
-
-
-def test_instances_cache_hit_then_miss_on_new_args(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-    calls = {"n": 0}
-
-    def fake(*a, **_kw):
-        calls["n"] += 1
-        return {"instances": [], "od_breakdown": [], "total": 0, "limit": a[-2], "offset": a[-1]}
-
-    monkeypatch.setattr(livemap, "_fetch_wb_instances", fake)
-    c = TestClient(livemap.app)
-    c.get("/workbench/instances?callsign=ANA1")
-    c.get("/workbench/instances?callsign=ANA1")
-    assert calls["n"] == 1
-    c.get("/workbench/instances?callsign=ANA2")
-    assert calls["n"] == 2
+    c.get("/workbench/trends?dim=route")
+    c.get("/workbench/trends?dim=route&grain=hour")
+    assert calls["n"] == 1     # grain is ignored and must not be part of the key
 
 
 # ---- degradation: never 500 ----
 
-def test_airlines_generic_exception_serves_empty_200(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
+# summary/trends carry complete:False (transient-outage signal, distinct from a section's
+# available:false = mart not deployed); flags keeps available:True for the same reason
+_NEVER_500_CASES = {
+    "airlines": ("/workbench/airlines?limit=50&offset=0",
+                 {"airlines": [], "total": 0, "limit": 50, "offset": 0}),
+    "services": ("/workbench/services?limit=100&offset=0",
+                 {"services": [], "total": 0, "limit": 100, "offset": 0}),
+    "instances": ("/workbench/instances?limit=50&offset=0",
+                  {"instances": [], "od_breakdown": [], "total": 0, "limit": 50, "offset": 0}),
+    "search": ("/workbench/search?q=ana",
+               {"airlines": [], "services": [], "airframes": [], "airports": []}),
+    "summary": ("/workbench/summary",
+                {"flights": 0, "aircraft": 0, "services": 0, "daily": [],
+                 "flags": {"available": False, "flagged": 0, "classes": {}},
+                 "tiers": {"available": False, "mix": {}, "daily": []},
+                 "est": {"available": False, "err_p50_km": None, "n": 0, "daily": []},
+                 "movers": [], "complete": False}),
+    "trends": ("/workbench/trends?dim=airline&limit=20&offset=0",
+               {"dim": "airline", "grain": "day", "series": [], "rank": [], "total": 0,
+                "limit": 20, "offset": 0, "complete": False}),
+    "flags": ("/workbench/flags?limit=50&offset=0",
+              {"available": True, "complete": False, "flags": [], "classes": {}, "total": 0,
+               "limit": 50, "offset": 0}),
+}
 
-    def boom(_q, _limit, _offset):
-        raise RuntimeError("ch down")
 
-    monkeypatch.setattr(livemap, "_fetch_wb_airlines", boom)
-    r = TestClient(livemap.app).get("/workbench/airlines?limit=50&offset=0")
-    assert r.status_code == 200
-    assert r.json() == {"airlines": [], "total": 0, "limit": 50, "offset": 0}
-
-
-def test_services_generic_exception_serves_empty_200(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
+@pytest.mark.parametrize("name", list(_NEVER_500_CASES))
+def test_generic_exception_serves_empty_200(livemap, monkeypatch, name):
+    path, want = _NEVER_500_CASES[name]
 
     def boom(*_a, **_kw):
         raise RuntimeError("ch down")
 
-    monkeypatch.setattr(livemap, "_fetch_wb_services", boom)
-    r = TestClient(livemap.app).get("/workbench/services?limit=100&offset=0")
+    monkeypatch.setattr(livemap.wb_store, f"fetch_{name}", boom)
+    r = TestClient(livemap.app).get(path)
     assert r.status_code == 200
-    assert r.json() == {"services": [], "total": 0, "limit": 100, "offset": 0}
-
-
-def test_instances_generic_exception_serves_empty_200(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-
-    def boom(*_a, **_kw):
-        raise RuntimeError("ch down")
-
-    monkeypatch.setattr(livemap, "_fetch_wb_instances", boom)
-    r = TestClient(livemap.app).get("/workbench/instances?limit=50&offset=0")
-    assert r.status_code == 200
-    assert r.json() == {"instances": [], "od_breakdown": [], "total": 0, "limit": 50, "offset": 0}
-
-
-def test_search_generic_exception_serves_empty_200(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
-
-    def boom(_q, _limit):
-        raise RuntimeError("ch down")
-
-    monkeypatch.setattr(livemap, "_fetch_wb_search", boom)
-    r = TestClient(livemap.app).get("/workbench/search?q=ana")
-    assert r.status_code == 200
-    assert r.json() == {"airlines": [], "services": [], "airframes": [], "airports": []}
+    assert r.json() == want
 
 
 class _FakeUnknownTableError(Exception):
@@ -469,8 +442,8 @@ def test_fetch_wb_instances_unknown_table_falls_back_to_tier_unknown(livemap, mo
         def close(self):
             pass
 
-    monkeypatch.setattr(livemap, "_ch_client", lambda: FakeClient())
-    out = livemap._fetch_wb_instances("", "", "", "", "", "", "", False, None, None, "day_desc", 50, 0)
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: FakeClient())
+    out = livemap.wb_store.fetch_instances("", "", "", "", "", "", "", False, None, None, "day_desc", 50, 0)
     assert out["instances"][0]["tier"] == "unknown"
 
 
@@ -491,9 +464,9 @@ def test_fetch_wb_instances_pins_lazy_materialization_off(livemap, monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr(livemap, "_ch_client", lambda: FakeClient())
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: FakeClient())
     for sort in ("day_desc", "day_asc"):
-        livemap._fetch_wb_instances("", "", "", "", "", "", "", False, None, None, sort, 50, 0)
+        livemap.wb_store.fetch_instances("", "", "", "", "", "", "", False, None, None, sort, 50, 0)
     main = [s for sql, s in seen if sql.startswith("SELECT toString(") and "fct_flight_recon_tier" in sql]
     assert len(main) == 2
     assert all(s and s.get("query_plan_optimize_lazy_materialization") == 0 for s in main)
@@ -503,19 +476,32 @@ def test_paged_queries_carry_total_order_tiebreaks(livemap):
     # ties are everywhere (19k+ duplicated start_time values measured) — a tie-break-free ORDER BY
     # makes LIMIT/OFFSET pages serve a row twice and drop another entirely
     wb = livemap.wb
-    for q in (wb.INSTANCES_QUERY_TIER_DESC, wb.INSTANCES_QUERY_TIER_ASC,
-              wb.INSTANCES_QUERY_NO_TIER_DESC, wb.INSTANCES_QUERY_NO_TIER_ASC):
+    for q in (wb.instances_query(tier=tier, asc=asc) for tier in (True, False) for asc in (True, False)):
         assert "r.flight_id" in q.split("ORDER BY")[1]
     for q in (wb.AIRLINES_QUERY_TIER, wb.AIRLINES_QUERY_NO_TIER):
         assert "ORDER BY n_flights DESC, name" in q
     for q in (wb.SERVICES_QUERY_TIER, wb.SERVICES_QUERY_NO_TIER):
         assert "ORDER BY n_instances DESC, callsign" in q
+    for q in (wb.FLAGS_QUERY_TIER, wb.FLAGS_QUERY_NO_TIER):
+        assert "ORDER BY r.start_time DESC, r.flight_id DESC, f.flag_class ASC" in q
+    for dim in ("route", "airline", "airport"):
+        assert "ORDER BY n DESC, k" in wb.TRENDS_RANK_QUERY[dim]
+
+
+def test_summary_est_arms_follow_the_standing_drift_read(livemap):
+    # measured on live CH for a 30 d window: raw rows read p50 0.572 km / n 232, the deduped pool
+    # 1.753 km / n 147 — median-of-medians over repeated inputs hides the drift the tile exists for
+    est = livemap.wb.SUMMARY_EST_ARMS
+    assert "skip_ambiguous = 0" in est
+    assert "ORDER BY computed_at, estimate_id LIMIT 1 BY input_fingerprint, seg_idx" in est
+    assert "arraySort(groupArrayArray(errs_km)) AS pool" in est
+    assert "quantileExact" not in est
 
 
 def test_tier_join_misses_normalize_to_unknown(livemap):
     # join_use_nulls is off, so an unmatched LEFT JOIN row carries '' rather than NULL
     wb = livemap.wb
-    assert "if(coalesce(t.tier, '') = '', 'unknown', t.tier)" in wb.INSTANCES_QUERY_TIER_DESC
+    assert "if(coalesce(t.tier, '') = '', 'unknown', t.tier)" in wb.instances_query(tier=True, asc=False)
     for q in (wb.AIRLINES_QUERY_TIER, wb.SERVICES_QUERY_TIER):
         assert "countIf(coalesce(t.tier, '') IN ('', 'none'))" in q
 
@@ -528,16 +514,115 @@ def test_fetch_wb_instances_military_unavailable_without_tier_mart(livemap, monk
         def close(self):
             pass
 
-    monkeypatch.setattr(livemap, "_ch_client", lambda: FakeClient())
-    out = livemap._fetch_wb_instances("", "", "", "", "", "", "", True, None, None, "day_desc", 50, 0)
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: FakeClient())
+    out = livemap.wb_store.fetch_instances("", "", "", "", "", "", "", True, None, None, "day_desc", 50, 0)
     assert out == {"instances": [], "od_breakdown": [], "total": 0, "limit": 50, "offset": 0,
                    "military_filter_available": False}
+
+
+_INSTANCE_COLS = (
+    "1", "2026-07-29", None, None, "abc123", "JA123", "B738", "ANA1", "ANA",
+    "RJTT", "HND", "Tokyo", "RJBB", "ITM", "Osaka", "unknown", None, None, 0,
+)
+_FLAG_ROW = _INSTANCE_COLS + ("diversion", "dest RJNA vs modal RJGG 79/87")
+
+
+class _LadderClient:
+    # A fake CH whose only behaviour is "these table names don't exist" — drives the fetchers'
+    # unknown-table degradation ladders without needing a live warehouse.
+    def __init__(self, missing, present=()):
+        self.missing, self.present, self.sqls = missing, present, []
+
+    def query(self, sql, **_kw):
+        self.sqls.append(sql)
+        rows = []
+        if "system.tables" in sql:
+            rows = [(n,) for n in self.present]
+        else:
+            for name in self.missing:
+                if name in sql:
+                    raise _FakeUnknownTableError("Code: 60. DB::Exception: (UNKNOWN_TABLE)")
+            if sql.startswith("SELECT count()") or sql.startswith("SELECT uniqExact"):
+                rows = [(1,)]
+            elif "GROUP BY f.flag_class" in sql:
+                rows = [("diversion", 1)]
+            elif "AS o," in sql:
+                rows = [("HND", "ITM", 1)]
+            elif "AS flag_class" in sql:
+                rows = [_FLAG_ROW]
+            elif sql.startswith("SELECT toString("):
+                rows = [_INSTANCE_COLS]
+
+        class _Res:
+            result_rows = rows
+
+        return _Res()
+
+    def close(self):
+        pass
+
+
+def test_fetch_wb_flags_falls_back_to_no_tier_variant(livemap, monkeypatch):
+    client = _LadderClient(missing=("fct_flight_recon_tier",))
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: client)
+    out = livemap.wb_store.fetch_flags("", None, None, 50, 0)
+    assert out["available"] is True
+    assert out["flags"][0]["tier"] == "unknown"
+    assert out["flags"][0]["flag_class"] == "diversion"
+    assert out["flags"][0]["detail"] == "dest RJNA vs modal RJGG 79/87"
+    assert out["classes"] == {"diversion": 1}
+    assert out["total"] == 1
+    assert livemap.wb.FLAGS_QUERY_NO_TIER in client.sqls
+
+
+def test_fetch_wb_flags_unavailable_without_flags_mart(livemap, monkeypatch):
+    client = _LadderClient(missing=("fct_flight_flags",))
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: client)
+    out = livemap.wb_store.fetch_flags("", None, None, 50, 0)
+    assert out == {"available": False, "flags": [], "classes": {}, "total": 0,
+                   "limit": 50, "offset": 0}
+
+
+def test_fetch_wb_summary_probe_drops_absent_sections(livemap, monkeypatch):
+    client = _LadderClient(missing=("fct_flight_flags", "fct_est_settlement"),
+                           present=("fct_flight_recon_tier",))
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: client)
+    out = livemap.wb_store.fetch_summary(datetime.date(2026, 7, 10), datetime.date(2026, 8, 8))
+    assert out["flags"] == {"available": False, "flagged": 0, "classes": {}}
+    assert out["est"] == {"available": False, "err_p50_km": None, "n": 0, "daily": []}
+    assert out["tiers"]["available"] is True
+    retried = client.sqls[-1]
+    assert "fct_flight_flags" not in retried and "fct_est_settlement" not in retried
+    assert "fct_flight_recon_tier" in retried
+
+
+def test_flags_pin_lazy_materialization_off(livemap, monkeypatch):
+    # same CH 26.5 optimizer defect as the vanilla instances read: the tier LEFT JOIN plus the
+    # Nullable(DateTime64) sort key needs both settings or the query raises instead of paging
+    seen = []
+
+    class FakeClient:
+        def query(self, sql, settings=None, **_kw):
+            seen.append((sql, settings))
+
+            class _Res:
+                result_rows = [(0,)] if sql.startswith("SELECT count()") else []
+
+            return _Res()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: FakeClient())
+    livemap.wb_store.fetch_flags("", None, None, 50, 0)
+    main = [s for sql, s in seen if sql.startswith("SELECT toString(")]
+    assert len(main) == 1
+    assert all(s and s.get("query_plan_optimize_lazy_materialization") == 0 for s in main)
 
 
 # ---- LADD private pin: the workbench never filters, extends the 17-pin family ----
 
 def test_private_instances_ladd_listed_hex_unfiltered(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
     monkeypatch.setattr(livemap, "_ladd_suppress",
                         {"hex": frozenset({"abc123"}), "callsign": frozenset({"SECRET1"})})
     payload = {"instances": [{"flight_id": "1", "day": "2026-07-29", "start_ts": 1.0, "end_ts": 2.0,
@@ -548,19 +633,18 @@ def test_private_instances_ladd_listed_hex_unfiltered(livemap, monkeypatch):
                               "tier": "settled", "effective_gap_s": 10, "n_points": 100,
                               "is_military": False}],
               "od_breakdown": [], "total": 1, "limit": 50, "offset": 0}
-    monkeypatch.setattr(livemap, "_fetch_wb_instances", lambda *_a, **_kw: payload)
+    monkeypatch.setattr(livemap.wb_store, "fetch_instances", lambda *_a, **_kw: payload)
     r = TestClient(livemap.app).get("/workbench/instances?hex=abc123")
     assert r.json() == payload   # no LADD filtering exists anywhere on the workbench path
 
 
 def test_private_search_ladd_listed_airframe_unfiltered(livemap, monkeypatch):
-    _reset_wb_caches(livemap, monkeypatch)
     monkeypatch.setattr(livemap, "_ladd_suppress", {"hex": frozenset({"abc123"}), "callsign": frozenset()})
     payload = {"airlines": [], "services": [],
               "airframes": [{"icao24": "abc123", "registration": "JA123", "typecode": "B738",
                             "n_instances": 3}],
               "airports": []}
-    monkeypatch.setattr(livemap, "_fetch_wb_search", lambda _q, _limit: payload)
+    monkeypatch.setattr(livemap.wb_store, "fetch_search", lambda _q, _limit: payload)
     r = TestClient(livemap.app).get("/workbench/search?q=ab")
     assert r.json() == payload
 
@@ -582,12 +666,38 @@ def test_clamp_floors_and_caps(livemap):
     assert wb.clamp(10, 200) == 10
 
 
+def test_summary_params_previous_window_is_the_same_span_immediately_before(livemap):
+    wb = livemap.wb
+    p = wb.summary_params(datetime.date(2026, 7, 10), datetime.date(2026, 8, 8))
+    assert p["prev_from"] == datetime.date(2026, 6, 10)   # 30-day span, ends the day before day_from
+    assert p["prev_to"] == datetime.date(2026, 7, 9)
+    # an unset range has no comparable previous window — every prev_n must come back 0
+    q = wb.summary_params(None, None)
+    assert (q["day_from"], q["day_to"]) == (datetime.date(1900, 1, 1), datetime.date(2999, 12, 31))
+    assert q["prev_from"] == q["prev_to"] == datetime.date(1900, 1, 1)
+    # at the sentinel floor the subtraction would underflow — it clamps instead of raising
+    f = wb.summary_params(datetime.date(1900, 1, 1), datetime.date(1900, 1, 5))
+    assert f["prev_from"] == f["prev_to"] == datetime.date(1900, 1, 1)
+
+
+def test_shape_summary_reorders_movers_regardless_of_row_arrival(livemap):
+    # UNION ALL block interleaving may not preserve the mover arm's inner ORDER BY
+    rows = [("mover", "HND-CTS", "", 1804.0, 1760.0),
+            ("mover", "GMP-CJU", "", 3072.0, 2734.0),
+            ("mover", "CJU-GMP", "", 3072.0, 2763.0)]
+    out = livemap.wb.shape_summary(rows, True, True, True)
+    assert [m["key"] for m in out["movers"]] == ["CJU-GMP", "GMP-CJU", "HND-CTS"]
+
+
 # ---- Dockerfile / file layout ----
 
 def test_workbench_files_exist_next_to_app():
     livemap_dir = REPO_ROOT / "livemap"
     assert (livemap_dir / "workbench.py").exists()
     assert (livemap_dir / "routes_workbench.py").exists()
+    assert (livemap_dir / "wb_store.py").exists()
+    # the store is image-baked too — a missing COPY would boot a workbench-less private sidecar
+    assert "COPY wb_store.py ./" in (livemap_dir / "Dockerfile").read_text()
 
 
 # ---- live-CH query-form execution (both tier variants), same skip/connect semantics as ch_cur ----
@@ -643,15 +753,12 @@ def test_workbench_sql_executes_on_live_ch(livemap):
         run(wb.SERVICES_TOP_OD_QUERY, {"callsigns": ["ZZZZ99"]})
 
         iparams = _harmless_instances_params(livemap)
-        run(wb.INSTANCES_QUERY_TIER_DESC, iparams, qs)
-        run(wb.INSTANCES_QUERY_TIER_ASC, iparams, qs)
-        run(wb.INSTANCES_QUERY_NO_TIER_DESC, iparams, qs)
-        run(wb.INSTANCES_QUERY_NO_TIER_ASC, iparams, qs)
-        run(wb.INSTANCES_COUNT_QUERY_TIER, iparams)
-        run(wb.INSTANCES_COUNT_QUERY_NO_TIER, iparams)
-        run(wb.INSTANCES_OD_BREAKDOWN_QUERY_TIER, iparams)
-        run(wb.INSTANCES_OD_BREAKDOWN_QUERY_NO_TIER, iparams)
-        run(wb.INSTANCES_QUERY_TIER_DESC, _harmless_instances_params(livemap, military=1), qs)
+        for tier in (True, False):
+            for asc in (True, False):
+                run(wb.instances_query(tier=tier, asc=asc), iparams, qs)
+            run(wb.instances_count_query(tier=tier), iparams)
+            run(wb.instances_od_breakdown_query(tier=tier), iparams)
+        run(wb.instances_query(tier=True, asc=False), _harmless_instances_params(livemap, military=1), qs)
 
         sparams = wb.search_params("AN")
         sparams["limit"] = 2
@@ -659,6 +766,28 @@ def test_workbench_sql_executes_on_live_ch(livemap):
         run(wb.SEARCH_SERVICES_QUERY, sparams)
         run(wb.SEARCH_AIRFRAMES_QUERY, sparams)
         run(wb.SEARCH_AIRPORTS_QUERY, sparams)
+
+        run(wb.PROBE_TABLES_QUERY, {"db": wb.CH_DB})
+
+        # every has_* combination, so a degraded assembly can't ship a syntactically broken union
+        wparams = wb.summary_params(datetime.date(2026, 1, 1), datetime.date(2026, 1, 7))
+        for has_flags in (False, True):
+            for has_tier in (False, True):
+                for has_est in (False, True):
+                    run(wb.summary_query(has_flags, has_tier, has_est), wparams)
+
+        tparams = wb.trends_params(datetime.date(2026, 1, 1), datetime.date(2026, 1, 7), 2, 0)
+        for dim in ("route", "airline", "airport"):
+            run(wb.TRENDS_RANK_QUERY[dim], tparams)
+            run(wb.TRENDS_SERIES_QUERY[dim], tparams | {"keys": ["ZZZ-YYY"]})
+            run(wb.TRENDS_TOTAL_QUERY[dim], tparams)
+
+        flparams = wb.flags_params("diversion", datetime.date(2026, 1, 1), datetime.date(2026, 1, 7))
+        flparams["limit"], flparams["offset"] = 2, 0
+        run(wb.FLAGS_QUERY_TIER, flparams, qs)
+        run(wb.FLAGS_QUERY_NO_TIER, flparams, qs)
+        run(wb.FLAGS_COUNT_QUERY, flparams)
+        run(wb.FLAGS_CLASSES_QUERY, flparams)
     finally:
         client.close()
 
@@ -682,7 +811,7 @@ def test_instances_day_filter_windows_on_jst_not_utc(livemap):
         def ids_for(day):
             p = wb.instances_params("", "", hex_, "", "", "", "", 0, day, day)
             p["limit"], p["offset"] = 500, 0
-            rows = client.query(wb.INSTANCES_QUERY_NO_TIER_DESC, parameters=p,
+            rows = client.query(wb.instances_query(tier=False, asc=False), parameters=p,
                                 settings=wb.INSTANCES_QUERY_SETTINGS).result_rows
             return {r[0]: r[1] for r in rows}
 
@@ -692,3 +821,125 @@ def test_instances_day_filter_windows_on_jst_not_utc(livemap):
         assert fid not in ids_for(utc_day)
     finally:
         client.close()
+
+
+# ---- seeded JST value oracle (#146): hand-computed literals on a throwaway CH database ----
+
+# unique per run: a fixed name would let two concurrent sessions drop each other's tables mid-test
+_ORACLE_DB = f"wb_oracle_pr2_{uuid.uuid4().hex[:8]}"
+_D28 = datetime.date(2026, 7, 28)
+_D29 = datetime.date(2026, 7, 29)
+_ORACLE_SCHEMA = (
+    "CREATE TABLE {db}.fct_flights_reconciled ("
+    "flight_id UInt64, icao24 Nullable(String), callsign Nullable(String), "
+    "start_time DateTime64(6, 'UTC'), end_time Nullable(DateTime64(6, 'UTC')), "
+    "registration Nullable(String), typecode Nullable(String), airline_name Nullable(String), "
+    "origin_icao Nullable(String), origin_iata Nullable(String), origin_city Nullable(String), "
+    "dest_icao Nullable(String), dest_iata Nullable(String), dest_city Nullable(String)"
+    ") ENGINE = MergeTree ORDER BY tuple()",
+    "CREATE TABLE {db}.fct_flight_flags ("
+    "flight_id Nullable(UInt64), start_day Nullable(Date), flag_class String, detail String"
+    ") ENGINE = MergeTree ORDER BY tuple()",
+    "CREATE TABLE {db}.fct_flight_recon_tier ("
+    "flight_id Nullable(UInt64), tier String, effective_gap_s Nullable(Int64), "
+    "n_points Nullable(UInt64), is_military Nullable(UInt8)"
+    ") ENGINE = MergeTree ORDER BY tuple()",
+    "CREATE TABLE {db}.fct_est_settlement ("
+    "estimate_id UUID, seg_idx UInt8, input_fingerprint UInt64, computed_at DateTime64(3, 'UTC'), "
+    "settled UInt8, skip_ambiguous UInt8, err_p50_km Nullable(Float64), errs_km Array(Float32)"
+    ") ENGINE = MergeTree ORDER BY tuple()",
+)
+# A starts 23:30 UTC, so its JST day is the NEXT calendar day; both flag rows carry the UTC
+# start_day, so anything windowing on f.start_day would put A on 07-28 with B.
+_ORACLE_SEED = (
+    "INSERT INTO {db}.fct_flights_reconciled VALUES "
+    "(1001, 'aaa111', 'ANA1', toDateTime64('2026-07-28 23:30:00', 6, 'UTC'), "
+    "toDateTime64('2026-07-29 01:00:00', 6, 'UTC'), 'JA111A', 'B738', 'All Nippon Airways', "
+    "'RJTT', 'HND', 'Tokyo', 'RJBB', 'ITM', 'Osaka'), "
+    "(1002, 'aaa111', 'ANA2', toDateTime64('2026-07-28 12:00:00', 6, 'UTC'), "
+    "toDateTime64('2026-07-28 13:30:00', 6, 'UTC'), 'JA111A', 'B738', 'All Nippon Airways', "
+    "'RJCC', 'CTS', 'Sapporo', 'RJTT', 'HND', 'Tokyo')",
+    "INSERT INTO {db}.fct_flight_flags VALUES "
+    "(1001, toDate('2026-07-28'), 'single_source', 'only adsblol voted'), "
+    "(1002, toDate('2026-07-28'), 'single_source', 'only adsblol voted')",
+    "INSERT INTO {db}.fct_flight_recon_tier VALUES (1001, 'settled', 12, 400, 0)",
+)
+
+
+@pytest.fixture
+def oracle_ch():
+    client = _live_ch_client()
+    try:
+        client.command(f"DROP DATABASE IF EXISTS {_ORACLE_DB}")
+        client.command(f"CREATE DATABASE {_ORACLE_DB}")
+        for stmt in _ORACLE_SCHEMA + _ORACLE_SEED:
+            client.command(stmt.format(db=_ORACLE_DB))
+        yield client
+    finally:
+        client.command(f"DROP DATABASE IF EXISTS {_ORACLE_DB}")
+        client.close()
+
+
+@pytest.fixture
+def wb_oracle(monkeypatch):
+    # the schema knob is read at import time, so the env has to be set before exec_module
+    monkeypatch.setenv("LIVEMAP_CH_DB", _ORACLE_DB)
+    spec = importlib.util.spec_from_file_location("wb_oracle_pr2",
+                                                  REPO_ROOT / "livemap" / "workbench.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestSeededJstOracle:
+    def test_instances_day_window_splits_the_pair_on_jst(self, oracle_ch, wb_oracle):
+        def ids_for(day):
+            p = wb_oracle.instances_params("", "", "", "", "", "", "", 0, day, day)
+            p["limit"], p["offset"] = 50, 0
+            return [r[0] for r in oracle_ch.query(
+                wb_oracle.instances_query(tier=False, asc=False), parameters=p,
+                settings=wb_oracle.INSTANCES_QUERY_SETTINGS).result_rows]
+
+        assert ids_for(_D29) == ["1001"]
+        assert ids_for(_D28) == ["1002"]
+
+    def test_flags_feed_windows_on_jst_start_time_not_flag_start_day(self, oracle_ch, wb_oracle):
+        def rows_for(day):
+            p = wb_oracle.flags_params("", day, day)
+            p["limit"], p["offset"] = 50, 0
+            return [(r[0], r[19], r[20]) for r in oracle_ch.query(
+                wb_oracle.FLAGS_QUERY_TIER, parameters=p,
+                settings=wb_oracle.INSTANCES_QUERY_SETTINGS).result_rows]
+
+        # both flag rows carry start_day 2026-07-28 — this would be empty if the feed used it
+        assert rows_for(_D29) == [("1001", "single_source", "only adsblol voted")]
+        assert rows_for(_D28) == [("1002", "single_source", "only adsblol voted")]
+
+    def test_summary_daily_and_flagged_are_jst_bucketed(self, oracle_ch, wb_oracle):
+        def summary_for(day_from, day_to):
+            p = wb_oracle.summary_params(day_from, day_to)
+            rows = oracle_ch.query(wb_oracle.summary_query(True, True, True),
+                                   parameters=p).result_rows
+            return wb_oracle.shape_summary(rows, True, True, True)
+
+        both = summary_for(_D28, _D29)
+        assert both["flights"] == 2
+        assert both["aircraft"] == 1
+        assert both["services"] == 2
+        assert both["daily"] == [["2026-07-28", 1], ["2026-07-29", 1]]
+        assert both["flags"]["flagged"] == 2
+        assert both["flags"]["classes"] == {"single_source": 2}
+        assert both["tiers"]["mix"] == {"settled": 1, "unknown": 1}
+        assert both["est"] == {"available": True, "err_p50_km": None, "n": 0, "daily": []}
+        one = summary_for(_D29, _D29)
+        assert one["daily"] == [["2026-07-29", 1]]
+        assert one["flags"]["flagged"] == 1
+        assert one["tiers"]["daily"] == [["2026-07-29", {"settled": 1}]]
+
+    def test_trends_route_rank_is_jst_bucketed(self, oracle_ch, wb_oracle):
+        p = wb_oracle.trends_params(_D29, _D29, 10, 0)
+        rows = oracle_ch.query(wb_oracle.TRENDS_RANK_QUERY["route"], parameters=p).result_rows
+        assert [(r[0], r[1], r[2]) for r in rows] == [("HND-ITM", 1, 1)]
+        p28 = wb_oracle.trends_params(_D28, _D28, 10, 0)
+        rows28 = oracle_ch.query(wb_oracle.TRENDS_RANK_QUERY["route"], parameters=p28).result_rows
+        assert [(r[0], r[1], r[2]) for r in rows28] == [("CTS-HND", 1, 1)]

@@ -8,7 +8,8 @@ import pendulum
 from airflow.sdk import dag, task
 
 from include.assets import raw_states_landed
-from include.ingest_summary import raise_if_all_fetches_raised
+from include.dag_defaults import default_args
+from include.ingest_summary import summarize_fetch_results
 from include.regions import REGIONS
 
 
@@ -19,13 +20,7 @@ from include.regions import REGIONS
     schedule="*/4 * * * *",
     catchup=False,
     max_active_runs=1,
-    default_args={
-        "owner": "amit",
-        "retries": 2,
-        "retry_delay": timedelta(minutes=2),
-        "retry_exponential_backoff": True,
-        "max_retry_delay": timedelta(minutes=10),
-    },
+    default_args=default_args(retries=2, backoff=True),
     tags=["sancha1090", "bronze"],
 )
 def ingest_states():
@@ -104,25 +99,12 @@ def ingest_states():
 
     @task(trigger_rule="all_done", outlets=[raw_states_landed])
     def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
-        """trigger_rule='all_done' runs this even on partial failure —
-        we want the summary, not skipped."""
-        results = list(results)
-
-        succeeded = sum(1 for r in results if r is not None)
-        total_rows = sum(r["rows"] for r in results if r is not None)
-        with_data = sum(1 for r in results if r is not None and r.get("uri"))
-        summary = {
-            "total_rows": total_rows,
-            "regions_with_data": with_data,
-            "regions_succeeded": succeeded,
-            "regions_attempted": len(results),
-            "per_region": results,
-        }
-        print(f"Ingestion summary: {summary}")
-        # all_done let us build the summary even on partial failure; red only when EVERY fetch raised (not a
-        # legitimately empty region) so a total outage (e.g. the manifest DB unreachable) can't hide.
-        raise_if_all_fetches_raised(summary, entity="regions", label="ingest_states")
-        return summary
+        # all_done builds the summary even on partial failure; the helper reds only when EVERY fetch raised
+        # (not a legitimately empty region) so a total outage (e.g. the manifest DB unreachable) can't hide.
+        return summarize_fetch_results(
+            results, plural="regions", singular="region",
+            banner="Ingestion summary", label="ingest_states",
+        )
 
     results = fetch_region.expand(region=REGIONS)
     summarize(results) # type: ignore[arg-type]

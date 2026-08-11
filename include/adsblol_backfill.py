@@ -3,7 +3,7 @@ from __future__ import annotations
 import gzip
 import tarfile
 import zlib
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 from typing import Any, BinaryIO, Callable, Iterator, Optional
 
 KT_TO_MPS = 0.514444
@@ -294,19 +294,3 @@ def dense_rows(
         rows.append(_point_row(icao, callsign, squawk, t, point, flags, lat, lon, int(t), zone))
 
     return rows
-
-
-def flights_windows(
-    until_day: date,
-    from_day: date,
-    window_days: int = 2,
-) -> Iterator[tuple[date, int, int]]:
-    # Newest-first so the most dashboard-relevant history lands before the credit
-    # drip runs dry on any given day.
-    w_end = until_day + timedelta(days=1)
-    while w_end > from_day:
-        w_begin = max(from_day, w_end - timedelta(days=window_days))
-        begin_ts = int(datetime(w_begin.year, w_begin.month, w_begin.day, tzinfo=timezone.utc).timestamp())
-        end_ts = int(datetime(w_end.year, w_end.month, w_end.day, tzinfo=timezone.utc).timestamp())
-        yield w_begin, begin_ts, end_ts
-        w_end = w_begin

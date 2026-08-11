@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pendulum
 
 from airflow.sdk import dag, task
+
+from include.dag_defaults import default_args
 
 
 @dag(
@@ -17,11 +17,7 @@ from airflow.sdk import dag, task
     # Active on a clean deploy without a manual unpause (compose defaults DAGS_ARE_PAUSED_AT_CREATION=true);
     # this is a protection gate, so it must run from first boot.
     is_paused_upon_creation=False,
-    default_args={
-        "owner": "amit",
-        "retries": 1,
-        "retry_delay": timedelta(minutes=3),
-    },
+    default_args=default_args(delay_min=3),
     tags=["sancha1090", "clickhouse", "parity"],
 )
 def ch_serving_parity():

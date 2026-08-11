@@ -6,7 +6,7 @@ SCHED := docker compose exec -T airflow-scheduler bash -c
 RUFF  := docker run --rm -v "$$PWD":/io -w /io ghcr.io/astral-sh/ruff:0.15.15
 RUFF_ARGS := --select F,B,ARG --line-length 110 --target-version py312
 
-.PHONY: help up down restart ps logs test lint parse dbt check
+.PHONY: help up down restart ps logs test test-js lint parse dbt check
 
 help: ## List targets
 	@grep -hE '^[a-z%-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  \033[36m%-9s\033[0m %s\n", $$1, $$2}'
@@ -26,8 +26,11 @@ ps: ## Show service status
 logs: ## Tail logs (scope with S=, e.g. make logs S=risingwave)
 	docker compose logs -f $(S)
 
-test: ## Run pytest in the scheduler container (scope with K=, e.g. make test K=adsb)
+test: test-js ## Run pytest in the scheduler container (scope with K=, e.g. make test K=adsb)
 	$(SCHED) "cd /opt/airflow && python -m pytest tests/ -q$(if $(K), -k '$(K)')"
+
+test-js: ## Run the workbench JS harness (host node)
+	node --test "tests/js/**/*.test.mjs"
 
 lint: ## Ruff check (real bugs only: F,B,ARG)
 	$(RUFF) check $(RUFF_ARGS) .

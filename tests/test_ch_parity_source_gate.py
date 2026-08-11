@@ -3,15 +3,6 @@ import pytest
 from include import ch_parity as p
 
 
-def test_complete_comparator():
-    cmp = p.complete(0.02)
-    assert cmp(100, 100)        # exact match
-    assert cmp(110, 100)        # surplus (e.g. the opensky_states P2 dup) passes
-    assert cmp(99, 100)         # 1% trail (one in-flight ingest tick) tolerated
-    assert not cmp(97, 100)     # 3% short = real load loss (the Iceberg failure mode)
-    assert cmp(5, 0)            # empty source never fails the gate
-
-
 def test_exact_comparator():
     cmp = p.exact()
     assert cmp(100, 100)        # equality

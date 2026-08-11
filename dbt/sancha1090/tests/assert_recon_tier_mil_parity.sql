@@ -2,11 +2,7 @@
 -- a dropped union arm or join regression fails in either direction.
 
 -- adsbx arm gated like the model's: optional pre-deploy DDL on upgraded hosts (one-shot init)
-{%- if execute %}
-{%- set adsbx_rel = adapter.get_relation(database=none, schema='bronze', identifier='adsbx_aircraft_db') %}
-{%- else %}
-{%- set adsbx_rel = none %}
-{%- endif %}
+{%- set adsbx_rel = optional_relation('bronze', 'adsbx_aircraft_db') %}
 
 with mil as (
     -- literal names, not source(): an edge into the adsb closure would eager-select this test into

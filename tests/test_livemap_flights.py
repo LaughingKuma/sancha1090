@@ -1,19 +1,7 @@
 import datetime
-import importlib.util
-from pathlib import Path
 
-import pytest
+from conftest import fake_ch
 from fastapi.testclient import TestClient
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-@pytest.fixture(scope="module")
-def livemap():
-    spec = importlib.util.spec_from_file_location("livemap_app", REPO_ROOT / "livemap" / "app.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def test_flights_query_reads_reconciled(livemap):
@@ -33,18 +21,9 @@ def test_fetch_flights_shapes_rows(livemap, monkeypatch):
     ts = datetime.datetime(2026, 6, 29, 8, 55, 59)  # naive, matching CH driver output
     fid = "12345678901234567890"  # cityHash64 > 2**63 — must survive as a string, never a JS-lossy number
 
-    class FakeRes:
-        result_rows = [("reconciled", ts, "RJTT", "Tokyo Haneda", None, None, "ANA265 ", fid)]
-
-    class FakeClient:
-        def query(self, _sql, parameters=None):
-            assert parameters == {"hex": "abc123"}   # lowercased + bound
-            return FakeRes()
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(livemap, "_ch_client", lambda: FakeClient())
+    rows = [("reconciled", ts, "RJTT", "Tokyo Haneda", None, None, "ANA265 ", fid)]
+    # expect_params: lowercased + bound
+    monkeypatch.setattr(livemap, "_ch_client", lambda: fake_ch(rows, expect_params={"hex": "abc123"}))
     out = livemap._fetch_flights("ABC123")
     assert out == [{
         "src": "reconciled",

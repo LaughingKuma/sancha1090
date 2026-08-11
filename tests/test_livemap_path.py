@@ -1,19 +1,8 @@
 import datetime
-import importlib.util
-from pathlib import Path
 
 import pytest
+from conftest import fake_ch
 from fastapi.testclient import TestClient
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-@pytest.fixture(scope="module")
-def livemap():
-    spec = importlib.util.spec_from_file_location("livemap_app", REPO_ROOT / "livemap" / "app.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _seed(mod, monkeypatch):
@@ -101,21 +90,12 @@ def test_path_huge_digit_id_returns_empty_200(livemap, monkeypatch):
 
 def test_fetch_path_rich_shapes_points(livemap, monkeypatch):
     # Motion fields must survive the warehouse read while the established wire remains projected from it.
-    class FakeRes:
-        result_rows = [
-            (1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb"),
-            (1765500002, 35.7, 139.8, None, 1, None, None, "adsblol"),
-        ]
-
-    class FakeClient:
-        def query(self, _sql, parameters=None):
-            assert parameters == {"fid": 42}     # bound as an int, not the raw string
-            return FakeRes()
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(livemap, "_ch_client", lambda: FakeClient())
+    rows = [
+        (1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb"),
+        (1765500002, 35.7, 139.8, None, 1, None, None, "adsblol"),
+    ]
+    # expect_params: bound as an int, not the raw string
+    monkeypatch.setattr(livemap, "_ch_client", lambda: fake_ch(rows, expect_params={"fid": 42}))
     rich = livemap._fetch_path_rich("42")
     assert rich == [
         (1765500000, 35.6, 139.7, 38000.0, 0, 450.0, 90.0, "adsb"),

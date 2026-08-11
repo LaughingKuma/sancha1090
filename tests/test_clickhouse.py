@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from conftest import seed_adsb_bundle
 
 from include import clickhouse as ch
 
@@ -75,18 +76,6 @@ def test_reset_aborts_before_clearing_markers_when_truncate_fails(monkeypatch):
     with pytest.raises(RuntimeError):
         ch.reset_ch_bronze()
     assert cleared["markers"] is False
-
-
-def _seed_adsb(eng, filename):
-    from include import adsb_manifest as am
-
-    am.record_bundle(
-        engine=eng, filename=filename, process_uuid="5f3b0bb5-7da1-48d5-be0c-9cff1808a86f",
-        stream="adsb_state", hostname="h", rotation_start_ts="2026-06-19T00:00:00Z",
-        rotation_end_ts="2026-06-19T01:00:00Z", complete=True, schema_version=1, row_count=5,
-        s3_uri=f"s3://sancha1090/bronze/adsb_state/dt=2026-06-19/{filename}",
-        manifest_s3_uri=f"s3://sancha1090/bronze/adsb_state/dt=2026-06-19/{filename}.manifest.json",
-    )
 
 
 def _stub_adsb_reads(monkeypatch, *, fail_for=()):
@@ -175,8 +164,8 @@ def test_safe_identifier_accepts_valid_rejects_injection():
 def test_load_adsb_skips_unreadable_file_and_loads_rest(adsb_manifest_eng, monkeypatch):
     from include import adsb_manifest as am
 
-    _seed_adsb(adsb_manifest_eng, "good.parquet")
-    _seed_adsb(adsb_manifest_eng, "bad.parquet")
+    seed_adsb_bundle(adsb_manifest_eng, "good.parquet")
+    seed_adsb_bundle(adsb_manifest_eng, "bad.parquet")
     _stub_adsb_reads(monkeypatch, fail_for=("bad.parquet",))
     monkeypatch.setattr(ch, "insert_arrow_best_effort", lambda _t, a, **_k: (True, a.num_rows))
 
@@ -217,7 +206,7 @@ def test_drain_transformed_skips_missing_file_and_marks_only_loaded(monkeypatch)
 def test_load_adsb_non_blocking_when_insert_fails(adsb_manifest_eng, monkeypatch):
     from include import adsb_manifest as am
 
-    _seed_adsb(adsb_manifest_eng, "x.parquet")
+    seed_adsb_bundle(adsb_manifest_eng, "x.parquet")
     _stub_adsb_reads(monkeypatch)
     monkeypatch.setattr(ch, "insert_arrow_best_effort", lambda *_a, **_k: (False, 0))
 
@@ -230,8 +219,8 @@ def test_load_adsb_non_blocking_when_insert_fails(adsb_manifest_eng, monkeypatch
 def test_load_adsb_chunks_backlog(adsb_manifest_eng, monkeypatch):
     from include import adsb_manifest as am
 
-    _seed_adsb(adsb_manifest_eng, "a.parquet")
-    _seed_adsb(adsb_manifest_eng, "b.parquet")
+    seed_adsb_bundle(adsb_manifest_eng, "a.parquet")
+    seed_adsb_bundle(adsb_manifest_eng, "b.parquet")
     _stub_adsb_reads(monkeypatch)
     inserts = []
     monkeypatch.setattr(ch, "insert_arrow_best_effort",

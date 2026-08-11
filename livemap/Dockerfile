@@ -8,6 +8,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py estimator.py est_serving.py est_route.py ladd.py pathfusion.py cache.py ratelimit.py routes_live.py routes_aircraft.py routes_path.py workbench.py routes_workbench.py ./
+COPY wb_store.py ./
 COPY static ./static
 RUN chown -R appuser:appuser /app
 USER appuser

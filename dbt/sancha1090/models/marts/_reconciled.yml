@@ -26,6 +26,13 @@ models:
           - accepted_values:
               arguments:
                 values: ['unanimous', 'majority', 'tiebreak', 'single', 'curated']
+      - name: feasibility_gated
+        description: "SP4 runway-feasibility gate provenance: 1 when the gate discarded at least one attached source's origin or dest on this flight (airline-shaped jet naming a short/unknown-runway small field), so the endpoint that won is a consensus over a reduced ballot; 0 when no source's endpoint was gated. Opinion seam only — vrs_routes gate hits are not represented, because admitting them would inflate n_sources (see the WHY comment in int_flight_attach)."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
       - name: origin_name
         description: Resolved origin airport name (dim_airports); NULL when origin_icao is NULL.
       - name: origin_iata

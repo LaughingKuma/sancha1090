@@ -5,7 +5,7 @@
 -- A collapsed low-authority record can never anchor when a cleaner source exists, so it can never
 -- merge two flights. CH ON is equi-only -> overlap anti-join via equi(icao24)+HAVING count=0.
 with op_flights_raw as (
-    select icao24, win_start, win_end, callsign from {{ ref('int_flight_opinions') }} where source = 'opensky_flights'
+    select icao24, win_start, win_end, callsign, origin_icao, dest_icao from {{ ref('int_flight_opinions') }} where source = 'opensky_flights'
 ),
 op_gapped as (
     -- stage 1: gap-only islands. A gap island = a run with no >anchor_merge_gap_min break from the running
@@ -28,12 +28,13 @@ op_gapped as (
     )
 ),
 op_flagged as (
-    -- stage 2: within a gap island, break on a non-null callsign that differs from the island's ESTABLISHED
-    -- callsign (anyLast ignores NULLs -> last non-null so far IN THIS island, so a NULL row can't bridge
-    -- A→NULL→B). Every gap-island boundary is also a break (a big time gap = new flight even if callsign repeats).
+    -- stage 2: break on a differing ESTABLISHED callsign (anyLast skips NULLs: A→NULL→B can't bridge), a
+    -- gap-island boundary, or a landing then sequential same-field departure (#150 tail-number turnarounds).
     select *,
         case
             when gap_break = 1 then 1
+            when prev_dest is not null and origin_icao is not null and prev_dest = origin_icao
+                 and prev_win_end is not null and win_start >= prev_win_end then 1
             when prev_cs is not null and callsign is not null
                  and trimBoth(callsign) != trimBoth(prev_cs) then 1
             else 0
@@ -41,7 +42,11 @@ op_flagged as (
     from (
         select *,
             anyLast(callsign) over (partition by icao24, gap_group order by win_start, win_end
-                                    rows between unbounded preceding and 1 preceding) as prev_cs
+                                    rows between unbounded preceding and 1 preceding) as prev_cs,
+            lagInFrame(dest_icao, 1, NULL) over (partition by icao24, gap_group order by win_start, win_end
+                                    rows between 1 preceding and current row) as prev_dest,
+            lagInFrame(toNullable(win_end), 1, NULL) over (partition by icao24, gap_group order by win_start, win_end
+                                    rows between 1 preceding and current row) as prev_win_end
         from op_gapped
     )
 ),

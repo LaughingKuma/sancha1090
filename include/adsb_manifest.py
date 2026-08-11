@@ -1,11 +1,45 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import logging
+from datetime import datetime, timedelta
 from typing import Optional
 
 import sqlalchemy as sa
 
+from include import pg_ledger
 from include.db import analytics_engine
+
+
+STALE_THRESHOLD = timedelta(hours=2)
+
+
+def _parse_iso(ts: str) -> datetime:
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def summarize_results(results: list[Optional[dict]]) -> dict[str, int]:
+    landed = sum(1 for r in results if r and r["ok"])
+    failed = sum(1 for r in results if r and not r["ok"])
+    adsb_landed = sum(1 for r in results if r and r["ok"] and r["stream"] == "adsb_state")
+    beast_landed = sum(1 for r in results if r and r["ok"] and r["stream"] == "beast_raw")
+    return {"landed": landed, "failed": failed,
+            "adsb_landed": adsb_landed, "beast_landed": beast_landed}
+
+
+# >2 h with no fresh adsb_state close time = a silently dead edge producer/push, which is exactly the
+# case with no current-run results — hence the manifest-newest fallback. log.error is the alert.
+def maybe_log_stale(results: list[Optional[dict]], now: datetime, logger: logging.Logger,
+                    manifest_newest: Optional[datetime] = None) -> bool:
+    ends = [_parse_iso(r["rotation_end_ts"]) for r in results
+            if r and r["ok"] and r["stream"] == "adsb_state"]
+    newest = max(ends) if ends else manifest_newest
+    if newest is None:
+        return False
+    if now - newest > STALE_THRESHOLD:
+        logger.error("adsb ingest stale: newest adsb_state rotation_end_ts %s is >%s behind %s",
+                     newest.isoformat(), STALE_THRESHOLD, now.isoformat())
+        return True
+    return False
 
 
 # Seam: tests point this at a schema-less sqlite mirror; production uses the public schema.
@@ -52,11 +86,7 @@ _default_engine: Optional[sa.Engine] = None
 
 
 def _engine() -> sa.Engine:
-    # Memoized: an Engine owns a connection pool and is meant to be a long-lived singleton.
-    global _default_engine
-    if _default_engine is None:
-        _default_engine = analytics_engine()
-    return _default_engine
+    return pg_ledger.module_engine(__name__, analytics_engine)
 
 
 def ensure_table(engine: Optional[sa.Engine] = None) -> None:
@@ -78,8 +108,7 @@ def ensure_table(engine: Optional[sa.Engine] = None) -> None:
 
 
 def _ensure_once(engine_arg: Optional[sa.Engine]) -> None:
-    if engine_arg is None and not _table_ready:
-        ensure_table()  # no-arg latches _table_ready so the DDL+ALTER runs once, not per call
+    pg_ledger.ensure_once(__name__, engine_arg, ensure_table)
 
 
 def record_bundle(
@@ -178,16 +207,7 @@ def mark_ch_loaded(filenames: list[str], engine: Optional[sa.Engine] = None) -> 
         return 0
     eng = engine or _engine()
     _ensure_once(engine)
-    stmt = sa.text(
-        f"""
-        UPDATE {_TABLE}
-           SET ch_loaded_at = CURRENT_TIMESTAMP
-         WHERE filename IN :names
-           AND ch_loaded_at IS NULL
-        """
-    ).bindparams(sa.bindparam("names", expanding=True))
-    with eng.begin() as conn:
-        return conn.execute(stmt, {"names": list(filenames)}).rowcount or 0
+    return pg_ledger.mark_rows(eng, _TABLE, "filename", "ch_loaded_at", filenames)
 
 
 def all_adsb_state_uris(engine: Optional[sa.Engine] = None) -> set[str]:
@@ -203,30 +223,11 @@ def pending_archive_adsb_uris(
     older_than_days: int, engine: Optional[sa.Engine] = None, limit: Optional[int] = None
 ) -> list[dict]:
     # Selects s3_uri (the full key the archiver copies); limit is the per-run cap pushed into SQL to bound the load.
-    # Reject a negative LIMIT (sqlite reads it as unlimited, postgres errors); 0 stays valid (no rows).
-    if limit is not None and limit < 0:
-        raise ValueError(f"pending_archive_adsb_uris: limit must not be negative, got {limit}")
+    stmt, params = pg_ledger.pending_archive_query(
+        _TABLE, "filename, s3_uri, row_count", "stream = 'adsb_state'", "landed_at",
+        older_than_days, limit, "pending_archive_adsb_uris")
     eng = engine or _engine()
     _ensure_once(engine)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
-    # Typed bind so the cutoff compares as a real timestamptz in postgres (not a coerced string literal) and as
-    # SQLAlchemy's own datetime string in the sqlite test mirror — correct + warning-free in both.
-    params = {"cutoff": cutoff}
-    limit_sql = ""
-    if limit is not None:
-        limit_sql = " LIMIT :limit"
-        params["limit"] = limit
-    stmt = sa.text(
-        f"""
-        SELECT filename, s3_uri, row_count
-          FROM {_TABLE}
-         WHERE stream = 'adsb_state'
-           AND ch_loaded_at IS NOT NULL
-           AND ch_loaded_at < :cutoff
-           AND archived_at IS NULL
-         ORDER BY landed_at{limit_sql}
-        """
-    ).bindparams(sa.bindparam("cutoff", type_=sa.DateTime(timezone=True)))
     with eng.begin() as conn:
         return [dict(r._mapping) for r in conn.execute(stmt, params).fetchall()]
 
@@ -236,13 +237,4 @@ def mark_archived(filenames: list[str], engine: Optional[sa.Engine] = None) -> i
         return 0
     eng = engine or _engine()
     _ensure_once(engine)
-    stmt = sa.text(
-        f"""
-        UPDATE {_TABLE}
-           SET archived_at = CURRENT_TIMESTAMP
-         WHERE filename IN :names
-           AND archived_at IS NULL
-        """
-    ).bindparams(sa.bindparam("names", expanding=True))
-    with eng.begin() as conn:
-        return conn.execute(stmt, {"names": list(filenames)}).rowcount or 0
+    return pg_ledger.mark_rows(eng, _TABLE, "filename", "archived_at", filenames)

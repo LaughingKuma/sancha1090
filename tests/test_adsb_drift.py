@@ -6,7 +6,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pyarrow.fs import LocalFileSystem
 
-from dags import maintain_adsb_schema as ms
 from include import adsb_drift as dr
 
 
@@ -91,7 +90,7 @@ def test_scan_core_flags_new_field_and_suppresses_known(tmp_path):
                    [{"hex": "b", "dbFlags": 8, "gpsOkBefore": 1}])
 
     log = FakeLog()
-    summary = ms.scan_core(LocalFileSystem(), str(tmp_path / "bronze" / "adsb_state"),
+    summary = dr.scan_core(LocalFileSystem(), str(tmp_path / "bronze" / "adsb_state"),
                            limit_files=0, sample_rows=200_000, log=log)
 
     assert summary["new_fields"] == ["gpsOkBefore"]
@@ -108,7 +107,7 @@ def test_scan_core_clean_when_only_typed_and_known(tmp_path):
                    [{"hex": "a", "squawk": "1200", "dbFlags": 8, "calc_track": 90.0}])
 
     log = FakeLog()
-    summary = ms.scan_core(LocalFileSystem(), str(tmp_path / "bronze" / "adsb_state"),
+    summary = dr.scan_core(LocalFileSystem(), str(tmp_path / "bronze" / "adsb_state"),
                            limit_files=0, sample_rows=200_000, log=log)
 
     assert summary["new_fields"] == []
@@ -122,7 +121,7 @@ def test_scan_core_limits_to_most_recent_files(tmp_path):
     _write_parquet(root / "edge_adsb_state_2026-05-30T01.parquet", [{"hex": "b", "marker": "seen"}])
 
     log = FakeLog()
-    summary = ms.scan_core(LocalFileSystem(), str(tmp_path / "bronze" / "adsb_state"),
+    summary = dr.scan_core(LocalFileSystem(), str(tmp_path / "bronze" / "adsb_state"),
                            limit_files=1, sample_rows=200_000, log=log)
 
     # Only the newest file scanned: its distinctive key surfaces, the older file's never does.

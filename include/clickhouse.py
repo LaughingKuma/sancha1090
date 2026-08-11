@@ -382,9 +382,33 @@ def reload_hex_country_dict() -> bool:
     return command_best_effort("SYSTEM RELOAD DICTIONARY dim.dict_hex_country")
 
 
+def _reload_registry(target: str, stage: str, insert_sql: str) -> dict:
+    # Non-destructive: stage + atomic EXCHANGE only if non-empty, so a failed/empty reload keeps the
+    # last-good snapshot serving; inline guard (not _safe) keeps the {ok, rows} shape on both paths.
+    try:
+        client = ch_client()
+        try:
+            client.command(f"CREATE TABLE IF NOT EXISTS {stage} AS {_CH_DB}.{target}")
+            client.command(f"TRUNCATE TABLE {stage}")
+            client.command(insert_sql)
+            rows = client.query(f"SELECT count() FROM {stage}").result_rows[0][0]
+            if int(rows) == 0:
+                # Empty glob (fresh deploy, no snapshot yet) = success no-op: keep the existing table, never
+                # clobber it with an empty reload; a real CH/Garage error falls through to except (ok=False).
+                log.warning("CH %s reload produced 0 rows — keeping the existing table", target)
+                return {"ok": True, "rows": 0, "skipped": True}
+            # EXCHANGE is atomic on the Atomic database engine (bronze): readers see old-or-new, never empty.
+            client.command(f"EXCHANGE TABLES {_CH_DB}.{target} AND {stage}")
+        finally:
+            client.close()
+        return {"ok": True, "rows": int(rows)}
+    except Exception:
+        log.exception("CH %s load failed (non-fatal)", target)
+        return {"ok": False, "rows": 0}
+
+
 def backfill_aircraft_db() -> dict:
-    # Rebuild bronze.aircraft_db from the Garage Parquet glob (weekly + at setup). Non-destructive: load a
-    # staging table, then atomic EXCHANGE only if non-empty — a failed reload keeps the last-good registry serving.
+    # Rebuild bronze.aircraft_db from the Garage Parquet glob (weekly + at setup).
     nulled = ", ".join(f"nullIf({c}, '')" for c in _AIRCRAFT_DB_STR_COLS)
     stage = f"{_CH_DB}.aircraft_db_reload"
     sql = (
@@ -397,29 +421,7 @@ def backfill_aircraft_db() -> dict:
         f"FROM s3({_GARAGE_COLLECTION}, filename='{_AIRCRAFT_DB_PREFIX}/**/*.parquet', format='Parquet', "
         f"structure='{_AIRCRAFT_DB_S3_STRUCTURE}')"
     )
-    # Inline guard (not _safe): keep the {ok, rows} shape on both paths so callers never KeyError on failure.
-    try:
-        client = ch_client()
-        try:
-            client.command(f"CREATE TABLE IF NOT EXISTS {stage} AS {_CH_DB}.aircraft_db")
-            client.command(f"TRUNCATE TABLE {stage}")
-            client.command(sql)
-            rows = client.query(f"SELECT count() FROM {stage}").result_rows[0][0]
-            if int(rows) == 0:
-                # Empty glob = nothing to load (e.g. a fresh deploy before any registry has landed): a success
-                # no-op, not a failure — keep the existing table and DON'T clobber it with an empty reload.
-                # ok=True so the weekly ingest task / bootstrap don't red on "no data yet"; a real CH/Garage
-                # error falls through to the except below (ok=False).
-                log.warning("CH aircraft_db reload produced 0 rows — keeping the existing table")
-                return {"ok": True, "rows": 0, "skipped": True}
-            # EXCHANGE is atomic on the Atomic database engine (bronze): readers see old-or-new, never empty.
-            client.command(f"EXCHANGE TABLES {_CH_DB}.aircraft_db AND {stage}")
-        finally:
-            client.close()
-        return {"ok": True, "rows": int(rows)}
-    except Exception:
-        log.exception("CH aircraft_db load failed (non-fatal)")
-        return {"ok": False, "rows": 0}
+    return _reload_registry("aircraft_db", stage, sql)
 
 
 _ADSBX_DB_PREFIX = "bronze/adsbx_db_raw"
@@ -436,8 +438,6 @@ _ADSBX_DB_S3_STRUCTURE = (
 
 
 def backfill_adsbx_db() -> dict:
-    # Staging + atomic EXCHANGE only if non-empty: a failed or empty reload keeps the last-good
-    # snapshot serving (mirrors backfill_aircraft_db).
     nulled = ", ".join(f"nullIf({c}, '')" for c in _ADSBX_DB_STR_COLS)
     stage = f"{_CH_DB}.adsbx_aircraft_db_reload"
     sql = (
@@ -449,27 +449,7 @@ def backfill_adsbx_db() -> dict:
         f"FROM s3({_GARAGE_COLLECTION}, filename='{_ADSBX_DB_PREFIX}/**/*.parquet', format='Parquet', "
         f"structure='{_ADSBX_DB_S3_STRUCTURE}')"
     )
-    # Inline guard (not _safe): keep the {ok, rows} shape on both paths so callers never KeyError on failure.
-    try:
-        client = ch_client()
-        try:
-            client.command(f"CREATE TABLE IF NOT EXISTS {stage} AS {_CH_DB}.adsbx_aircraft_db")
-            client.command(f"TRUNCATE TABLE {stage}")
-            client.command(sql)
-            rows = client.query(f"SELECT count() FROM {stage}").result_rows[0][0]
-            if int(rows) == 0:
-                # Empty glob = fresh deploy before any snapshot has landed: success no-op — keep the
-                # existing table and DON'T clobber it with an empty reload.
-                log.warning("CH adsbx_aircraft_db reload produced 0 rows — keeping the existing table")
-                return {"ok": True, "rows": 0, "skipped": True}
-            # EXCHANGE is atomic on the Atomic database engine (bronze): readers see old-or-new, never empty.
-            client.command(f"EXCHANGE TABLES {_CH_DB}.adsbx_aircraft_db AND {stage}")
-        finally:
-            client.close()
-        return {"ok": True, "rows": int(rows)}
-    except Exception:
-        log.exception("CH adsbx_aircraft_db load failed (non-fatal)")
-        return {"ok": False, "rows": 0}
+    return _reload_registry("adsbx_aircraft_db", stage, sql)
 
 
 def transform_adsblol_frame(df):
@@ -566,31 +546,26 @@ def rebuild_adsblol_states(batch_files: int = 1) -> dict:
     return load_adsblol_pending_to_ch(batch_files=batch_files)
 
 
-def transform_adsblol_segments_frame(df):
+def _transform_adsblol_route_frame(df, end_col: str):
     import polars as pl
 
     # read_pending_frames reads by path, so pyarrow infers the dt= key dir as a hive
     # column; drop it or insert_arrow rejects the extra column against the CH table.
     stamped = df.drop("dt", strict=False).with_columns(
         pl.from_epoch("seg_start", time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias("seg_start"),
-        pl.from_epoch("seg_end", time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias("seg_end"),
+        pl.from_epoch(end_col, time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias(end_col),
         pl.col("trace_day").str.to_date().alias("trace_day"),
         pl.col("ingested_at").str.to_datetime(time_unit="us", time_zone="UTC").alias("ingested_at"),
     )
     return stamped.with_columns(pl.col("ingested_at").alias("committed_at"))
+
+
+def transform_adsblol_segments_frame(df):
+    return _transform_adsblol_route_frame(df, "seg_end")
 
 
 def transform_adsblol_paths_frame(df):
-    import polars as pl
-
-    # Same hive dt= drop as the segments transform (path-based parquet read).
-    stamped = df.drop("dt", strict=False).with_columns(
-        pl.from_epoch("seg_start", time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias("seg_start"),
-        pl.from_epoch("ts", time_unit="s").dt.replace_time_zone("UTC").dt.cast_time_unit("us").alias("ts"),
-        pl.col("trace_day").str.to_date().alias("trace_day"),
-        pl.col("ingested_at").str.to_datetime(time_unit="us", time_zone="UTC").alias("ingested_at"),
-    )
-    return stamped.with_columns(pl.col("ingested_at").alias("committed_at"))
+    return _transform_adsblol_route_frame(df, "ts")
 
 
 def load_adsblol_segments_pending_to_ch(engine: Optional[sa.Engine] = None, *,

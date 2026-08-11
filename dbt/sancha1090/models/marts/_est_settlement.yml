@@ -26,6 +26,14 @@ models:
       CAVEAT: the first real-missingness numbers (E8) are a 5-subject CASE STUDY over 8 estimates, not a
       population claim, and were already superseded by data movement at measurement time — re-run the
       note's verbatim query rather than quoting frozen figures.
+    # one row per (estimate_id, seg_idx); warn-only — telemetry must never red the ~4-min
+    # serving transform tick (push_flight_routes depends on dbt_test_ch)
+    tests:
+      - grain:
+          arguments:
+            column_names: [estimate_id, seg_idx]
+          config:
+            severity: warn
     columns:
       - name: estimate_id
         description: "Serving-side estimate id (from bronze.path_estimates)."

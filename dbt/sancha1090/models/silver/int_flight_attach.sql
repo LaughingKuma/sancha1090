@@ -7,6 +7,7 @@ with cand as (
         sp.flight_id as flight_id,
         o.source as source, o.source_rank as source_rank,
         o.origin_icao as origin_icao, o.dest_icao as dest_icao,
+        o.origin_gated as origin_gated, o.dest_gated as dest_gated,
         o.icao24 as icao24, o.win_start as win_start, o.win_end as win_end,
         dateDiff('second', greatest(o.win_start, sp.flight_start), least(o.win_end, sp.flight_end)) as overlap_s,
         row_number() over (
@@ -24,6 +25,10 @@ with cand as (
 attached as (
     select
         flight_id, source, source_rank, origin_icao, dest_icao, overlap_s, win_start,
+        -- Over ALL the source's candidates, not just the winner: the resolvedness tiebreak below prefers
+        -- un-NULLed rows, so reading the gate flags off the winning row alone would hide the gate hit.
+        max(origin_gated) over (partition by flight_id, source) as src_origin_gated,
+        max(dest_gated) over (partition by flight_id, source) as src_dest_gated,
         -- Total-order tiebreak (origin/dest last): attached is referenced twice and re-evaluated, so a
         -- duplicate same-window opinion (e.g. a round-trip filed both directions) must resolve identically.
         row_number() over (
@@ -81,10 +86,14 @@ vrs_votes as (
     left join {{ ref('dim_airports') }} da on da.icao = p.dest_icao
     where p.n_box_legs = 1 or (p.support > 0 and p.n_supported = 1)
 )
-select flight_id, source, source_rank, origin_icao, dest_icao
+select flight_id, source, source_rank, origin_icao, dest_icao,
+       src_origin_gated as origin_gated, src_dest_gated as dest_gated
 from attached
 where source_rn = 1
 union all
-select flight_id, source, source_rank, origin_icao, dest_icao
+-- The vrs gate is deliberately unrepresented: admitting its both-NULL rows to carry a flag would raise
+-- uniqExact(source) and silently move fct_flights_reconciled.n_sources, a published column.
+select flight_id, source, source_rank, origin_icao, dest_icao,
+       toUInt8(0) as origin_gated, toUInt8(0) as dest_gated
 from vrs_votes
 where origin_icao is not null or dest_icao is not null

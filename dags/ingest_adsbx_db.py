@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pendulum
 
 from airflow.sdk import dag, task
 
 from include.assets import bronze_adsbx_db_table
+from include.dag_defaults import default_args
 
 # Static public download, no auth (verified 2026-07-16); ADSBx refreshes daily, we snapshot weekly.
 ADSBX_DB_URL = "https://downloads.adsbexchange.com/downloads/basic-ac-db.json.gz"
@@ -23,11 +22,7 @@ ADSBX_DB_MIN_ROWS = 500_000
     schedule="30 17 * * 0",
     catchup=False,
     max_active_runs=1,
-    default_args={
-        "owner": "amit",
-        "retries": 2,
-        "retry_delay": timedelta(minutes=10),
-    },
+    default_args=default_args(retries=2, delay_min=10),
     tags=["sancha1090", "bronze", "adsbx"],
 )
 def ingest_adsbx_db():

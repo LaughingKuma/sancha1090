@@ -2,11 +2,7 @@
 
 -- ADSBx is optional pre-deploy on upgraded hosts (one-shot clickhouse-init) — same guard as
 -- dim_aircraft_registry; absent ⇒ rooftop-only flags, honoring the yml's is_military=0 promise.
-{%- if execute %}
-{%- set adsbx_rel = adapter.get_relation(database=none, schema='bronze', identifier='adsbx_aircraft_db') %}
-{%- else %}
-{%- set adsbx_rel = none %}
-{%- endif %}
+{%- set adsbx_rel = optional_relation('bronze', 'adsbx_aircraft_db') %}
 
 with head as (
     -- mirrors pathfusion.HEAD_QUERY (epoch fallback on an empty mart) so the mart and serve-time

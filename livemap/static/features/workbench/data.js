@@ -1,6 +1,6 @@
 // One increment-only sequence per endpoint (the trackFetchSeq pattern) so a stale response never lands;
 // "deeplink" is a second instances lane, since a wb_inst resolve runs alongside the view's own list fetch.
-const seq = { airlines: 0, services: 0, instances: 0, deeplink: 0, search: 0 };
+const seq = { airlines: 0, services: 0, instances: 0, deeplink: 0, search: 0, summary: 0, trends: 0, flags: 0 };
 
 const qs = (o) => {
   const p = new URLSearchParams();
@@ -40,6 +40,41 @@ const tierMix = (t) => {
   }
   return o;
 };
+// the aggregate marts can serve an "unknown" bucket the four-tier row mix drops — coverage needs it
+const TIER_KEYS = [...TIERS, "unknown"];
+const tierCounts = (t) => {
+  const o = {};
+  for (const k of TIER_KEYS) {
+    const n = num(t && t[k]);
+    if (n) o[k] = n;
+  }
+  return o;
+};
+const FLAG_CLASSES = [
+  "tiebreak_endpoint", "single_source", "one_sided_intl", "feasibility_snap", "diversion", "military",
+];
+// a class the frontend has no chip for would render as an unlabelled doorway — drop it
+const classCounts = (c) => {
+  const o = {};
+  for (const k of FLAG_CLASSES) {
+    const n = num(c && c[k]);
+    if (n != null) o[k] = n;
+  }
+  return o;
+};
+const pair = (e) => (Array.isArray(e) ? e : []);
+const dayPairs = (a) =>
+  (Array.isArray(a) ? a : [])
+    .map((e) => [text(pair(e)[0], 10), num(pair(e)[1])])
+    .filter(([d, n]) => d !== "" && n !== null);
+const tierDays = (a) =>
+  (Array.isArray(a) ? a : [])
+    .map((e) => [text(pair(e)[0], 10), tierCounts(pair(e)[1])])
+    .filter(([d]) => d !== "");
+const estDays = (a) =>
+  (Array.isArray(a) ? a : [])
+    .map((e) => [text(pair(e)[0], 10), num(pair(e)[1]), num(pair(e)[2]) ?? 0])
+    .filter(([d]) => d !== "");
 const airport = (e) => ({
   icao: text(e && e.icao, 8),
   iata: text(e && e.iata, 4),
@@ -126,6 +161,72 @@ export async function fetchInstances(params, lane = "instances") {
     od: rows(j, "od_breakdown").map(odChip),
     // absent-not-hidden: only an explicit false (tier mart missing) disables the military control
     milAvailable: j.military_filter_available !== false,
+  };
+}
+
+export async function fetchSummary(params) {
+  const j = await call("summary", `/workbench/summary${qs(params)}`);
+  if (!j) return null;
+  if (j.complete === false) return null; // server-marked outage renders as unavailable, never as zeros
+  const f = j.flags || {};
+  const t = j.tiers || {};
+  const e = j.est || {};
+  return {
+    flights: num(j.flights) ?? 0,
+    aircraft: num(j.aircraft) ?? 0,
+    services: num(j.services) ?? 0,
+    daily: dayPairs(j.daily),
+    // absent-not-hidden again: only an explicit false (mart missing) ghosts the section
+    flags: { available: f.available !== false, flagged: num(f.flagged) ?? 0, classes: classCounts(f.classes) },
+    tiers: { available: t.available !== false, mix: tierCounts(t.mix), daily: tierDays(t.daily) },
+    est: { available: e.available !== false, errP50Km: num(e.err_p50_km), n: num(e.n) ?? 0, daily: estDays(e.daily) },
+    movers: rows(j, "movers").map((r) => ({
+      key: text(r.key, NAME_MAX),
+      n: num(r.n) ?? 0,
+      prevN: num(r.prev_n) ?? 0,
+      deltaPct: num(r.delta_pct),
+    })),
+  };
+}
+
+export async function fetchTrends(params) {
+  const j = await call("trends", `/workbench/trends${qs(params)}`);
+  if (!j) return null;
+  if (j.complete === false) return null; // server-marked outage renders as unavailable, never as zeros
+  // an airline name is the key here, so the key cap is the filter-value cap, not a label width
+  const rank = rows(j, "rank").map((r) => ({
+    key: text(r.key, NAME_MAX),
+    n: num(r.n) ?? 0,
+    distinctAircraft: num(r.distinct_aircraft) ?? 0,
+    prevN: num(r.prev_n) ?? 0,
+    deltaPct: num(r.delta_pct),
+  }));
+  const { total, limit, offset } = page(j, rank);
+  return {
+    dim: text(j.dim, 16),
+    series: rows(j, "series").map((s) => ({ key: text(s && s.key, NAME_MAX), points: dayPairs(s && s.points) })),
+    rank,
+    total,
+    limit,
+    offset,
+  };
+}
+
+export async function fetchFlags(params) {
+  const j = await call("flags", `/workbench/flags${qs(params)}`);
+  if (!j) return null;
+  if (j.complete === false) return null; // server-marked outage renders as unavailable, never as zeros
+  return {
+    available: j.available !== false,
+    ...page(
+      j,
+      rows(j, "flags").map((r) => ({
+        ...instance(r),
+        flagClass: text(r.flag_class, 24),
+        detail: text(r.detail, 96),
+      })),
+    ),
+    classes: classCounts(j.classes),
   };
 }
 

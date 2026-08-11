@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
+from conftest import seed_adsb_bundle
 
 from include import adsb_manifest as am
 
 
-def _adsb(eng, filename, **over):
+def _beast(eng, filename, **over):
     kw = dict(
         filename=filename, process_uuid="5f3b0bb5-7da1-48d5-be0c-9cff1808a86f",
-        stream="adsb_state", hostname="sangenjaya-edge",
+        stream="beast_raw", hostname="sangenjaya-edge",
         rotation_start_ts="2026-05-29T00:00:00Z", rotation_end_ts="2026-05-29T01:00:00Z",
-        complete=True, schema_version=1, row_count=45800,
-        s3_uri=f"s3://sancha1090/bronze/adsb_state/dt=2026-05-29/{filename}",
-        manifest_s3_uri=f"s3://sancha1090/bronze/adsb_state/dt=2026-05-29/{filename}.manifest.json",
+        complete=True, schema_version=1,
+        frame_count=423491, byte_count=4265615, beast_uncompressed_size=7818463,
+        s3_uri=f"s3://sancha1090/bronze/beast_raw/dt=2026-05-29/{filename}",
+        manifest_s3_uri=f"s3://sancha1090/bronze/beast_raw/dt=2026-05-29/{filename}.manifest.json",
     )
     kw.update(over)
     am.record_bundle(engine=eng, **kw)
@@ -22,7 +24,7 @@ def _adsb(eng, filename, **over):
 def _adsb_loaded(eng, filename, *, ch_loaded_at=None, archived_at=None):
     # Far-past / far-future ch_loaded_at strings keep the age comparison wall-clock- and
     # bind-format-independent (the year dominates lexicographically) in the sqlite mirror.
-    _adsb(eng, filename)
+    seed_adsb_bundle(eng, filename)
     with eng.begin() as c:
         c.execute(
             sa.text("UPDATE adsb_ingestion_manifest SET ch_loaded_at=:ch, archived_at=:arc WHERE filename=:f"),
@@ -31,8 +33,8 @@ def _adsb_loaded(eng, filename, *, ch_loaded_at=None, archived_at=None):
 
 
 def test_record_bundle_idempotent_on_filename(adsb_manifest_eng):
-    _adsb(adsb_manifest_eng, "f1.parquet", row_count=10)
-    _adsb(adsb_manifest_eng, "f1.parquet", row_count=999)  # conflict → ignored
+    seed_adsb_bundle(adsb_manifest_eng, "f1.parquet", row_count=10)
+    seed_adsb_bundle(adsb_manifest_eng, "f1.parquet", row_count=999)  # conflict → ignored
     with adsb_manifest_eng.begin() as c:
         n = c.execute(sa.text("SELECT count(*) FROM adsb_ingestion_manifest")).scalar()
         rc = c.execute(sa.text("SELECT row_count FROM adsb_ingestion_manifest WHERE filename='f1.parquet'")).scalar()
@@ -41,17 +43,8 @@ def test_record_bundle_idempotent_on_filename(adsb_manifest_eng):
 
 
 def test_record_bundle_handles_both_streams(adsb_manifest_eng):
-    _adsb(adsb_manifest_eng, "state.parquet", stream="adsb_state", row_count=100)
-    am.record_bundle(
-        engine=adsb_manifest_eng, filename="beast.beast.gz",
-        process_uuid="5f3b0bb5-7da1-48d5-be0c-9cff1808a86f",
-        stream="beast_raw", hostname="sangenjaya-edge",
-        rotation_start_ts="2026-05-29T00:00:00Z", rotation_end_ts="2026-05-29T01:00:00Z",
-        complete=True, schema_version=1,
-        frame_count=423491, byte_count=4265615, beast_uncompressed_size=7818463,
-        s3_uri="s3://sancha1090/bronze/beast_raw/dt=2026-05-29/beast.beast.gz",
-        manifest_s3_uri="s3://sancha1090/bronze/beast_raw/dt=2026-05-29/beast.manifest.json",
-    )
+    seed_adsb_bundle(adsb_manifest_eng, "state.parquet", stream="adsb_state", row_count=100)
+    _beast(adsb_manifest_eng, "beast.beast.gz")
     with adsb_manifest_eng.begin() as c:
         rows = {r[0]: r[1] for r in c.execute(sa.text(
             "SELECT stream, row_count FROM adsb_ingestion_manifest ORDER BY stream"))}
@@ -63,8 +56,8 @@ def test_record_bundle_handles_both_streams(adsb_manifest_eng):
 
 
 def test_already_ingested_returns_existing_subset(adsb_manifest_eng):
-    _adsb(adsb_manifest_eng, "a.parquet")
-    _adsb(adsb_manifest_eng, "b.parquet")
+    seed_adsb_bundle(adsb_manifest_eng, "a.parquet")
+    seed_adsb_bundle(adsb_manifest_eng, "b.parquet")
     got = am.already_ingested(["a.parquet", "b.parquet", "c.parquet"], engine=adsb_manifest_eng)
     assert got == {"a.parquet", "b.parquet"}
 
@@ -74,16 +67,9 @@ def test_already_ingested_empty_input(adsb_manifest_eng):
 
 
 def test_pending_ch_adsb_uris_excludes_beast_and_loaded(adsb_manifest_eng):
-    _adsb(adsb_manifest_eng, "pending.parquet", row_count=1)
-    _adsb(adsb_manifest_eng, "done.parquet", row_count=2)
-    am.record_bundle(
-        engine=adsb_manifest_eng, filename="b.beast.gz",
-        process_uuid="5f3b0bb5-7da1-48d5-be0c-9cff1808a86f",
-        stream="beast_raw", hostname="h", rotation_start_ts="2026-05-29T00:00:00Z",
-        rotation_end_ts="2026-05-29T01:00:00Z", complete=True, schema_version=1,
-        frame_count=1, byte_count=1, beast_uncompressed_size=1,
-        s3_uri="s3://b/x", manifest_s3_uri="s3://b/x.json",
-    )
+    seed_adsb_bundle(adsb_manifest_eng, "pending.parquet", row_count=1)
+    seed_adsb_bundle(adsb_manifest_eng, "done.parquet", row_count=2)
+    _beast(adsb_manifest_eng, "b.beast.gz")
     am.mark_ch_loaded(["done.parquet"], engine=adsb_manifest_eng)
 
     pending = am.pending_ch_adsb_uris(engine=adsb_manifest_eng)
@@ -95,16 +81,10 @@ def test_pending_ch_adsb_uris_excludes_beast_and_loaded(adsb_manifest_eng):
 def test_newest_adsb_rotation_end_returns_max_ignoring_beast(adsb_manifest_eng):
     from datetime import datetime, timezone
 
-    _adsb(adsb_manifest_eng, "early.parquet", rotation_end_ts="2026-05-29T01:00:00Z")
-    _adsb(adsb_manifest_eng, "late.parquet", rotation_end_ts="2026-05-29T05:30:00Z")
-    am.record_bundle(  # a later beast close time must NOT count (adsb_state only)
-        engine=adsb_manifest_eng, filename="b.beast.gz",
-        process_uuid="5f3b0bb5-7da1-48d5-be0c-9cff1808a86f",
-        stream="beast_raw", hostname="h", rotation_start_ts="2026-05-29T00:00:00Z",
-        rotation_end_ts="2026-05-29T09:00:00Z", complete=True, schema_version=1,
-        frame_count=1, byte_count=1, beast_uncompressed_size=1,
-        s3_uri="s3://b/x", manifest_s3_uri="s3://b/x.json",
-    )
+    seed_adsb_bundle(adsb_manifest_eng, "early.parquet", rotation_end_ts="2026-05-29T01:00:00Z")
+    seed_adsb_bundle(adsb_manifest_eng, "late.parquet", rotation_end_ts="2026-05-29T05:30:00Z")
+    # a later beast close time must NOT count (adsb_state only)
+    _beast(adsb_manifest_eng, "b.beast.gz", rotation_end_ts="2026-05-29T09:00:00Z")
     assert am.newest_adsb_rotation_end(engine=adsb_manifest_eng) == datetime(
         2026, 5, 29, 5, 30, tzinfo=timezone.utc)
 
@@ -114,16 +94,16 @@ def test_newest_adsb_rotation_end_none_when_empty(adsb_manifest_eng):
 
 
 def test_pending_ch_adsb_uris_carries_s3_uri(adsb_manifest_eng):
-    _adsb(adsb_manifest_eng, "a.parquet")
-    _adsb(adsb_manifest_eng, "b.parquet")
+    seed_adsb_bundle(adsb_manifest_eng, "a.parquet")
+    seed_adsb_bundle(adsb_manifest_eng, "b.parquet")
     ch_pending = am.pending_ch_adsb_uris(engine=adsb_manifest_eng)
     assert sorted(p["filename"] for p in ch_pending) == ["a.parquet", "b.parquet"]
     assert all("s3_uri" in p for p in ch_pending)
 
 
 def test_mark_ch_loaded_idempotent_and_excludes_loaded(adsb_manifest_eng):
-    _adsb(adsb_manifest_eng, "a.parquet")
-    _adsb(adsb_manifest_eng, "b.parquet")
+    seed_adsb_bundle(adsb_manifest_eng, "a.parquet")
+    seed_adsb_bundle(adsb_manifest_eng, "b.parquet")
     n1 = am.mark_ch_loaded(["a.parquet"], engine=adsb_manifest_eng)
     n2 = am.mark_ch_loaded(["a.parquet"], engine=adsb_manifest_eng)
     assert n1 == 1

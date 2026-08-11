@@ -1,19 +1,8 @@
 import datetime
-import importlib.util
-from pathlib import Path
 
 import pytest
+from conftest import fake_ch
 from fastapi.testclient import TestClient
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-@pytest.fixture(scope="module")
-def livemap():
-    spec = importlib.util.spec_from_file_location("livemap_app", REPO_ROOT / "livemap" / "app.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _seed(mod, monkeypatch):
@@ -35,18 +24,9 @@ def allow_path_auth(livemap, livemap_public, monkeypatch):
 
 
 def test_fetch_od_maps_reconciled_row(livemap, monkeypatch):
-    class _Res:
-        result_rows = [(35.55, 139.78, "vrs_routes", "unanimous", None, None, None, None,
-                        "JAL41", 1765500000, 1765503600, "RJTT", "EGLL")]
-
-    class _Client:
-        def query(self, *_a, **_k):
-            return _Res()
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(livemap, "_ch_client", lambda: _Client())
+    rows = [(35.55, 139.78, "vrs_routes", "unanimous", None, None, None, None,
+             "JAL41", 1765500000, 1765503600, "RJTT", "EGLL")]
+    monkeypatch.setattr(livemap, "_ch_client", lambda: fake_ch(rows))
     od, flight = livemap._fetch_od(42)
     assert od.origin.lat == 35.55 and od.origin.agreement == "unanimous"
     assert od.dest.lat is None

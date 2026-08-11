@@ -35,17 +35,25 @@ with raw_opinions as (
            icao24, start_time as win_start, end_time as win_end, callsign, origin_icao, dest_icao
     from {{ ref('int_flight_legs_opensky') }}
     where icao24 is not null and start_time is not null and end_time is not null
-)
+),
 -- SP4 runway feasibility gate, uniform across sources (the only reach into opensky_flights, whose O/D
 -- is OpenSky's own estimate): airline-shaped jets only -- bizjets legitimately use short strips. NULL the
 -- endpoint so it can't vote; the window still anchors the flight.
+gated as (
+    select
+        o.source, o.source_rank, o.icao24 as icao24, o.win_start, o.win_end, o.callsign,
+        o.origin_icao as origin_icao, o.dest_icao as dest_icao,
+        -- the flags survive the NULLing as the gate's only trace, projected as feasibility_gated downstream
+        toUInt8({{ jet_infeasible_endpoint(airline_shaped('o.callsign'), 'j.icao24 is not null', 'oa.runway_length_ft', 'oa.airport_type') }}) as origin_gated,
+        toUInt8({{ jet_infeasible_endpoint(airline_shaped('o.callsign'), 'j.icao24 is not null', 'da.runway_length_ft', 'da.airport_type') }}) as dest_gated
+    from raw_opinions o
+    left join {{ ref('int_jet_airframes') }} j on j.icao24 = lower(o.icao24)
+    left join {{ ref('dim_airports') }} oa on oa.icao = o.origin_icao
+    left join {{ ref('dim_airports') }} da on da.icao = o.dest_icao
+)
 select
-    o.source, o.source_rank, o.icao24 as icao24, o.win_start, o.win_end, o.callsign,
-    if({{ jet_infeasible_endpoint(airline_shaped('o.callsign'), 'j.icao24 is not null', 'oa.runway_length_ft', 'oa.airport_type') }},
-       NULL, o.origin_icao) as origin_icao,
-    if({{ jet_infeasible_endpoint(airline_shaped('o.callsign'), 'j.icao24 is not null', 'da.runway_length_ft', 'da.airport_type') }},
-       NULL, o.dest_icao) as dest_icao
-from raw_opinions o
-left join {{ ref('int_jet_airframes') }} j on j.icao24 = lower(o.icao24)
-left join {{ ref('dim_airports') }} oa on oa.icao = o.origin_icao
-left join {{ ref('dim_airports') }} da on da.icao = o.dest_icao
+    source, source_rank, icao24, win_start, win_end, callsign,
+    if(origin_gated = 1, NULL, origin_icao) as origin_icao,
+    if(dest_gated = 1, NULL, dest_icao) as dest_icao,
+    origin_gated, dest_gated
+from gated

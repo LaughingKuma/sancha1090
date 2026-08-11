@@ -55,6 +55,17 @@ _fuse_points = pf.fuse_points
 _client_ip = rl.client_ip
 _rate_limit_allow = rl.allow
 
+
+def _env_num(name, default, cast=float, lo=None):
+    # Knobs routed HERE prefer serving over crashing: garbage takes the default verbatim (never
+    # max(lo, default)), lo floors parsed values only. The bare casts elsewhere stay fail-fast by design.
+    try:
+        val = cast(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return val if lo is None else max(lo, val)
+
+
 # Server-side cache is the whole point: N browser tabs share ONE RW query stream, never N.
 POLL_SECONDS = float(os.environ.get("LIVEMAP_POLL_SECONDS", "1.0"))
 # Slow refreshes are tick-counted — derive the divisor so faster polls keep the ~5 min cadence
@@ -78,19 +89,9 @@ CH_QUERY_TIMEOUT_S = int(os.environ.get("LIVEMAP_CH_QUERY_TIMEOUT_S", "4"))
 CH_WRITER_USER = os.environ.get("LIVEMAP_CH_WRITER_USER", "livemap_writer")
 CH_WRITER_PASSWORD = os.environ.get("LIVEMAP_CH_WRITER_PASSWORD", "")
 
-# Bad logging settings must not prevent the serving process from importing.
-try:
-    EST_FLUSH_S = max(0.5, float(os.environ.get("LIVEMAP_EST_FLUSH_S", "5.0")))
-except ValueError:
-    EST_FLUSH_S = 5.0
-try:
-    EST_LOG_QUEUE_MAX = max(0, int(os.environ.get("LIVEMAP_EST_LOG_QUEUE_MAX", "256")))
-except ValueError:
-    EST_LOG_QUEUE_MAX = 256
-try:
-    EST_FLUSH_MAX_ROWS = max(1, int(os.environ.get("LIVEMAP_EST_FLUSH_MAX_ROWS", "1000")))
-except ValueError:
-    EST_FLUSH_MAX_ROWS = 1000
+EST_FLUSH_S = _env_num("LIVEMAP_EST_FLUSH_S", 5.0, lo=0.5)
+EST_LOG_QUEUE_MAX = _env_num("LIVEMAP_EST_LOG_QUEUE_MAX", 256, cast=int, lo=0)
+EST_FLUSH_MAX_ROWS = _env_num("LIVEMAP_EST_FLUSH_MAX_ROWS", 1000, cast=int, lo=1)
 
 _est_log_queue = ess.LogQueue(EST_LOG_QUEUE_MAX)
 _est_missing_table_warned = False
@@ -266,63 +267,21 @@ _mv_ladd_hexes: dict = {}
 # /flights is on-click + rarely changing (the reconciled mart is batch) — cache per hex.
 _flights_cache: dict = {}
 FLIGHTS_CACHE_TTL_S = float(os.environ.get("LIVEMAP_FLIGHTS_CACHE_TTL_S", "120"))
-try:
-    # bad env falls back instead of crashing import; floor 0 so the eviction loop always terminates
-    FLIGHTS_CACHE_MAX = max(0, int(os.environ.get("LIVEMAP_FLIGHTS_CACHE_MAX", "512")))
-except ValueError:
-    FLIGHTS_CACHE_MAX = 512
-
-# Workbench evidence layer (private-only) — caches keyed by the fetcher's own arg tuple, same
-# eviction policy as _flights_cache. Max sizes are fixed (the design gives no per-cache env knob).
-_wb_airlines_cache: dict = {}
-_wb_services_cache: dict = {}
-_wb_instances_cache: dict = {}
-_wb_search_cache: dict = {}
-WB_AIRLINES_CACHE_MAX = 64
-WB_SERVICES_CACHE_MAX = 256
-WB_INSTANCES_CACHE_MAX = 512
-WB_SEARCH_CACHE_MAX = 256
-try:
-    WB_AIRLINES_CACHE_TTL_S = float(os.environ.get("LIVEMAP_WB_AIRLINES_CACHE_TTL_S", "300"))
-except ValueError:
-    WB_AIRLINES_CACHE_TTL_S = 300.0
-try:
-    WB_SERVICES_CACHE_TTL_S = float(os.environ.get("LIVEMAP_WB_SERVICES_CACHE_TTL_S", "300"))
-except ValueError:
-    WB_SERVICES_CACHE_TTL_S = 300.0
-try:
-    WB_INSTANCES_CACHE_TTL_S = float(os.environ.get("LIVEMAP_WB_INSTANCES_CACHE_TTL_S", "120"))
-except ValueError:
-    WB_INSTANCES_CACHE_TTL_S = 120.0
-try:
-    WB_SEARCH_CACHE_TTL_S = float(os.environ.get("LIVEMAP_WB_SEARCH_CACHE_TTL_S", "120"))
-except ValueError:
-    WB_SEARCH_CACHE_TTL_S = 120.0
+# floor 0 on every cache-max knob so the eviction loop always terminates
+FLIGHTS_CACHE_MAX = _env_num("LIVEMAP_FLIGHTS_CACHE_MAX", 512, cast=int, lo=0)
 
 # /path geometry is expensive but authorization is cheap; only geometry rides this longer cache.
 _path_cache: dict = {}
 PATH_CACHE_TTL_S = float(os.environ.get("LIVEMAP_PATH_CACHE_TTL_S", "900"))
-try:
-    PATH_CACHE_MAX = max(0, int(os.environ.get("LIVEMAP_PATH_CACHE_MAX", "256")))
-except ValueError:
-    PATH_CACHE_MAX = 256
+PATH_CACHE_MAX = _env_num("LIVEMAP_PATH_CACHE_MAX", 256, cast=int, lo=0)
 
 _est_cache: dict = {}
 EST_CACHE_TTL_S = float(os.environ.get("LIVEMAP_EST_CACHE_TTL_S", "900.0"))
-try:
-    EST_CACHE_MAX = max(0, int(os.environ.get("LIVEMAP_EST_CACHE_MAX", "128")))
-except ValueError:
-    EST_CACHE_MAX = 128
+EST_CACHE_MAX = _env_num("LIVEMAP_EST_CACHE_MAX", 128, cast=int, lo=0)
 # Live-DR serving gates (design §5): snapshot membership proves nothing — the poller keeps
 # serving the last good snapshot through an outage, so both bounds are checked per request.
-try:
-    EST_LIVE_MAX_AGE_S = max(0.0, float(os.environ.get("LIVEMAP_EST_LIVE_MAX_AGE_S", "30")))
-except ValueError:
-    EST_LIVE_MAX_AGE_S = 30.0
-try:
-    EST_LIVE_SNAP_FRESH_S = max(0.0, float(os.environ.get("LIVEMAP_EST_LIVE_SNAP_FRESH_S", "10")))
-except ValueError:
-    EST_LIVE_SNAP_FRESH_S = 10.0
+EST_LIVE_MAX_AGE_S = _env_num("LIVEMAP_EST_LIVE_MAX_AGE_S", 30.0, lo=0.0)
+EST_LIVE_SNAP_FRESH_S = _env_num("LIVEMAP_EST_LIVE_SNAP_FRESH_S", 10.0, lo=0.0)
 # Cross-machine clock slack: a fix stamped slightly ahead of the host clock is fresh;
 # a far-future timestamp is garbage data, not freshness — both gates reject it (rev 2).
 EST_LIVE_FUTURE_SKEW_S = 2.0
@@ -644,107 +603,6 @@ def _is_unknown_table_error(exc) -> bool:
     return "code: 60" in s or "unknown_table" in s or "unknown table" in s or "doesn't exist" in s
 
 
-# Workbench thin fetchers (private-only): SQL text + row shaping live in wb; this layer only owns
-# the CH round trip and the tier-mart-absent degradation (query, and on unknown-table, requery).
-def _fetch_wb_airlines(q, limit, offset) -> dict:
-    params = {"q": (q or "").strip(), "limit": limit, "offset": offset}
-    client = _ch_client()
-    try:
-        try:
-            rows = client.query(wb.AIRLINES_QUERY_TIER, parameters=params).result_rows
-            with_tier = True
-        except Exception as exc:
-            if not _is_unknown_table_error(exc):
-                raise
-            rows = client.query(wb.AIRLINES_QUERY_NO_TIER, parameters=params).result_rows
-            with_tier = False
-        total = client.query(wb.AIRLINES_COUNT_QUERY, parameters={"q": params["q"]}).result_rows[0][0]
-    finally:
-        client.close()
-    return {"airlines": [wb.shape_airline_row(r, with_tier) for r in rows],
-            "total": total, "limit": limit, "offset": offset}
-
-
-def _fetch_wb_services(airline, q, limit, offset) -> dict:
-    params = {"airline": (airline or "").strip(), "q": (q or "").strip().upper(),
-              "limit": limit, "offset": offset}
-    client = _ch_client()
-    try:
-        try:
-            rows = client.query(wb.SERVICES_QUERY_TIER, parameters=params).result_rows
-            with_tier = True
-        except Exception as exc:
-            if not _is_unknown_table_error(exc):
-                raise
-            rows = client.query(wb.SERVICES_QUERY_NO_TIER, parameters=params).result_rows
-            with_tier = False
-        total = client.query(
-            wb.SERVICES_COUNT_QUERY, parameters={"airline": params["airline"], "q": params["q"]}
-        ).result_rows[0][0]
-        callsigns = [r[0] for r in rows]
-        top_od_rows = (
-            client.query(wb.SERVICES_TOP_OD_QUERY, parameters={"callsigns": callsigns}).result_rows
-            if callsigns else []
-        )
-    finally:
-        client.close()
-    top_od = wb.group_top_od(top_od_rows)
-    return {"services": [wb.shape_service_row(r, with_tier, top_od) for r in rows],
-            "total": total, "limit": limit, "offset": offset}
-
-
-def _fetch_wb_instances(callsign, airline, hex_, reg, airport, od, type_, military,
-                         day_from, day_to, sort, limit, offset) -> dict:
-    params = wb.instances_params(callsign, airline, hex_, reg, airport, od, type_, military,
-                                  day_from, day_to)
-    params["limit"] = limit
-    params["offset"] = offset
-    main_tier = wb.INSTANCES_QUERY_TIER_ASC if sort == "day_asc" else wb.INSTANCES_QUERY_TIER_DESC
-    main_no_tier = wb.INSTANCES_QUERY_NO_TIER_ASC if sort == "day_asc" else wb.INSTANCES_QUERY_NO_TIER_DESC
-    client = _ch_client()
-    try:
-        try:
-            rows = client.query(main_tier, parameters=params,
-                                settings=wb.INSTANCES_QUERY_SETTINGS).result_rows
-            total = client.query(wb.INSTANCES_COUNT_QUERY_TIER, parameters=params).result_rows[0][0]
-            od_rows = client.query(wb.INSTANCES_OD_BREAKDOWN_QUERY_TIER, parameters=params).result_rows
-        except Exception as exc:
-            if not _is_unknown_table_error(exc):
-                raise
-            # military filtering has no meaning without the tier mart — an honest empty, not a silent no-op
-            if params["military"]:
-                return {"instances": [], "od_breakdown": [], "total": 0, "limit": limit, "offset": offset,
-                        "military_filter_available": False}
-            rows = client.query(main_no_tier, parameters=params,
-                                settings=wb.INSTANCES_QUERY_SETTINGS).result_rows
-            total = client.query(wb.INSTANCES_COUNT_QUERY_NO_TIER, parameters=params).result_rows[0][0]
-            od_rows = client.query(wb.INSTANCES_OD_BREAKDOWN_QUERY_NO_TIER, parameters=params).result_rows
-    finally:
-        client.close()
-    return {"instances": [wb.shape_instance_row(r) for r in rows],
-            "od_breakdown": wb.shape_od_breakdown(od_rows),
-            "total": total, "limit": limit, "offset": offset}
-
-
-def _fetch_wb_search(q, limit) -> dict:
-    params = wb.search_params(q)
-    params["limit"] = limit
-    client = _ch_client()
-    try:
-        airlines = client.query(wb.SEARCH_AIRLINES_QUERY, parameters=params).result_rows
-        services = client.query(wb.SEARCH_SERVICES_QUERY, parameters=params).result_rows
-        airframes = client.query(wb.SEARCH_AIRFRAMES_QUERY, parameters=params).result_rows
-        airports = client.query(wb.SEARCH_AIRPORTS_QUERY, parameters=params).result_rows
-    finally:
-        client.close()
-    return {
-        "airlines": [wb.shape_search_airline(r) for r in airlines],
-        "services": [wb.shape_search_service(r) for r in services],
-        "airframes": [wb.shape_search_airframe(r) for r in airframes],
-        "airports": [wb.shape_search_airport(r) for r in airports],
-    }
-
-
 async def _flush_once() -> None:
     queue = _est_log_queue
 
@@ -964,8 +822,12 @@ app.include_router(routes_path.build_router(_ctx))
 
 if not PUBLIC_MODE:
     wb = _load_sibling("workbench")
+    # Constructor injection, not the _Ctx(globals()) pattern: the store explicitly owns the whole
+    # workbench read path and gets ONLY the read-client factory — never _ch_writer_client.
+    wb_store = _load_sibling("wb_store").WorkbenchStore(wb, cache.put, _ch_client,
+                                                        _is_unknown_table_error, _env_num)
     routes_workbench = _load_sibling("routes_workbench")
-    app.include_router(routes_workbench.build_router(_ctx))
+    app.include_router(routes_workbench.build_router(wb_store))
 
 
 # Header-less statics get heuristic-cached by browsers — a stale map.js once outlived its index.html

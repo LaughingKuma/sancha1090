@@ -1,22 +1,13 @@
 import datetime
-import importlib.util
 import json
 import re
 from pathlib import Path
 
 import pytest
+from conftest import fake_ch
 from fastapi.testclient import TestClient
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-@pytest.fixture(scope="module")
-def livemap():
-    spec = importlib.util.spec_from_file_location("livemap_app_route", REPO_ROOT / "livemap" / "app.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
 
 AUTH = ("abc123", "DAL69", False, 1765500000, 1765507200, datetime.date(2026, 6, 1))
 # one 2 h hole between two airborne fixes: the only shape a filed route may shape (design 6a)
@@ -153,21 +144,11 @@ def test_route_fetch_failure_and_timeout_serve_the_pure_gc_bridge(livemap, monke
 
 
 def test_fetch_route_returns_none_on_empty_or_blank_rows(livemap, monkeypatch):
-    class _Client:
-        def __init__(self, rows):
-            self.rows = rows
-
-        def query(self, *_a, **_k):
-            return type("_Res", (), {"result_rows": self.rows})()
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(livemap, "_ch_client", lambda: _Client([]))
+    monkeypatch.setattr(livemap, "_ch_client", lambda: fake_ch([]))
     assert livemap._fetch_route("DAL69", 1765500000, 1765507200, "KSEA", "RCTP") is None
-    monkeypatch.setattr(livemap, "_ch_client", lambda: _Client([(None, PLAN_TS)]))
+    monkeypatch.setattr(livemap, "_ch_client", lambda: fake_ch([(None, PLAN_TS)]))
     assert livemap._fetch_route("DAL69", 1765500000, 1765507200, "KSEA", "RCTP") is None
-    monkeypatch.setattr(livemap, "_ch_client", lambda: _Client([(ROUTE_STR, PLAN_TS)]))
+    monkeypatch.setattr(livemap, "_ch_client", lambda: fake_ch([(ROUTE_STR, PLAN_TS)]))
     assert livemap._fetch_route("dal69 ", 1765500000, 1765507200, "KSEA", "RCTP") == (ROUTE_STR, PLAN_TS)
 
 

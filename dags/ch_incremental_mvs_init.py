@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pendulum
 
 from airflow.sdk import dag, task
+
+from include.dag_defaults import default_args
 
 
 @dag(
@@ -14,11 +14,7 @@ from airflow.sdk import dag, task
     schedule=None,
     catchup=False,
     max_active_runs=1,
-    default_args={
-        "owner": "amit",
-        "retries": 1,
-        "retry_delay": timedelta(minutes=2),
-    },
+    default_args=default_args(),
     tags=["sancha1090", "clickhouse", "manual"],
 )
 def ch_incremental_mvs_init():

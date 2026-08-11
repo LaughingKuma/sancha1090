@@ -1,0 +1,50 @@
+<clickhouse>
+    <!-- Retention caps for ClickHouse's internal system.* log tables. Without these the
+         server keeps them forever: text_log alone had grown to 73 GiB (~107 GiB across
+         all log tables) by Aug 2026. TTLs are applied by the background merge process;
+         changing them here recreates the table on restart (old one is renamed *_N). -->
+
+    <!-- Server log messages mirrored to a table. The big offender: only keep warnings+
+         and expire them after 3 days. -->
+    <text_log>
+        <level>warning</level>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </text_log>
+
+    <!-- Per-query profiling/tracing detail — only useful for short-window debugging. -->
+    <processors_profile_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </processors_profile_log>
+    <trace_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </trace_log>
+    <query_thread_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </query_thread_log>
+    <!-- opentelemetry_span_log deliberately omitted: the base config.xml gives it an
+         explicit <engine>, and ClickHouse refuses a separate <ttl> alongside one
+         (BAD_ARGUMENTS at startup). It stays tiny; a TTL would have to be added
+         inside the engine spec itself if ever needed. -->
+
+    <!-- Query history is genuinely useful for the Airflow pipelines — keep two weeks. -->
+    <query_log>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+    </query_log>
+    <part_log>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+    </part_log>
+    <error_log>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+    </error_log>
+
+    <!-- High-frequency metrics snapshots — a week is plenty for Grafana-style lookback. -->
+    <metric_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </metric_log>
+    <asynchronous_metric_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </asynchronous_metric_log>
+    <query_metric_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </query_metric_log>
+</clickhouse>

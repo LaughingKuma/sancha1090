@@ -1,5 +1,5 @@
-import { setHistPath, clearHistPath } from "../../trails.js?v=6.41";
-import { maybeFitHistPath, clearSelection } from "../../interactions.js?v=6.41";
+import { setHistPath, clearHistPath } from "../../trails.js?v=6.42";
+import { maybeFitHistPath, clearSelection } from "../../interactions.js?v=6.42";
 
 const DIM = 0.85; // the live fleet recedes to context; the drawn path is the subject
 const TIER_LABEL = { settled: "● STL", estimated: "◐ EST", provisional: "○ PRV", none: "· NONE", unknown: "· UNK" };

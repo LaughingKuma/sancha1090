@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pendulum
 
 from airflow.sdk import dag, task
 
 from include.assets import bronze_aircraft_db_table
+from include.dag_defaults import default_args
 
 # Static download, no API credits (verified 2026-06-10); refreshed ~weekly upstream.
 AIRCRAFT_DB_URL = "https://s3.opensky-network.org/data-samples/metadata/aircraftDatabase.csv"
@@ -20,11 +19,7 @@ AIRCRAFT_DB_URL = "https://s3.opensky-network.org/data-samples/metadata/aircraft
     schedule="0 17 * * 0",
     catchup=False,
     max_active_runs=1,
-    default_args={
-        "owner": "amit",
-        "retries": 2,
-        "retry_delay": timedelta(minutes=10),
-    },
+    default_args=default_args(retries=2, delay_min=10),
     tags=["sancha1090", "bronze", "v5"],
 )
 def ingest_aircraft_db():

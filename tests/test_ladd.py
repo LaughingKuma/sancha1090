@@ -214,6 +214,31 @@ _MASTER = (
 )
 
 
+def _master_zip():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("MASTER.txt", _MASTER)
+    return buf.getvalue()
+
+
+class _RegistryStream:
+    # Keeps registry-download tests offline while preserving the httpx.stream lifecycle.
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def iter_bytes(self):
+        yield self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
 def test_build_registry_index_sniffs_columns():
     idx = ladd.build_registry_index(_MASTER)
     assert idx == {"N1AA": "abcdef"}     # blank-hex row dropped, hex lowercased, N-prefixed key
@@ -232,56 +257,18 @@ def test_build_registry_index_missing_columns_raises():
 
 
 def test_download_registry_index_extracts_master_from_zip(monkeypatch):
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("MASTER.txt", _MASTER)
-    payload = buf.getvalue()
-
-    class _Resp:
-        def raise_for_status(self):
-            pass
-
-        def iter_bytes(self):
-            yield payload
-
-    class _Stream:
-        def __enter__(self):
-            return _Resp()
-
-        def __exit__(self, *a):
-            return False
-
     import httpx
-    monkeypatch.setattr(httpx, "stream", lambda *_a, **_k: _Stream())
+    monkeypatch.setattr(httpx, "stream", lambda *_a, **_k: _RegistryStream(_master_zip()))
     assert ladd.download_registry_index() == {"N1AA": "abcdef"}
 
 
 def test_download_registry_index_sends_browser_user_agent(monkeypatch):
     # registry.faa.gov 403s httpx's bare default User-Agent in production — a browser-like header unblocks it.
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("MASTER.txt", _MASTER)
-    payload = buf.getvalue()
-
-    class _Resp:
-        def raise_for_status(self):
-            pass
-
-        def iter_bytes(self):
-            yield payload
-
-    class _Stream:
-        def __enter__(self):
-            return _Resp()
-
-        def __exit__(self, *a):
-            return False
-
     calls = []
 
     def _fake_stream(*_a, **kwargs):
         calls.append(kwargs)
-        return _Stream()
+        return _RegistryStream(_master_zip())
 
     import httpx
     monkeypatch.setattr(httpx, "stream", _fake_stream)

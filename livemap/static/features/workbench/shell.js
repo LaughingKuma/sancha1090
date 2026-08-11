@@ -1,6 +1,8 @@
-import { readUrl, writeUrl } from "./url.js?v=6.41";
-import { enterFocus, exitFocus, dropFocus, isFocused } from "./focus.js?v=6.41";
-import { fetchInstances } from "./data.js?v=6.41";
+import { readUrl, writeUrl } from "./url.js?v=6.42";
+import { enterFocus, exitFocus, dropFocus, isFocused } from "./focus.js?v=6.42";
+import { fetchInstances } from "./data.js?v=6.42";
+import { pickCandidate } from "./resolve.js?v=6.42";
+import { destroyCharts } from "./chart.js?v=6.42";
 
 // Callsigns, registrations and airport names are attacker-transmittable and rows are built as HTML.
 export function esc(v) {
@@ -22,6 +24,8 @@ export const W = {
   od: null,
   inst: null,
   mil: false,
+  flagClass: null, // Flags-only class filter (the MIL precedent)
+  dim: "route",
   page: 1,
   hex: null, // airframe scope — set by search and by the instance deep-link fallback
   apt: null, // airport filter (log chip + search's airport bucket)
@@ -38,9 +42,11 @@ const TIER_LABEL = { settled: "● STL", estimated: "◐ EST", provisional: "○
 const TIER_GLYPH = { settled: "●", estimated: "◐", provisional: "○", none: "·" };
 const PRESETS = { "7d": 7, "30d": 30, "90d": 90 };
 const VIEW_SRC = {
-  overview: "./views/overview.js?v=6.41",
-  drill: "./views/drill.js?v=6.41",
-  log: "./views/log.js?v=6.41",
+  overview: "./views/overview.js?v=6.42",
+  drill: "./views/drill.js?v=6.42",
+  log: "./views/log.js?v=6.42",
+  flags: "./views/flags.js?v=6.42",
+  trends: "./views/trends.js?v=6.42",
 };
 
 // The server windows on JST calendar days — shift, then read the UTC date parts.
@@ -217,6 +223,7 @@ export async function renderView() {
   }
   const mod = await viewMods.get(name).catch(() => null);
   if (!mod || W.view !== name || !W.body) return; // a faster switch superseded this import
+  destroyCharts(); // replaceChildren only detaches DOM — uPlot instances must be torn down explicitly
   W.body.replaceChildren();
   mod.render(W.body);
 }
@@ -228,18 +235,19 @@ export function navigate(patch, replace = false) {
   renderView();
 }
 
-// Search dispatches land here so every entry point produces the same drill state; MIL is Log-only.
+// Search dispatches land here so every entry point produces the same drill state; MIL and the
+// flags class filter never survive a doorway out of their owning view.
 export function openAirline(name) {
-  navigate({ view: "drill", airline: name, service: null, od: null, hex: null, apt: null, mil: false, page: 1 });
+  navigate({ view: "drill", airline: name, service: null, od: null, hex: null, apt: null, mil: false, flagClass: null, page: 1 });
 }
 export function openService(callsign, airline = null) {
-  navigate({ view: "drill", airline, service: callsign, od: null, hex: null, apt: null, mil: false, page: 1 });
+  navigate({ view: "drill", airline, service: callsign, od: null, hex: null, apt: null, mil: false, flagClass: null, page: 1 });
 }
 export function openAirframe(hex) {
-  navigate({ view: "drill", airline: null, service: null, od: null, hex, apt: null, mil: false, page: 1 });
+  navigate({ view: "drill", airline: null, service: null, od: null, hex, apt: null, mil: false, flagClass: null, page: 1 });
 }
 export function openAirport(code) {
-  navigate({ view: "drill", airline: null, service: null, od: null, hex: null, apt: code, mil: false, page: 1 });
+  navigate({ view: "drill", airline: null, service: null, od: null, hex: null, apt: code, mil: false, flagClass: null, page: 1 });
 }
 
 // <icao24>.<epoch>[.<callsign>] deep link: nearest start within ±15 min (the key is a start time,
@@ -261,22 +269,7 @@ async function resolveDeepLink() {
     { hex, day_from: jstDayOf(epoch - 900), day_to: jstDayOf(epoch + 900), limit: 200 }, "deeplink");
   if (W.inst !== want) return; // a newer navigation owns the state — this resolve is obsolete
   if (!p) return setStatus("deep link: lookup unavailable"); // superseded/failed ≠ not-found: keep the URL
-  const norm = (c) => String(c || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
-  // nearest |Δ| wins, not first-in-sort (2,766 live rows have a newer same-hex start inside ±900s)
-  let cands = p.rows
-    .filter((r) => r.startTs != null && Math.abs(r.startTs - epoch) <= 900)
-    .sort((a, b) => Math.abs(a.startTs - epoch) - Math.abs(b.startTs - epoch) || a.startTs - b.startTs);
-  if (csKey) {
-    // a key that names a callsign only ever resolves to that callsign — a sole nonmatching
-    // neighbor (2,885 live cases) is a wrong flight, not a fallback
-    const named = cands.filter((r) => norm(r.callsign) === norm(csKey));
-    cands = named;
-  } else if (cands.length > 1
-      && Math.abs(cands[0].startTs - epoch) === Math.abs(cands[1].startTs - epoch)
-      && norm(cands[0].callsign) !== norm(cands[1].callsign)) {
-    cands = []; // a legacy 2-part key aliasing two flights — reject over a repeatable wrong pick
-  }
-  const hit = cands[0];
+  const hit = pickCandidate(p.rows, epoch, csKey);
   if (hit) {
     if (hit.key && hit.key !== W.inst) {
       // canonicalize to the resolved key: a rebuilt start shifts it, and row lighting compares keys
@@ -301,7 +294,7 @@ async function resolveDeepLink() {
   }
   // no match: fall back to the hex's day list rather than guessing at a neighbouring flight
   W.inst = null;
-  navigate({ view: "drill", hex, airline: null, service: null, od: null, apt: null, range: `${day}..${day}`, page: 1 }, true);
+  navigate({ view: "drill", hex, airline: null, service: null, od: null, apt: null, mil: false, flagClass: null, range: `${day}..${day}`, page: 1 }, true);
   setStatus("instance not found — showing that day's flights for the airframe");
 }
 
@@ -335,6 +328,8 @@ export function buildRail() {
     '<button type="button" class="wb-view" role="tab" aria-controls="wb-body" data-view="overview">home</button>' +
     '<button type="button" class="wb-view" role="tab" aria-controls="wb-body" data-view="drill">drill</button>' +
     '<button type="button" class="wb-view" role="tab" aria-controls="wb-body" data-view="log">log</button>' +
+    '<button type="button" class="wb-view" role="tab" aria-controls="wb-body" data-view="flags">flags</button>' +
+    '<button type="button" class="wb-view" role="tab" aria-controls="wb-body" data-view="trends">trends</button>' +
     '<button type="button" class="wb-view wb-ghost" role="tab" aria-selected="false" disabled title="slice 3">est</button>' +
     '<button type="button" class="wb-view wb-ghost" role="tab" aria-selected="false" disabled title="slice 3">cov</button></div>' +
     '<div class="wb-range" title="date range applies to instance lists">' +
@@ -374,9 +369,12 @@ export function buildRail() {
   });
   rail.querySelector(".wb-views").addEventListener("click", (e) => {
     const btn = e.target.closest(".wb-view[data-view]");
-    // MIL is Log's control, so it never survives into a view with no toggle to undo it
-    if (btn && btn.dataset.view !== W.view)
-      navigate({ view: btn.dataset.view, page: 1, mil: btn.dataset.view === "log" && W.mil });
+    // MIL is Log's control and the class filter is Flags', so neither survives into a view with no
+    // toggle to undo it
+    if (btn && btn.dataset.view !== W.view) {
+      const v = btn.dataset.view;
+      navigate({ view: v, page: 1, mil: v === "log" && W.mil, flagClass: v === "flags" ? W.flagClass : null });
+    }
   });
   const custom = rail.querySelector(".wb-custom");
   rail.querySelector(".wb-range").addEventListener("click", (e) => {

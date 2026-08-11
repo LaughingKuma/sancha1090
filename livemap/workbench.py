@@ -5,6 +5,15 @@ import os
 CH_DB = os.environ.get("LIVEMAP_CH_DB", "gold_ch")
 TIER_TBL = f"{CH_DB}.fct_flight_recon_tier"
 RECON_TBL = f"{CH_DB}.fct_flights_reconciled"
+FLAGS_TBL = f"{CH_DB}.fct_flight_flags"
+EST_TBL = f"{CH_DB}.fct_est_settlement"
+
+# Only ever run on a degradation path: the happy path pays one round trip and lets an
+# unknown-table error tell it which optional mart is missing.
+PROBE_TABLES_QUERY = (
+    "SELECT name FROM system.tables WHERE database = {db:String} "
+    "AND name IN ('fct_flight_flags', 'fct_flight_recon_tier', 'fct_est_settlement')"
+)
 
 # Sentinel-guarded ANDs: every optional filter is always bound (never conditionally interpolated),
 # an empty/wide sentinel just makes the clause vacuously true. Shared by main/count/od-breakdown.
@@ -56,24 +65,6 @@ INSTANCES_QUERY_SETTINGS = {"query_plan_optimize_lazy_materialization": 0,
 _PAGE_DESC = " ORDER BY r.start_time DESC, r.flight_id DESC LIMIT {limit:UInt64} OFFSET {offset:UInt64}"
 _PAGE_ASC = " ORDER BY r.start_time ASC, r.flight_id ASC LIMIT {limit:UInt64} OFFSET {offset:UInt64}"
 
-INSTANCES_QUERY_TIER_DESC = (
-    _INSTANCES_SELECT + _INSTANCES_TIER_COLS + _TIER_JOIN + _INSTANCES_WHERE + _MIL_CLAUSE + _PAGE_DESC
-)
-INSTANCES_QUERY_TIER_ASC = (
-    _INSTANCES_SELECT + _INSTANCES_TIER_COLS + _TIER_JOIN + _INSTANCES_WHERE + _MIL_CLAUSE + _PAGE_ASC
-)
-INSTANCES_QUERY_NO_TIER_DESC = (
-    _INSTANCES_SELECT + _INSTANCES_NO_TIER_COLS + _NO_TIER_FROM + _INSTANCES_WHERE + _PAGE_DESC
-)
-INSTANCES_QUERY_NO_TIER_ASC = (
-    _INSTANCES_SELECT + _INSTANCES_NO_TIER_COLS + _NO_TIER_FROM + _INSTANCES_WHERE + _PAGE_ASC
-)
-INSTANCES_COUNT_QUERY_TIER = (
-    "SELECT count() " + _TIER_JOIN + _INSTANCES_WHERE + _MIL_CLAUSE
-)
-INSTANCES_COUNT_QUERY_NO_TIER = (
-    "SELECT count() " + _NO_TIER_FROM + _INSTANCES_WHERE
-)
 _OD_BREAKDOWN_SELECT = (
     "SELECT coalesce(r.origin_iata, r.origin_icao) AS o, coalesce(r.dest_iata, r.dest_icao) AS d, count() AS n "
 )
@@ -81,31 +72,188 @@ _OD_BREAKDOWN_TAIL = (
     "AND coalesce(r.origin_iata, r.origin_icao) IS NOT NULL AND coalesce(r.dest_iata, r.dest_icao) IS NOT NULL "
     "GROUP BY o, d ORDER BY n DESC, o, d LIMIT 8"
 )
-INSTANCES_OD_BREAKDOWN_QUERY_TIER = (
-    _OD_BREAKDOWN_SELECT + _TIER_JOIN + _INSTANCES_WHERE_NO_OD + _MIL_CLAUSE + " " + _OD_BREAKDOWN_TAIL
+
+
+# Fixed-catalog builders: the booleans only ever select among the module's own fragments above,
+# so no caller-provided text can reach the SQL (the military clause rides the tier variant only).
+def instances_query(tier: bool, asc: bool) -> str:
+    return (_INSTANCES_SELECT + (_INSTANCES_TIER_COLS if tier else _INSTANCES_NO_TIER_COLS)
+            + (_TIER_JOIN if tier else _NO_TIER_FROM) + _INSTANCES_WHERE
+            + (_MIL_CLAUSE if tier else "") + (_PAGE_ASC if asc else _PAGE_DESC))
+
+
+def instances_count_query(tier: bool) -> str:
+    return ("SELECT count() " + (_TIER_JOIN if tier else _NO_TIER_FROM) + _INSTANCES_WHERE
+            + (_MIL_CLAUSE if tier else ""))
+
+
+def instances_od_breakdown_query(tier: bool) -> str:
+    return (_OD_BREAKDOWN_SELECT + (_TIER_JOIN if tier else _NO_TIER_FROM) + _INSTANCES_WHERE_NO_OD
+            + (_MIL_CLAUSE if tier else "") + " " + _OD_BREAKDOWN_TAIL)
+
+# fct_flight_flags.start_day is the UTC day — the feed windows on the reconciled start_time in JST
+# so a 23:30 UTC flight lands on the same day the rest of the workbench puts it.
+_FLAGS_WHERE = (
+    "({class:String} = '' OR f.flag_class = {class:String}) "
+    "AND toDate(r.start_time, 'Asia/Tokyo') BETWEEN {day_from:Date} AND {day_to:Date}"
 )
-INSTANCES_OD_BREAKDOWN_QUERY_NO_TIER = (
-    _OD_BREAKDOWN_SELECT + _NO_TIER_FROM + _INSTANCES_WHERE_NO_OD + " " + _OD_BREAKDOWN_TAIL
+_FLAGS_PAGE = (" ORDER BY r.start_time DESC, r.flight_id DESC, f.flag_class ASC"
+               " LIMIT {limit:UInt64} OFFSET {offset:UInt64}")
+
+
+def _flags_query(tier: bool) -> str:
+    return (_INSTANCES_SELECT + (_INSTANCES_TIER_COLS if tier else _INSTANCES_NO_TIER_COLS)
+            + ", f.flag_class AS flag_class, f.detail AS detail "
+            f"FROM {FLAGS_TBL} f JOIN {RECON_TBL} r ON r.flight_id = f.flight_id "
+            + (f"LEFT JOIN {TIER_TBL} t ON t.flight_id = r.flight_id " if tier else "")
+            + "WHERE " + _FLAGS_WHERE + _FLAGS_PAGE)
+
+
+FLAGS_QUERY_TIER = _flags_query(True)
+FLAGS_QUERY_NO_TIER = _flags_query(False)
+FLAGS_COUNT_QUERY = (
+    f"SELECT count() FROM {FLAGS_TBL} f JOIN {RECON_TBL} r ON r.flight_id = f.flight_id WHERE "
+    + _FLAGS_WHERE
+)
+FLAGS_CLASSES_QUERY = (
+    f"SELECT f.flag_class, count() FROM {FLAGS_TBL} f JOIN {RECON_TBL} r "
+    "ON r.flight_id = f.flight_id "
+    "WHERE toDate(r.start_time, 'Asia/Tokyo') BETWEEN {day_from:Date} AND {day_to:Date} "
+    "GROUP BY f.flag_class ORDER BY f.flag_class"
 )
 
-AIRLINES_QUERY_TIER = (
-    "SELECT r.airline_name AS name, count() AS n_flights, uniqExact(r.callsign) AS n_services, "
-    "toString(min(toDate(r.start_time, 'Asia/Tokyo'))) AS first_day, "
-    "toString(max(toDate(r.start_time, 'Asia/Tokyo'))) AS last_day, "
+# One round trip for the whole overview: every section is a UNION ALL arm over the same window CTE,
+# projecting the one (sect, k, k2, v1, v2) shape. Optional-mart arms drop out when the mart is gone.
+_SUMMARY_RECON_CTE = (
+    "WITH wr AS (SELECT *, toDate(start_time, 'Asia/Tokyo') AS jday "
+    f"FROM {RECON_TBL} "
+    "WHERE toDate(start_time, 'Asia/Tokyo') BETWEEN {day_from:Date} AND {day_to:Date}) "
+)
+SUMMARY_CORE_ARMS = (
+    "SELECT 'total' AS sect, 'flights' AS k, '' AS k2, toFloat64(count()) AS v1, 0. AS v2 FROM wr "
+    "UNION ALL SELECT 'total', 'aircraft', '', toFloat64(uniqExact(icao24)), 0. FROM wr "
+    "UNION ALL SELECT 'total', 'services', '', toFloat64(uniqExact(callsign)), 0. FROM wr "
+    "WHERE coalesce(callsign, '') != '' "
+    "UNION ALL SELECT 'daily', toString(jday), '', toFloat64(count()), 0. FROM wr GROUP BY jday "
+    "UNION ALL SELECT 'mover', k, '', v1, v2 FROM ("
+    "SELECT c.k AS k, toFloat64(c.n) AS v1, toFloat64(coalesce(p.n, 0)) AS v2 "
+    "FROM (SELECT concat(coalesce(origin_iata, origin_icao), '-', coalesce(dest_iata, dest_icao)) AS k, "
+    "count() AS n "
+    "FROM wr WHERE origin_icao IS NOT NULL AND dest_icao IS NOT NULL GROUP BY k) c "
+    "LEFT JOIN (SELECT concat(coalesce(origin_iata, origin_icao), '-', coalesce(dest_iata, dest_icao)) AS k, "
+    "count() AS n "
+    f"FROM {RECON_TBL} "
+    "WHERE toDate(start_time, 'Asia/Tokyo') BETWEEN {prev_from:Date} AND {prev_to:Date} "
+    "AND origin_icao IS NOT NULL AND dest_icao IS NOT NULL GROUP BY k) p ON p.k = c.k "
+    "ORDER BY v1 DESC, k LIMIT 5)"
+)
+SUMMARY_FLAGS_ARMS = (
+    " UNION ALL SELECT 'flag', flag_class, '', toFloat64(count()), 0. "
+    f"FROM {FLAGS_TBL} f JOIN wr r ON r.flight_id = f.flight_id GROUP BY flag_class "
+    "UNION ALL SELECT 'flagged', '', '', toFloat64(uniqExact(f.flight_id)), 0. "
+    f"FROM {FLAGS_TBL} f JOIN wr r ON r.flight_id = f.flight_id"
+)
+SUMMARY_TIER_ARMS = (
+    " UNION ALL SELECT 'tier', if(coalesce(t.tier, '') = '', 'unknown', t.tier), '', toFloat64(count()), 0. "
+    f"FROM wr r LEFT JOIN {TIER_TBL} t ON t.flight_id = r.flight_id GROUP BY 2 "
+    "UNION ALL SELECT 'tier_daily', toString(r.jday), if(coalesce(t.tier, '') = '', 'unknown', t.tier), "
+    "toFloat64(count()), 0. "
+    f"FROM wr r LEFT JOIN {TIER_TBL} t ON t.flight_id = r.flight_id GROUP BY 2, 3"
+)
+# computed_at is the estimate's own serve day — the only day fct_est_settlement carries, so the
+# est arms window on it rather than on the flight's JST start day.
+_EST_DEDUP = (
+    f"SELECT * FROM {EST_TBL} "
+    "WHERE skip_ambiguous = 0 AND settled = 1 AND err_p50_km IS NOT NULL "
+    "AND toDate(computed_at, 'Asia/Tokyo') BETWEEN {day_from:Date} AND {day_to:Date} "
+    "ORDER BY computed_at, estimate_id LIMIT 1 BY input_fingerprint, seg_idx"
+)
+# The standing drift read (README): unique scored inputs, per-point errors pooled — full-recompute
+# rows repeat an input, and a median of per-segment medians measurably hides drift.
+_EST_POOL = (
+    "arraySort(groupArrayArray(errs_km)) AS pool, "
+    "if(length(pool) = 0, -1., toFloat64(pool[toUInt32(ceil(0.5 * length(pool)))])) AS v1, "
+    "toFloat64(count()) AS v2"
+)
+SUMMARY_EST_ARMS = (
+    " UNION ALL SELECT 'est', 'p50', '', v1, v2 FROM ("
+    f"SELECT {_EST_POOL} FROM ({_EST_DEDUP})) "
+    "UNION ALL SELECT 'est_daily', k, '', v1, v2 FROM ("
+    "SELECT toString(toDate(computed_at, 'Asia/Tokyo')) AS k, "
+    f"{_EST_POOL} FROM ({_EST_DEDUP}) GROUP BY k)"
+)
+
+
+def summary_query(has_flags: bool, has_tier: bool, has_est: bool) -> str:
+    # core first so the union's column names come from a section that always exists
+    return (_SUMMARY_RECON_CTE + SUMMARY_CORE_ARMS
+            + (SUMMARY_FLAGS_ARMS if has_flags else "")
+            + (SUMMARY_TIER_ARMS if has_tier else "")
+            + (SUMMARY_EST_ARMS if has_est else ""))
+
+
+# The wire `dim` never reaches SQL: it only selects among these three pre-built query texts.
+_TRENDS_K = {
+    "route": "concat(coalesce(origin_iata, origin_icao), '-', coalesce(dest_iata, dest_icao))",
+    "airline": "airline_name",
+    "airport": ("arrayJoin(arrayDistinct(arrayFilter(x -> x != '', "
+                "[coalesce(origin_iata, origin_icao, ''), coalesce(dest_iata, dest_icao, '')])))"),
+}
+# arrayDistinct above makes an o == d flight count once for that airport, not twice.
+_TRENDS_GUARD = {
+    "route": " AND origin_icao IS NOT NULL AND dest_icao IS NOT NULL",
+    "airline": " AND airline_name IS NOT NULL",
+    "airport": "",
+}
+_TRENDS_CUR_WINDOW = "WHERE toDate(start_time, 'Asia/Tokyo') BETWEEN {day_from:Date} AND {day_to:Date}"
+_TRENDS_PREV_WINDOW = "WHERE toDate(start_time, 'Asia/Tokyo') BETWEEN {prev_from:Date} AND {prev_to:Date}"
+
+
+def _trends_inner(dim: str, window: str, with_ac: bool) -> str:
+    ac = ", uniqExact(icao24) AS ac" if with_ac else ""
+    return (f"SELECT {_TRENDS_K[dim]} AS k, count() AS n{ac} FROM {RECON_TBL} "
+            + window + _TRENDS_GUARD[dim] + " GROUP BY k")
+
+
+TRENDS_RANK_QUERY = {
+    dim: ("SELECT c.k AS k, c.n AS n, c.ac AS distinct_aircraft, toInt64(coalesce(p.n, 0)) AS prev_n "
+          f"FROM ({_trends_inner(dim, _TRENDS_CUR_WINDOW, True)}) c "
+          f"LEFT JOIN ({_trends_inner(dim, _TRENDS_PREV_WINDOW, False)}) p ON p.k = c.k "
+          "ORDER BY n DESC, k LIMIT {limit:UInt64} OFFSET {offset:UInt64}")
+    for dim in _TRENDS_K
+}
+TRENDS_SERIES_QUERY = {
+    dim: (f"SELECT {_TRENDS_K[dim]} AS k, toString(toDate(start_time, 'Asia/Tokyo')) AS day, "
+          f"count() AS n FROM {RECON_TBL} " + _TRENDS_CUR_WINDOW + _TRENDS_GUARD[dim]
+          + " AND k IN {keys:Array(String)} GROUP BY k, day ORDER BY k, day")
+    for dim in _TRENDS_K
+}
+TRENDS_TOTAL_QUERY = {
+    dim: f"SELECT uniqExact(k) FROM ({_trends_inner(dim, _TRENDS_CUR_WINDOW, False)})"
+    for dim in _TRENDS_K
+}
+
+# Shared by every tier-mix aggregate (airlines/services); the no-tier fallback simply omits it.
+_TIER_AGG_COLS = (
     "countIf(t.tier = 'settled') AS tier_settled, countIf(t.tier = 'estimated') AS tier_estimated, "
     "countIf(t.tier = 'provisional') AS tier_provisional, "
     "countIf(coalesce(t.tier, '') IN ('', 'none')) AS tier_none "
-    f"FROM {RECON_TBL} r LEFT JOIN {TIER_TBL} t ON t.flight_id = r.flight_id "
-    "WHERE r.airline_name IS NOT NULL AND positionCaseInsensitive(r.airline_name, {q:String}) > 0 "
-    "GROUP BY r.airline_name ORDER BY n_flights DESC, name LIMIT {limit:UInt64} OFFSET {offset:UInt64}"
 )
-AIRLINES_QUERY_NO_TIER = (
+
+
+def _tier_pair(select_head: str, where_tail: str) -> "tuple[str, str]":
+    # Each aggregate's SQL is written once: the tier variant appends the shared tier-mix columns
+    # plus the LEFT JOIN, the fallback keeps the head verbatim over the bare reconciled mart.
+    return (select_head + ", " + _TIER_AGG_COLS + _TIER_JOIN + where_tail,
+            select_head + " " + _NO_TIER_FROM + where_tail)
+
+
+AIRLINES_QUERY_TIER, AIRLINES_QUERY_NO_TIER = _tier_pair(
     "SELECT r.airline_name AS name, count() AS n_flights, uniqExact(r.callsign) AS n_services, "
     "toString(min(toDate(r.start_time, 'Asia/Tokyo'))) AS first_day, "
-    "toString(max(toDate(r.start_time, 'Asia/Tokyo'))) AS last_day "
-    f"FROM {RECON_TBL} r "
-    "WHERE r.airline_name IS NOT NULL AND positionCaseInsensitive(r.airline_name, {q:String}) > 0 "
-    "GROUP BY r.airline_name ORDER BY n_flights DESC, name LIMIT {limit:UInt64} OFFSET {offset:UInt64}"
+    "toString(max(toDate(r.start_time, 'Asia/Tokyo'))) AS last_day",
+    "r.airline_name IS NOT NULL AND positionCaseInsensitive(r.airline_name, {q:String}) > 0 "
+    "GROUP BY r.airline_name ORDER BY n_flights DESC, name LIMIT {limit:UInt64} OFFSET {offset:UInt64}",
 )
 AIRLINES_COUNT_QUERY = (
     f"SELECT uniqExact(airline_name) FROM {RECON_TBL} "
@@ -117,23 +265,12 @@ _SERVICES_WHERE = (
     "AND ({airline:String} = '' OR r.airline_name = {airline:String}) "
     "AND ({airline:String} != '' OR startsWith(upper(trimBoth(r.callsign)), {q:String}))"
 )
-SERVICES_QUERY_TIER = (
+SERVICES_QUERY_TIER, SERVICES_QUERY_NO_TIER = _tier_pair(
     "SELECT r.callsign AS callsign, count() AS n_instances, "
     "toString(min(toDate(r.start_time, 'Asia/Tokyo'))) AS first_day, "
-    "toString(max(toDate(r.start_time, 'Asia/Tokyo'))) AS last_day, "
-    "countIf(t.tier = 'settled') AS tier_settled, countIf(t.tier = 'estimated') AS tier_estimated, "
-    "countIf(t.tier = 'provisional') AS tier_provisional, "
-    "countIf(coalesce(t.tier, '') IN ('', 'none')) AS tier_none "
-    f"FROM {RECON_TBL} r LEFT JOIN {TIER_TBL} t ON t.flight_id = r.flight_id "
-    "WHERE " + _SERVICES_WHERE
-    + " GROUP BY r.callsign ORDER BY n_instances DESC, callsign LIMIT {limit:UInt64} OFFSET {offset:UInt64}"
-)
-SERVICES_QUERY_NO_TIER = (
-    "SELECT r.callsign AS callsign, count() AS n_instances, "
-    "toString(min(toDate(r.start_time, 'Asia/Tokyo'))) AS first_day, "
-    "toString(max(toDate(r.start_time, 'Asia/Tokyo'))) AS last_day "
-    f"FROM {RECON_TBL} r WHERE " + _SERVICES_WHERE
-    + " GROUP BY r.callsign ORDER BY n_instances DESC, callsign LIMIT {limit:UInt64} OFFSET {offset:UInt64}"
+    "toString(max(toDate(r.start_time, 'Asia/Tokyo'))) AS last_day",
+    _SERVICES_WHERE
+    + " GROUP BY r.callsign ORDER BY n_instances DESC, callsign LIMIT {limit:UInt64} OFFSET {offset:UInt64}",
 )
 SERVICES_COUNT_QUERY = f"SELECT uniqExact(r.callsign) FROM {RECON_TBL} r WHERE " + _SERVICES_WHERE
 # Top-3 O/D per callsign, restricted to the page's own callsigns — a plain (non-correlated) subquery,
@@ -233,6 +370,116 @@ def shape_instance_row(row) -> dict:
 
 def shape_od_breakdown(rows) -> list:
     return [{"o": o, "d": d, "n": n} for o, d, n in rows]
+
+
+def flags_params(class_, day_from, day_to) -> dict:
+    # An unrecognised class just binds and matches nothing — no server-side allow-list to drift.
+    return {
+        "class": (class_ or "").strip(),
+        "day_from": day_from or datetime.date(1900, 1, 1),
+        "day_to": day_to or datetime.date(2999, 12, 31),
+    }
+
+
+def shape_flag_row(row) -> dict:
+    return shape_instance_row(row[:19]) | {"flag_class": row[19], "detail": row[20]}
+
+
+def _delta_pct(n, prev_n):
+    # An absent previous window (or a brand-new key) has no baseline — null, never a fake 100%.
+    return round((n - prev_n) / prev_n * 100, 1) if prev_n > 0 else None
+
+
+def _prev_window(day_from, day_to):
+    # Subtracting past the sentinel floor raises OverflowError, so bound the step by the distance to it.
+    span = (day_to - day_from).days + 1
+    back = max(0, (day_from - datetime.date(1900, 1, 1)).days)
+    return (day_from - datetime.timedelta(days=min(max(span, 0), back)),
+            day_from - datetime.timedelta(days=min(1, back)))
+
+
+def _window_params(day_from, day_to) -> dict:
+    if day_from is not None and day_to is not None:
+        prev_from, prev_to = _prev_window(day_from, day_to)
+    else:
+        # No explicit range means no comparable previous window — an empty one zeroes every prev_n.
+        prev_from = prev_to = datetime.date(1900, 1, 1)
+    return {
+        "day_from": day_from or datetime.date(1900, 1, 1),
+        "day_to": day_to or datetime.date(2999, 12, 31),
+        "prev_from": prev_from, "prev_to": prev_to,
+    }
+
+
+def summary_params(day_from, day_to) -> dict:
+    return _window_params(day_from, day_to)
+
+
+def trends_params(day_from, day_to, limit, offset) -> dict:
+    return _window_params(day_from, day_to) | {"limit": limit, "offset": offset}
+
+
+def empty_summary() -> dict:
+    return {"flights": 0, "aircraft": 0, "services": 0, "daily": [],
+            "flags": {"available": False, "flagged": 0, "classes": {}},
+            "tiers": {"available": False, "mix": {}, "daily": []},
+            "est": {"available": False, "err_p50_km": None, "n": 0, "daily": []},
+            "movers": []}
+
+
+def empty_trends(dim: str, limit, offset) -> dict:
+    return {"dim": dim, "grain": "day", "series": [], "rank": [], "total": 0,
+            "limit": limit, "offset": offset}
+
+
+def shape_summary(rows, has_flags: bool, has_tier: bool, has_est: bool) -> dict:
+    out = empty_summary()
+    daily: dict = {}
+    tier_daily: dict = {}
+    est_daily: dict = {}
+    for sect, k, k2, v1, v2 in rows:
+        if sect == "total" and k in ("flights", "aircraft", "services"):
+            out[k] = int(v1)
+        elif sect == "daily":
+            daily[k] = int(v1)
+        elif sect == "mover":
+            out["movers"].append({"key": k, "n": int(v1), "prev_n": int(v2),
+                                  "delta_pct": _delta_pct(int(v1), int(v2))})
+        elif sect == "flag":
+            out["flags"]["classes"][k] = int(v1)
+        elif sect == "flagged":
+            out["flags"]["flagged"] = int(v1)
+        elif sect == "tier":
+            out["tiers"]["mix"][k] = int(v1)
+        elif sect == "tier_daily":
+            if int(v1):
+                tier_daily.setdefault(k, {})[k2] = int(v1)
+        elif sect == "est":
+            out["est"]["n"] = int(v2)
+            out["est"]["err_p50_km"] = round(v1, 3) if int(v2) > 0 else None
+        elif sect == "est_daily":
+            est_daily[k] = [round(v1, 3), int(v2)]
+    # UNION ALL block interleaving may not preserve the mover arm's inner ORDER BY — re-impose it
+    out["movers"].sort(key=lambda m: (-m["n"], m["key"]))
+    out["daily"] = [[d, daily[d]] for d in sorted(daily)]
+    out["flags"]["available"] = has_flags
+    out["tiers"]["available"] = has_tier
+    out["tiers"]["daily"] = [[d, tier_daily[d]] for d in sorted(tier_daily)]
+    out["est"]["available"] = has_est
+    out["est"]["daily"] = [[d] + est_daily[d] for d in sorted(est_daily)]
+    return out
+
+
+def shape_trends(dim: str, rank_rows, series_rows, total, limit, offset) -> dict:
+    rank = [{"key": k, "n": int(n), "distinct_aircraft": int(ac), "prev_n": int(prev_n),
+             "delta_pct": _delta_pct(int(n), int(prev_n))}
+            for k, n, ac, prev_n in rank_rows]
+    points: dict = {}
+    for k, day, n in series_rows:
+        points.setdefault(k, []).append([day, int(n)])
+    return {"dim": dim, "grain": "day",
+            "series": [{"key": r["key"], "points": points.get(r["key"], [])} for r in rank],
+            "rank": rank, "total": int(total), "limit": limit, "offset": offset}
 
 
 def shape_airline_row(row, with_tier: bool) -> dict:

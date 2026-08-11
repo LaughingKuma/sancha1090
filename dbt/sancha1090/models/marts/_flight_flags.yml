@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: fct_flight_flags
+    description: "One row per (flight_id, flag_class): the workbench anomaly feed's precomputed reasons to look at a flight. A flight carries as many rows as it has flags and none at all when it is unremarkable, so this is a feed, not a per-flight dimension."
+    # one row per (flight_id, flag_class): a fanout in the diversion or military join would inflate the
+    # feed's per-class tallies without changing which flights appear.
+    tests:
+      - grain:
+          arguments:
+            column_names: [flight_id, flag_class]
+    columns:
+      - name: flight_id
+        tests: [not_null]
+      - name: start_day
+        description: "toDate(start_time) — the UTC day, same convention as fct_flight_recon_tier, NOT the livemap's JST calendar day."
+      - name: flag_class
+        description: "tiebreak_endpoint = at least one endpoint won its ballot on a rank tiebreak rather than a plurality. single_source = the whole flight rests on one voter (n_sources = 1), so nothing corroborates it. one_sided_intl = exactly one endpoint resolved, which is the known adsb.lol coverage hole outside Japan rather than a targeting failure. feasibility_snap = the SP4 jet-runway gate discarded at least one source's endpoint as infeasible, so the endpoint that won is a consensus over a reduced ballot. diversion = the dest differs from the modal dest for (callsign, origin) over a trailing flag_diversion_window_days window in which that modal dest itself carries at least flag_diversion_min_support flights and at least flag_diversion_min_share of the window — the population is a mix of true diversions and near-airport misattribution (RJNA/RJGG, WIDD/WSSS), and both classes are worth an operator's eye. military = the airframe carries fct_flight_recon_tier.is_military."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['tiebreak_endpoint', 'single_source', 'one_sided_intl', 'feasibility_snap', 'diversion', 'military']
+      - name: detail
+        description: "One-line, class-specific evidence for the flag: the two agreement labels, the lone anchor source, which endpoint resolved, the gate name, or actual-vs-modal dest with its support fraction. Always a plain String, never NULL — '' for military, which the class name already says in full."
+        tests: [not_null]

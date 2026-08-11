@@ -4,11 +4,7 @@
 -- depends_on: {{ ref('int_flight_attach') }}
 -- depends_on: {{ ref('int_flight_spine') }}
 
-{%- if execute %}
-{%- set vrs_rel = adapter.get_relation(database=none, schema='dim', identifier='dim_vrs_routes') %}
-{%- else %}
-{%- set vrs_rel = none %}
-{%- endif %}
+{%- set vrs_rel = optional_relation('dim', 'dim_vrs_routes') %}
 
 {%- if vrs_rel is not none %}
 -- Finding 3: first prove every staged row is an adjacent pair in the raw schedule, independently of

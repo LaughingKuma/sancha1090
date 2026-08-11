@@ -1,10 +1,6 @@
-import importlib.util
-from pathlib import Path
+from conftest import load_livemap_module
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location("est_route", REPO_ROOT / "livemap" / "est_route.py")
-er = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(er)
+er = load_livemap_module("est_route.py")
 
 # measured live SWIM route strings (bronze.swim_flightdata, 2026-07-28)
 DAL69 = ("KSEA.BANGR9.ARRIE..TOU..SEFIX..PRETY..4800N/14000W..4600N/15000W..4400N/16000W.."

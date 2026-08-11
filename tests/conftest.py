@@ -11,6 +11,7 @@ import sqlalchemy as sa
 from airflow.models import DagBag
 
 from include import adsb_manifest as am
+from include import manifest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -39,6 +40,58 @@ CREATE TABLE adsb_ingestion_manifest (
     provenance              TEXT DEFAULT 'live'
 )
 """
+
+# Schema-less sqlite mirror of public.ingestion_manifest (the opensky lane's table).
+_INGEST_DDL = """
+CREATE TABLE ingestion_manifest (
+    object_uri   TEXT PRIMARY KEY,
+    loaded_at    TIMESTAMP,
+    snapshot_min INTEGER,
+    snapshot_max INTEGER,
+    row_count    INTEGER,
+    ch_loaded_at TIMESTAMP,
+    archived_at  TIMESTAMP
+)
+"""
+
+
+def seed_adsb_bundle(eng, filename, **over):
+    # canonical adsb_state bundle; hostname/date literals are cosmetic — nothing asserts them
+    kw = dict(
+        filename=filename, process_uuid="5f3b0bb5-7da1-48d5-be0c-9cff1808a86f",
+        stream="adsb_state", hostname="sangenjaya-edge",
+        rotation_start_ts="2026-05-29T00:00:00Z", rotation_end_ts="2026-05-29T01:00:00Z",
+        complete=True, schema_version=1, row_count=45800,
+        s3_uri=f"s3://sancha1090/bronze/adsb_state/dt=2026-05-29/{filename}",
+        manifest_s3_uri=f"s3://sancha1090/bronze/adsb_state/dt=2026-05-29/{filename}.manifest.json",
+    )
+    kw.update(over)
+    am.record_bundle(engine=eng, **kw)
+
+
+def fake_ch(rows, expect_params=None):
+    # canned-rows CH client stand-in; expect_params pins the bound parameters when given
+    class _Res:
+        result_rows = rows
+
+    class _Client:
+        def query(self, _sql, parameters=None, **_kw):
+            if expect_params is not None:
+                assert parameters == expect_params
+            return _Res()
+
+        def close(self):
+            pass
+
+    return _Client()
+
+
+def load_livemap_module(filename):
+    # Spec-load preserves the flat image layout; livemap is not installed as a package.
+    spec = importlib.util.spec_from_file_location(Path(filename).stem, REPO_ROOT / "livemap" / filename)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 @pytest.fixture(scope="session")
@@ -117,6 +170,12 @@ def livemap_public_mod():
     return mod
 
 
+@pytest.fixture(scope="module")
+def livemap():
+    # fresh private-mode app per test module: tests monkeypatch its module globals
+    return load_livemap_module("app.py")
+
+
 @pytest.fixture
 def livemap_public(livemap_public_mod):
     # Public mode registers the per-IP limiter and its buckets are per-instance state — clear them so
@@ -131,4 +190,13 @@ def adsb_manifest_eng(monkeypatch):
     e = sa.create_engine("sqlite:///:memory:")
     with e.begin() as conn:
         conn.execute(sa.text(_SQLITE_DDL))
+    return e
+
+
+@pytest.fixture
+def ingest_eng(monkeypatch):
+    monkeypatch.setattr(manifest, "_TABLE", "ingestion_manifest")
+    e = sa.create_engine("sqlite:///:memory:")
+    with e.begin() as conn:
+        conn.execute(sa.text(_INGEST_DDL))
     return e

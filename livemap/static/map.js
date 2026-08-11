@@ -1,9 +1,9 @@
-import { S, STREAM_FREEZE_S } from "./state.js?v=6.41";
-import { zoomMult, sizeFor, _svg, SHAPES } from "./silhouettes.js?v=6.41"; // also injects the <defs> the legend uses
-import "./mapsetup.js?v=6.41"; // build map + overlay before the trail/render loops reference them
-import { ingestTrails, appendSelectedFix, rebuildTrailSegments, loadHistory } from "./trails.js?v=6.41";
-import { renderSpotlight } from "./interactions.js?v=6.41"; // registers the click/keydown/close listeners
-import { detectAcquisitions } from "./layers.js?v=6.41"; // starts the iso2/outline loaders + the rAF render loop
+import { S, STREAM_FREEZE_S } from "./state.js?v=6.42";
+import { zoomMult, sizeFor, _svg, SHAPES } from "./silhouettes.js?v=6.42"; // also injects the <defs> the legend uses
+import "./mapsetup.js?v=6.42"; // build map + overlay before the trail/render loops reference them
+import { ingestTrails, appendSelectedFix, rebuildTrailSegments, loadHistory } from "./trails.js?v=6.42";
+import { renderSpotlight } from "./interactions.js?v=6.42"; // registers the click/keydown/close listeners
+import { detectAcquisitions } from "./layers.js?v=6.42"; // starts the iso2/outline loaders + the rAF render loop
 
 // ── Poll the server-side cache (one shared query stream, never one per tab) ──
 let pollInFlight = false;
@@ -58,7 +58,7 @@ setInterval(poll, 500);
 // predating it), which must be a silent no-op rather than a broken map.
 fetch("/features", { cache: "no-store" })
   .then((r) => (r.ok ? r.json() : { features: {} }))
-  .then((j) => (j?.features?.workbench ? import("./features/workbench/index.js?v=6.41").then((m) => m.init(S)) : null))
+  .then((j) => (j?.features?.workbench ? import("./features/workbench/index.js?v=6.42").then((m) => m.init(S)) : null))
   .catch(() => {});
 
 // ── ?icons — debug strip: every shape at authoring + on-map size, plus fade/mil tints ──

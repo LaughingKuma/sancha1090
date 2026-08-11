@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import sqlalchemy as sa
 
+from include import pg_ledger
 from include.db import analytics_engine
 
 
@@ -35,11 +35,7 @@ _default_engine: Optional[sa.Engine] = None
 
 
 def _engine() -> sa.Engine:
-    # Memoized: an Engine owns a connection pool and is meant to be a long-lived singleton.
-    global _default_engine
-    if _default_engine is None:
-        _default_engine = analytics_engine()
-    return _default_engine
+    return pg_ledger.module_engine(__name__, analytics_engine)
 
 
 def ensure_table(engine: Optional[sa.Engine] = None) -> None:
@@ -57,8 +53,7 @@ def ensure_table(engine: Optional[sa.Engine] = None) -> None:
 
 def _pending_uris(uri_prefix: str, marker_col: str, engine: Optional[sa.Engine]) -> list[dict]:
     eng = engine or _engine()
-    if engine is None and not _table_ready:
-        ensure_table()  # no-arg latches _table_ready so the DDL+ALTER runs once, not per call
+    pg_ledger.ensure_once(__name__, engine, ensure_table)
     # marker_col is an internal constant, never user input.
     stmt = sa.text(
         f"""
@@ -87,19 +82,7 @@ def pending_ch_uris(uri_prefix: str, engine: Optional[sa.Engine] = None) -> list
 def _mark_loaded(uris: list[str], marker_col: str, engine: Optional[sa.Engine]) -> int:
     if not uris:
         return 0
-    eng = engine or _engine()
-    # marker_col is an internal constant, never user input.
-    stmt = sa.text(
-        f"""
-        UPDATE {_TABLE}
-           SET {marker_col} = CURRENT_TIMESTAMP
-         WHERE object_uri IN :uris
-           AND {marker_col} IS NULL
-        """
-    ).bindparams(sa.bindparam("uris", expanding=True))
-    with eng.begin() as conn:
-        result = conn.execute(stmt, {"uris": list(uris)})
-        return result.rowcount or 0
+    return pg_ledger.mark_rows(engine or _engine(), _TABLE, "object_uri", marker_col, uris)
 
 
 def mark_ch_loaded(uris: list[str], engine: Optional[sa.Engine] = None) -> int:
@@ -114,35 +97,13 @@ def pending_archive_uris(
     uri_prefix: str, older_than_days: int, engine: Optional[sa.Engine] = None,
     limit: Optional[int] = None,
 ) -> list[dict]:
-    # limit is the caller's per-run cap pushed into SQL so a large backlog never materializes whole. Reject a
-    # negative LIMIT (sqlite reads it as unlimited, postgres errors); 0 stays valid (no rows).
-    if limit is not None and limit < 0:
-        raise ValueError(f"pending_archive_uris: limit must not be negative, got {limit}")
-    eng = engine or _engine()
-    if engine is None and not _table_ready:
-        ensure_table()  # no-arg latches _table_ready so the DDL+ALTER runs once, not per call
-    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
-    # Typed bind so the cutoff compares as a real timestamptz in postgres (not a coerced string literal) and as
-    # SQLAlchemy's own datetime string in the sqlite test mirror — correct + warning-free in both.
-    params = {"cutoff": cutoff, "prefix": None}
-    limit_sql = ""
-    if limit is not None:
-        limit_sql = " LIMIT :limit"
-        params["limit"] = limit
-    stmt = sa.text(
-        f"""
-        SELECT object_uri, row_count
-          FROM {_TABLE}
-         WHERE ch_loaded_at IS NOT NULL
-           AND ch_loaded_at < :cutoff
-           AND archived_at IS NULL
-           AND object_uri LIKE :prefix ESCAPE '\\'
-         ORDER BY loaded_at{limit_sql}
-        """
-    ).bindparams(sa.bindparam("cutoff", type_=sa.DateTime(timezone=True)))
     # Escape LIKE wildcards so e.g. the _ in "flights_raw" matches literally, not any char.
     escaped = uri_prefix.strip("/").replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-    params["prefix"] = f"%/{escaped}/%"
+    stmt, params = pg_ledger.pending_archive_query(
+        _TABLE, "object_uri, row_count", "object_uri LIKE :prefix ESCAPE '\\'", "loaded_at",
+        older_than_days, limit, "pending_archive_uris", params={"prefix": f"%/{escaped}/%"})
+    eng = engine or _engine()
+    pg_ledger.ensure_once(__name__, engine, ensure_table)
     with eng.begin() as conn:
         return [dict(r._mapping) for r in conn.execute(stmt, params).fetchall()]
 
@@ -155,8 +116,7 @@ def record_load(
     engine: Optional[sa.Engine] = None,
 ) -> None:
     eng = engine or _engine()
-    if engine is None and not _table_ready:
-        ensure_table()  # no-arg latches _table_ready so the DDL+ALTER runs once, not per call
+    pg_ledger.ensure_once(__name__, engine, ensure_table)
     # A retry/re-fetch rewrites the same key with fresh data — the record follows the object, else
     # the frozen first-write count trips the NAS archiver's rowcount gate. Lifecycle markers
     # (loaded_at, ch_loaded_at, archived_at) are untouched: rewrites change content, not state.

@@ -6,6 +6,7 @@ from typing import Optional
 
 import sqlalchemy as sa
 
+from include import pg_ledger
 from include.ch_parity import _CLOSED_WINDOW_S, _ch_query
 from include.db import analytics_engine
 
@@ -53,10 +54,7 @@ _table_ready = False
 
 
 def _engine() -> sa.Engine:
-    global _default_engine
-    if _default_engine is None:
-        _default_engine = analytics_engine()
-    return _default_engine
+    return pg_ledger.module_engine(__name__, analytics_engine)
 
 
 def _ensure_table(engine: Optional[sa.Engine] = None) -> None:
@@ -75,8 +73,7 @@ def _ensure_table(engine: Optional[sa.Engine] = None) -> None:
 
 def get_watermark(gate: str = _GATE, engine: Optional[sa.Engine] = None) -> Optional[int]:
     eng = engine or _engine()
-    if engine is None and not _table_ready:
-        _ensure_table()
+    pg_ledger.ensure_once(__name__, engine, _ensure_table)
     with eng.begin() as conn:
         row = conn.execute(
             sa.text(f"SELECT watermark_hour FROM {_WM_TABLE} WHERE gate = :g"), {"g": gate}
@@ -88,8 +85,7 @@ def set_watermark(value: int, gate: str = _GATE, engine: Optional[sa.Engine] = N
     # Advance-only (read-then-write, portable across postgres/sqlite — no ON CONFLICT/GREATEST): a recomputed-low
     # value (clock skew, a re-run) must never roll the watermark backward and re-skip already-validated hours.
     eng = engine or _engine()
-    if engine is None and not _table_ready:
-        _ensure_table()
+    pg_ledger.ensure_once(__name__, engine, _ensure_table)
     with eng.begin() as conn:
         cur = conn.execute(
             sa.text(f"SELECT watermark_hour FROM {_WM_TABLE} WHERE gate = :g"), {"g": gate}

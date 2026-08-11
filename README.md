@@ -228,6 +228,9 @@ provisions the bronze/dim schemas and the hex-country dictionary, then the one-s
 so the first transform run has its seed, registry, and dict dependencies in place. The
 optional multi-year adsb.lol history backfill is a separate manual step:
 `scripts/ch_setup_marts.sh` runs the full setup including the adsb.lol history load.
+To rebuild ClickHouse bronze from the Garage landing zone (truncate + reload, with the
+tableize DAGs paused and in-flight runs drained so live ticks can't double-insert), run
+`scripts/ch_backfill_bronze.sh`.
 
 Trigger `ingest_states` in Airflow to start populating. `tableize_states` and
 `transform_marts` cascade automatically via asset events.
@@ -297,12 +300,24 @@ drawn path, settled or provisional, plus an `[estimate ahead]` control that appe
 the selected aircraft is still in the live snapshot.
 
 The private instance additionally hosts an **analysis workbench**: a left-rail console with an
-airline → service (callsign) → flight-instance drill, a flat filterable flight log, and typed
-search (callsign / registration / airline / airport), all served by private-only `/workbench/*`
-endpoints over the reconciled ClickHouse marts. Every instance row carries a precomputed
+overview home, an anomaly flags feed, a trends view, an airline → service (callsign) →
+flight-instance drill, a flat filterable flight log, and typed search (callsign / registration /
+airline / airport), all served by private-only `/workbench/*` endpoints over the reconciled
+ClickHouse marts. Every instance row carries a precomputed
 reconstruction-tier badge (settled / estimated / provisional / none) so a dead-end click is
 visible before it happens, and selecting an instance enters a focus mode that dims the live
-fleet and draws that flight's reconstructed path alone. Workbench state is URL-addressable
+fleet and draws that flight's reconstructed path alone. A companion mart,
+`gold.fct_flight_flags`, precomputes the workbench's anomaly feed: one row per flight and
+flag, across six classes — endpoint decided on a rank tiebreak, single-source flight,
+one-sided international resolution, feasibility-gate intervention, destination diverging from
+the service's modal destination for that origin, and military airframe. The feed is browsable by class. Trends rank routes,
+airlines or airports against the window immediately before, with per-key daily series; the
+overview assembles the whole period — headline counts, tier mix, flags, movers, and the estimate
+drift tile (windowed on when estimates were served, the only day axis the settlement mart
+carries) — in one ClickHouse round trip on the healthy path (a missing optional mart adds a
+schema probe and one requery), and each number whose explaining view exists is a
+doorway into it (the estimate and coverage tiles stay plain until their views ship). Workbench
+state is URL-addressable
 (deep links key instances by airframe + start time, which survive mart rebuilds). The feature
 is gated by a `/features` endpoint that only the private instance registers — the public map
 serves none of the workbench, not even its static modules.
@@ -488,7 +503,9 @@ This project stands on three community projects that choose to keep aviation dat
   Endpoints are also feasibility-gated. A jet airliner can't be assigned a short-runway or
   unknown-runway small field (`dim_airports` carries OurAirports runway lengths), so the snap
   resolves to the nearest feasible airport when one exists, and residual infeasible endpoints
-  are nullified later. A schedule-derived voter (`dim_vrs_routes`, the community-curated
+  are nullified later. That nullification now leaves provenance: a flight where the gate
+  discarded at least one source's endpoint carries `feasibility_gated = 1`, so a consensus
+  reached over a reduced ballot is auditable rather than silent. A schedule-derived voter (`dim_vrs_routes`, the community-curated
   Virtual Radar Server route table) supplies the hub pair where position evidence alone can't.
   That schedule vote is scoped the same way SWIM's is: it only fires for routes with at least
   one endpoint inside the observation box (20-50°N, 122-165°E), so a pure overflight, with

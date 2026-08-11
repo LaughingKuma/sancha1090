@@ -52,8 +52,8 @@ class _FakeCHClient:
         pass
 
 
-def _stub_flow(monkeypatch, pairs, *, drain_ok=True, run_daily_result=None, cleared=3,
-               stale_rows=None):
+def _stub_flow(monkeypatch, pairs, *, drain_ok=True, seg_ok=None, path_ok=None,
+               run_daily_result=None, run_daily_fn=None, cleared=3, stale_rows=None):
     monkeypatch.setattr(bar, "affected_pairs", lambda: pairs)
     events = []
     deleted = []
@@ -75,18 +75,20 @@ def _stub_flow(monkeypatch, pairs, *, drain_ok=True, run_daily_result=None, clea
                 "missing": 0, "errors": 0, "rows": len(targets), "path_rows": len(targets),
                 "landed_hexes": sorted(targets)}
 
-    monkeypatch.setattr(bar, "run_daily", fake_run_daily)
+    monkeypatch.setattr(bar, "run_daily", run_daily_fn or fake_run_daily)
     loaded = []
 
-    def fake_load(name):
+    def fake_load(name, ok):
         def _load(*_a, **_k):
             loaded.append(name)
             events.append(("load", name))
-            return {"ch_loaded": 0, "files": 0, "ok": drain_ok}
+            return {"ch_loaded": 0, "files": 0, "ok": ok}
         return _load
 
-    monkeypatch.setattr(bar, "load_adsblol_segments_pending_to_ch", fake_load("seg"))
-    monkeypatch.setattr(bar, "load_adsblol_paths_pending_to_ch", fake_load("path"))
+    monkeypatch.setattr(bar, "load_adsblol_segments_pending_to_ch",
+                        fake_load("seg", drain_ok if seg_ok is None else seg_ok))
+    monkeypatch.setattr(bar, "load_adsblol_paths_pending_to_ch",
+                        fake_load("path", drain_ok if path_ok is None else path_ok))
     ch_deletes = []
     monkeypatch.setattr(bar, "ch_client",
                         lambda: _FakeCHClient(ch_deletes, stale_rows=stale_rows, cleared=cleared))
@@ -127,9 +129,6 @@ def test_execute_clears_ledger_then_refetches_then_loads(monkeypatch):
 
 
 def test_execute_prints_progress_heartbeat(monkeypatch, capsys):
-    monkeypatch.setattr(bar, "affected_pairs", lambda: [("a61c53", "2026-06-25")])
-    monkeypatch.setattr(bar.ledger, "delete_attempts", lambda ps, *_a, **_k: len(ps))
-
     def fake_run_daily(_day, _targets=None, progress=None, **_kw):
         # The final pair always heartbeats regardless of the every-100 cadence.
         if progress is not None:
@@ -137,13 +136,7 @@ def test_execute_prints_progress_heartbeat(monkeypatch, capsys):
         return {"fetched": 2, "landed": 1, "missing": 0, "errors": 0, "rows": 1, "path_rows": 1,
                 "landed_hexes": ["a61c53"]}
 
-    monkeypatch.setattr(bar, "run_daily", fake_run_daily)
-    monkeypatch.setattr(bar, "load_adsblol_segments_pending_to_ch",
-                        lambda *_a, **_k: {"ch_loaded": 0, "files": 0, "ok": True})
-    monkeypatch.setattr(bar, "load_adsblol_paths_pending_to_ch",
-                        lambda *_a, **_k: {"ch_loaded": 0, "files": 0, "ok": True})
-    monkeypatch.setattr(bar, "ch_client", lambda: _FakeCHClient([]))
-
+    _stub_flow(monkeypatch, [("a61c53", "2026-06-25")], run_daily_fn=fake_run_daily)
     bar.run(execute=True, sleep=0.0)
     assert "2026-06-25: 2/2 fetched" in capsys.readouterr().out
 
@@ -159,20 +152,13 @@ def test_workers_arg_validated_and_passed_through(monkeypatch):
     assert bar._parse_args([]).workers == 5
 
     seen = {}
-    monkeypatch.setattr(bar, "affected_pairs", lambda: [("a61c53", "2026-06-25")])
-    monkeypatch.setattr(bar.ledger, "delete_attempts", lambda ps, *_a, **_k: len(ps))
 
     def fake_run_daily(_day, workers=1, **_kw):
         seen["workers"] = workers
         return {"fetched": 2, "landed": 1, "missing": 0, "errors": 0, "rows": 1, "path_rows": 1,
                 "landed_hexes": ["a61c53"]}
 
-    monkeypatch.setattr(bar, "run_daily", fake_run_daily)
-    monkeypatch.setattr(bar, "load_adsblol_segments_pending_to_ch",
-                        lambda *_a, **_k: {"ch_loaded": 0, "files": 0, "ok": True})
-    monkeypatch.setattr(bar, "load_adsblol_paths_pending_to_ch",
-                        lambda *_a, **_k: {"ch_loaded": 0, "files": 0, "ok": True})
-    monkeypatch.setattr(bar, "ch_client", lambda: _FakeCHClient([]))
+    _stub_flow(monkeypatch, [("a61c53", "2026-06-25")], run_daily_fn=fake_run_daily)
     bar.run(execute=True, sleep=0.0, workers=7)
     assert seen["workers"] == 7
 
@@ -185,17 +171,11 @@ def test_days_limit_pilots_first_day_only(monkeypatch):
 
 
 def test_execute_returns_nonzero_on_fetch_errors_but_still_drains_loaders(monkeypatch):
-    monkeypatch.setattr(bar, "affected_pairs", lambda: [("a61c53", "2026-06-25")])
-    monkeypatch.setattr(bar.ledger, "delete_attempts", lambda ps, *_a, **_k: len(ps))
-    monkeypatch.setattr(bar, "run_daily", lambda _day, _targets=None, **_kw: {
-        "fetched": 2, "landed": 0, "missing": 0, "errors": 2, "rows": 0, "path_rows": 0,
-        "landed_hexes": []})
-    loaded = []
-    monkeypatch.setattr(bar, "load_adsblol_segments_pending_to_ch",
-                        lambda *_a, **_k: loaded.append("seg") or {"ch_loaded": 0, "files": 0, "ok": True})
-    monkeypatch.setattr(bar, "load_adsblol_paths_pending_to_ch",
-                        lambda *_a, **_k: loaded.append("path") or {"ch_loaded": 0, "files": 0, "ok": True})
-    monkeypatch.setattr(bar, "ch_client", lambda: _FakeCHClient([]))
+    _d, _f, loaded, _e, _c = _stub_flow(
+        monkeypatch, [("a61c53", "2026-06-25")],
+        run_daily_result=lambda _day, _targets: {
+            "fetched": 2, "landed": 0, "missing": 0, "errors": 2, "rows": 0, "path_rows": 0,
+            "landed_hexes": []})
 
     rc = bar.run(execute=True, sleep=0.0)
     assert rc == 1
@@ -206,19 +186,10 @@ def test_execute_returns_nonzero_on_fetch_errors_but_still_drains_loaders(monkey
 def test_execute_returns_nonzero_when_drain_reports_not_ok(monkeypatch):
     # The loaders are best-effort and never raise (include/clickhouse.py's _safe guard), so a
     # failed drain only surfaces via ok=False — run() must fold that into the exit status too.
-    monkeypatch.setattr(bar, "affected_pairs", lambda: [("a61c53", "2026-06-25")])
-    monkeypatch.setattr(bar.ledger, "delete_attempts", lambda ps, *_a, **_k: len(ps))
-    monkeypatch.setattr(bar, "run_daily", lambda _day, _targets=None, **_kw: {
-        "fetched": 2, "landed": 1, "missing": 0, "errors": 0, "rows": 1, "path_rows": 1,
-        "landed_hexes": ["a61c53"]})
-    monkeypatch.setattr(bar, "load_adsblol_segments_pending_to_ch",
-                        lambda *_a, **_k: {"ch_loaded": 0, "files": 0, "ok": False})
-    monkeypatch.setattr(bar, "load_adsblol_paths_pending_to_ch",
-                        lambda *_a, **_k: {"ch_loaded": 1, "files": 1, "ok": True})
     # The start-of-run stale sweep legitimately opens a client; a not-ok drain must still skip the
     # supersede DELETEs it gates.
-    ch_deletes = []
-    monkeypatch.setattr(bar, "ch_client", lambda: _FakeCHClient(ch_deletes))
+    _d, _f, _l, _e, ch_deletes = _stub_flow(
+        monkeypatch, [("a61c53", "2026-06-25")], seg_ok=False, path_ok=True)
 
     rc = bar.run(execute=True, sleep=0.0)
     assert rc == 1

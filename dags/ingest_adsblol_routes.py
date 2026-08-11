@@ -6,6 +6,9 @@ import pendulum
 
 from airflow.sdk import dag, task
 
+from include.dag_defaults import default_args
+
+
 @dag(
     dag_id="ingest_adsblol_routes",
     description="Resolve overflight route backstory from adsb.lol global traces",
@@ -15,11 +18,7 @@ from airflow.sdk import dag, task
     schedule="0 3 * * *",
     catchup=False,
     max_active_runs=1,
-    default_args={
-        "owner": "amit",
-        "retries": 2,
-        "retry_delay": timedelta(minutes=5),
-    },
+    default_args=default_args(retries=2, delay_min=5),
     tags=["sancha1090", "bronze", "adsblol", "v6"],
 )
 def ingest_adsblol_routes():

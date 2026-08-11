@@ -6,11 +6,7 @@
 
 -- Deploy-order guard: dim.dim_vrs_routes is created by clickhouse-init at the operator's deploy, but
 -- transform_marts rebuilds from committed code every ~4 min -- emit empty until the table exists.
-{%- if execute %}
-{%- set vrs_rel = adapter.get_relation(database=none, schema='dim', identifier='dim_vrs_routes') %}
-{%- else %}
-{%- set vrs_rel = none %}
-{%- endif %}
+{%- set vrs_rel = optional_relation('dim', 'dim_vrs_routes') %}
 
 {%- if vrs_rel is not none %}
 -- v2 leg grain (Finding 3): explode each schedule into adjacent legs (a 2-hop route is one leg), so a

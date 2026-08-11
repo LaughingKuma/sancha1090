@@ -2,46 +2,14 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any
 
 import pendulum
 
 from airflow.sdk import dag, task
 
 from include.adsb_assets import adsb_raw_landed
-
-
-STALE_THRESHOLD = timedelta(hours=2)
-
-
-def _parse_iso(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-
-
-def summarize_results(results: list[Optional[dict]]) -> dict[str, int]:
-    landed = sum(1 for r in results if r and r["ok"])
-    failed = sum(1 for r in results if r and not r["ok"])
-    adsb_landed = sum(1 for r in results if r and r["ok"] and r["stream"] == "adsb_state")
-    beast_landed = sum(1 for r in results if r and r["ok"] and r["stream"] == "beast_raw")
-    return {"landed": landed, "failed": failed,
-            "adsb_landed": adsb_landed, "beast_landed": beast_landed}
-
-
-def maybe_log_stale(results: list[Optional[dict]], now: datetime, logger: logging.Logger,
-                    manifest_newest: Optional[datetime] = None) -> bool:
-    """Surfaces a silent producer/push: if the newest known adsb_state close time is >2 h behind
-    wall clock, log.error. Falls back to the manifest's newest when this run landed nothing —
-    a silent producer has no current-run results yet is exactly what must alert. Returns staleness."""
-    ends = [_parse_iso(r["rotation_end_ts"]) for r in results
-            if r and r["ok"] and r["stream"] == "adsb_state"]
-    newest = max(ends) if ends else manifest_newest
-    if newest is None:
-        return False
-    if now - newest > STALE_THRESHOLD:
-        logger.error("adsb ingest stale: newest adsb_state rotation_end_ts %s is >%s behind %s",
-                     newest.isoformat(), STALE_THRESHOLD, now.isoformat())
-        return True
-    return False
+from include.dag_defaults import default_args
 
 
 @dag(
@@ -52,13 +20,7 @@ def maybe_log_stale(results: list[Optional[dict]], now: datetime, logger: loggin
     schedule="10 * * * *",
     catchup=False,
     max_active_runs=1,
-    default_args={
-        "owner": "amit",
-        "retries": 2,
-        "retry_delay": timedelta(minutes=2),
-        "retry_exponential_backoff": True,
-        "max_retry_delay": timedelta(minutes=10),
-    },
+    default_args=default_args(retries=2, backoff=True),
     tags=["sancha1090", "bronze", "adsb"],
 )
 def ingest_adsb():
@@ -116,10 +78,10 @@ def ingest_adsb():
         from include import adsb_manifest as am
 
         results = list(results)
-        summary = summarize_results(results)
-        maybe_log_stale(results, now=datetime.now(timezone.utc),
-                        logger=logging.getLogger("ingest_adsb"),
-                        manifest_newest=am.newest_adsb_rotation_end())
+        summary = am.summarize_results(results)
+        am.maybe_log_stale(results, now=datetime.now(timezone.utc),
+                           logger=logging.getLogger("ingest_adsb"),
+                           manifest_newest=am.newest_adsb_rotation_end())
         print(f"ingest_adsb summary: {summary}")
 
         if summary["adsb_landed"] == 0:

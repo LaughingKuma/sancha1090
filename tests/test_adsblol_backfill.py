@@ -179,18 +179,6 @@ def test_release_candidates_order_and_repos():
     assert tags.index("v2025.12.31-planes-readsb-prod-0tmp") < tags.index("v2025.12.31-planes-readsb-staging-0")
 
 
-def test_flights_windows_walk_backwards_and_clamp():
-    windows = list(ab.flights_windows(date(2026, 6, 5), date(2026, 6, 1)))
-    days = [w[0] for w in windows]
-    assert days == [date(2026, 6, 4), date(2026, 6, 2), date(2026, 6, 1)]
-    for _, begin_ts, end_ts in windows:
-        assert 0 < end_ts - begin_ts <= 2 * 86400
-    # Newest window ends at midnight after the until-day (inclusive coverage).
-    assert windows[0][2] - windows[0][1] == 2 * 86400
-    # Oldest window is clamped to from_day.
-    assert windows[-1][2] - windows[-1][1] == 86400
-
-
 def test_chained_reader_tar_roundtrip():
     payload = gzip.compress(json.dumps(_doc([_point(0)])).encode())
     buf = io.BytesIO()

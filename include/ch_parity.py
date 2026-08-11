@@ -65,14 +65,15 @@ def _closed_cutoff() -> int:
     return int(time.time()) // 3600 * 3600 - _CLOSED_WINDOW_S
 
 
-def _ch_query(sql: str):
+def _ch_query(sql: str, *, user_env: tuple[str, str] = ("CLICKHOUSE_USER", "default"),
+              pw_env: str = "CLICKHOUSE_PASSWORD"):
     import clickhouse_connect
 
     client = clickhouse_connect.get_client(
         host=os.environ.get("CLICKHOUSE_HOST", "clickhouse"),
         port=int(os.environ.get("CLICKHOUSE_PORT", "8123")),
-        username=os.environ.get("CLICKHOUSE_USER", "default"),
-        password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
+        username=os.environ.get(user_env[0], user_env[1]),
+        password=os.environ.get(pw_env, ""),
         connect_timeout=10,
         send_receive_timeout=_TIMEOUT_S,
         # Match the dbt CH lane's NULL-on-no-match join semantics for any join in a spot-check.
@@ -87,21 +88,7 @@ def _ch_query(sql: str):
 def _ch_query_serving(sql: str):
     # The serving gate connects as the SAME read-only user Superset uses (not the default admin), so it also
     # catches superset_ro password/permission drift — a green default-user check wouldn't reflect a broken dashboard.
-    import clickhouse_connect
-
-    client = clickhouse_connect.get_client(
-        host=os.environ.get("CLICKHOUSE_HOST", "clickhouse"),
-        port=int(os.environ.get("CLICKHOUSE_PORT", "8123")),
-        username=os.environ.get("CH_SUPERSET_USER", "superset_ro"),
-        password=os.environ.get("CH_SUPERSET_PASSWORD", ""),
-        connect_timeout=10,
-        send_receive_timeout=_TIMEOUT_S,
-        settings={"join_use_nulls": 1},
-    )
-    try:
-        return client.query(sql).result_rows
-    finally:
-        client.close()
+    return _ch_query(sql, user_env=("CH_SUPERSET_USER", "superset_ro"), pw_env="CH_SUPERSET_PASSWORD")
 
 
 def _scalar(rows) -> float:
@@ -115,18 +102,6 @@ def fresh(max_lag_s: float) -> Callable[[float, float], bool]:
     # ch (CH max-timestamp epoch) is fresh if it trails ref (now()'s epoch) by no more than max_lag_s; ahead is fine.
     def cmp(ch: float, ref: float) -> bool:
         return (ref - ch) <= max_lag_s
-    return cmp
-
-
-def complete(eps: float) -> Callable[[float, float], bool]:
-    # CH is "complete" vs the source (src) if it isn't short by more than eps. The source gate calls this with
-    # eps=0 (EXACT lower bound, ch >= src) over a CLOSED window, so even one missing object trips it; the eps
-    # param survives for callers/tests that want a tolerance. Surplus passes — a ReplacingMergeTree replay
-    # over-reports raw count (the grain metric avoids that) and the gate only catches CH *missing* source data.
-    def cmp(ch: float, src: float) -> bool:
-        if src == 0:
-            return True
-        return ch >= src * (1 - eps)
     return cmp
 
 

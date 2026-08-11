@@ -13,7 +13,6 @@ flags:
 test-paths: ["tests"]
 macro-paths: ["macros"]
 seed-paths: ["seeds"]
-snapshot-paths: ["snapshots"]
 
 target-path: "target"
 
@@ -96,3 +95,6 @@ vars:
   japan_box_lamax: 50
   japan_box_lomax: 165
   recon_tier_gap_s: 900  # settled/estimated seam: largest path gap the eye bridges without the estimate overlay (measured p50 690s / 61% <=900s, 2026-07-30)
+  flag_diversion_window_days: 90  # trailing window the modal dest is taken over: long enough for a weekly service to reach support, short enough to follow a schedule change
+  flag_diversion_min_support: 5   # flights the modal dest itself must carry in the window; below it the (callsign, origin) service has no normal pattern to call a diversion against
+  flag_diversion_min_share: 0.6   # modal dest must carry this share of the window; below it the service is genuinely multi-dest, not diverted

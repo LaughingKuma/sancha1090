@@ -132,14 +132,6 @@ def livemap_writer():
         client.close()
 
 
-@pytest.fixture
-def livemap():
-    spec = importlib.util.spec_from_file_location("livemap_app_identity", REPO_ROOT / "livemap" / "app.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def test_superset_ro_insert_is_denied_without_landing(superset_ro):
     estimate_id, rows = _request_rows()
 

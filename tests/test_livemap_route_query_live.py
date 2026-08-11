@@ -1,14 +1,10 @@
-import importlib.util
 import os
 import time
-from pathlib import Path
 
 import pytest
+from conftest import load_livemap_module
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location("livemap_app_q", REPO_ROOT / "livemap" / "app.py")
-lm = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(lm)
+lm = load_livemap_module("app.py")
 
 try:
     import clickhouse_connect

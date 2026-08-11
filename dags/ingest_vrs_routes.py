@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pendulum
 
 from airflow.sdk import dag, task
+
+from include.dag_defaults import default_args
 
 
 @dag(
@@ -15,11 +15,7 @@ from airflow.sdk import dag, task
     schedule="0 17 * * *",
     catchup=False,
     max_active_runs=1,
-    default_args={
-        "owner": "amit",
-        "retries": 2,
-        "retry_delay": timedelta(minutes=15),
-    },
+    default_args=default_args(retries=2, delay_min=15),
     tags=["sancha1090", "dim", "reconcile"],
 )
 def ingest_vrs_routes():

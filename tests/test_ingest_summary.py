@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from include.ingest_summary import all_fetches_raised, raise_if_all_fetches_raised
+from include.ingest_summary import (
+    all_fetches_raised,
+    raise_if_all_fetches_raised,
+    summarize_fetch_results,
+)
 
 
 def test_normal_run_with_data_is_not_a_failure():
@@ -61,3 +65,25 @@ def test_raise_helper_raises_when_all_tasks_raised():
     summary = {"airports_attempted": 4, "airports_succeeded": 0, "airports_with_data": 0}
     with pytest.raises(RuntimeError, match="all 4"):
         raise_if_all_fetches_raised(summary, entity="airports", label="ingest_flights")
+
+
+def test_summarize_fetch_results_builds_entity_keyed_summary():
+    # A raised fetch (None) must stay distinguishable from a legitimately empty one, so a total outage reds the task.
+    results = [{"rows": 5, "uri": "s3://x"}, {"rows": 0, "uri": None}, None]
+    summary = summarize_fetch_results(
+        results, plural="regions", singular="region",
+        banner="Ingestion summary", label="ingest_states",
+    )
+    assert summary["regions_attempted"] == 3
+    assert summary["regions_succeeded"] == 2
+    assert summary["regions_with_data"] == 1
+    assert summary["total_rows"] == 5
+    assert summary["per_region"] == results
+
+
+def test_summarize_fetch_results_raises_on_wholesale_failure():
+    with pytest.raises(RuntimeError, match="all 2"):
+        summarize_fetch_results(
+            [None, None], plural="airports", singular="airport",
+            banner="Flights ingestion summary", label="ingest_flights",
+        )

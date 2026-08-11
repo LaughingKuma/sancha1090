@@ -7,6 +7,13 @@ models:
       - name: flight_key
         description: "coalesce(gufi, flight_ref, acid|computer_id|filed-departure-date) — one row each"
         tests: [not_null, unique]
+    # Exactly one latest-amendment row per flight identity.
+    tests:
+      - grain:
+          arguments:
+            column_names: [flight_key]
+          config:
+            tags: ['swim']
   - name: int_swim_diagnostics
     description: "SWIM endpoint-kind distribution + hex match/ambiguity rates (visibility, not a vote input)."
   - name: int_swim_opinion

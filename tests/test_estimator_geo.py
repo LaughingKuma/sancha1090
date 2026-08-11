@@ -1,13 +1,9 @@
-import importlib.util
 from itertools import pairwise
-from pathlib import Path
 
 import pytest
+from conftest import load_livemap_module
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location("estimator", REPO_ROOT / "livemap" / "estimator.py")
-est = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(est)
+est = load_livemap_module("estimator.py")
 
 TOKYO = (35.68, 139.77)
 OSAKA = (34.69, 135.50)

@@ -4,11 +4,7 @@
 -- rebuilds this model from committed code every ~4 min — so gate the LADD join on the table actually existing.
 -- schema/identifier are pinned to the dim_ladd entry in sources.yml (the ladd_src CTE's source() owns the ref
 -- edge); get_relation is execute-only so parse never touches the warehouse (ladd_rel defaults to none there).
-{%- if execute %}
-{%- set ladd_rel = adapter.get_relation(database=none, schema='dim', identifier='dim_ladd') %}
-{%- else %}
-{%- set ladd_rel = none %}
-{%- endif %}
+{%- set ladd_rel = optional_relation('dim', 'dim_ladd') %}
 
 -- Cross-source consensus flight mart: per flight, plurality per endpoint, authority + scheduled-service
 -- tiebreak, single-source flagged, curated override on top; full provenance. Additive -- pure lanes untouched.
@@ -101,6 +97,10 @@ dest_votes_map as (
 n_src as (
     select flight_id, uniqExact(source) as n_sources from {{ ref('int_flight_attach') }} group by flight_id
 ),
+gate as (
+    select flight_id, max(origin_gated) as origin_gated, max(dest_gated) as dest_gated
+    from {{ ref('int_flight_attach') }} group by flight_id
+),
 box_observed as (
     -- the Japan box actually saw this flight (an in-box bronze fix in-window); reads bronze directly —
     -- cheap at this grain and independent of staging. Box is the japan_box_* vars (same as stg_states).
@@ -135,6 +135,9 @@ resolved as (
         sp.flight_end as end_time,
         sp.anchor_source as anchor_source,
         coalesce(nc.n_sources, 0) as n_sources,
+        -- SP4 left a mark here: at least one source's endpoint was discarded as infeasible, so the endpoint
+        -- that survived is a consensus over a reduced ballot. Opinion seam only (see int_flight_attach).
+        toUInt8(coalesce(g.origin_gated, 0) = 1 or coalesce(g.dest_gated, 0) = 1) as feasibility_gated,
         -- per endpoint: curated override > consensus winner
         coalesce(cur.origin_icao, ow.origin_icao) as origin_icao,
         multiIf(cur.origin_icao is not null, 'curated', ow.origin_icao is not null, ow.origin_src, null) as origin_source,
@@ -153,6 +156,7 @@ resolved as (
     left join dest_win dw on dw.flight_id = sp.flight_id
     left join dest_votes_map dvm on dvm.flight_id = sp.flight_id
     left join n_src nc on nc.flight_id = sp.flight_id
+    left join gate g on g.flight_id = sp.flight_id
     left join curated cur on cur.flight_id = sp.flight_id
     left join {{ ref('dim_aircraft') }} ac on ac.icao24 = lower(sp.icao24)
     left join {{ ref('dim_airlines') }} al

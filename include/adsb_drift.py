@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 import pyarrow as pa
 
@@ -53,3 +54,47 @@ def count_raw_json_keys(
                 parsed += 1
                 seen.update(obj.keys())
     return seen, parsed
+
+
+# Bound the scan: newest files + a row cap keep it memory-bounded (mirrors the operator script).
+DEFAULT_LIMIT_FILES = 48
+DEFAULT_SAMPLE_ROWS = 200_000
+
+log = logging.getLogger("maintain_adsb_schema")
+
+
+def _iter_raw_json_batches(fs, paths: list[str]) -> Iterator:
+    import pyarrow.parquet as pq
+
+    for p in paths:
+        with fs.open_input_file(p) as f:
+            yield from pq.ParquetFile(f).iter_batches(columns=["_raw_json"])
+
+
+# A new _raw_json key means the edge producer's schema moved: bronze DDL + adsb_schema must follow in
+# lock-step, so non-empty drift log.errors (the alert) instead of silently landing untyped data.
+def scan_core(fs, root: str, *, limit_files: int, sample_rows: int, log=log) -> dict:
+    from pyarrow.fs import FileSelector
+
+    infos = fs.get_file_info(FileSelector(root, recursive=True, allow_not_found=True))
+    paths = sorted(i.path for i in infos if i.path.endswith(".parquet"))
+    if limit_files:
+        paths = paths[-limit_files:]
+
+    seen, parsed = count_raw_json_keys(_iter_raw_json_batches(fs, paths), sample_rows)
+    new_fields = find_new_untyped_fields(set(seen), KNOWN_UNTYPED)
+    suppressed = sorted(set(seen) & KNOWN_UNTYPED)
+
+    summary = {
+        "files": len(paths),
+        "rows_parsed": parsed,
+        "distinct_keys": len(seen),
+        "new_fields": sorted(new_fields),
+        "suppressed": suppressed,
+    }
+    if new_fields:
+        log.error("adsb schema drift: %d new untyped readsb field(s) in _raw_json: %s — decide "
+                  "promote/raw-only/silver per field", len(new_fields), summary["new_fields"])
+    else:
+        log.info("adsb schema drift scan clean: %s", summary)
+    return summary

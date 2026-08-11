@@ -11,6 +11,14 @@ models:
 
   - name: stg_vrs_routes
     description: "vradarserver standing-data schedules exploded into box-touching adjacent legs (one row per callsign_norm+origin+dest), endpoints dim_airports-confirmed; leg picked at attach; guarded empty until dim.dim_vrs_routes exists."
+    # Finding 3: stg_vrs_routes grain is one row per (callsign_norm, origin_icao, dest_icao) box-gated
+    # leg; a duplicate would double-weight one leg's schedule prior against observation.
+    tests:
+      - grain:
+          arguments:
+            column_names: [callsign_norm, origin_icao, dest_icao]
+          config:
+            tags: ['reconcile']
     columns:
       - name: callsign_norm
         tests:

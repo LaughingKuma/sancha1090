@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 from airflow.sdk import dag
-from airflow.providers.standard.operators.bash import BashOperator
 
 from include.adsb_assets import adsb_bronze_table
-
-
-_DBT_CH = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target clickhouse --no-use-colors"
+from include.dag_dbt import dbt_run_test
+from include.dag_defaults import default_args
 
 
 @dag(
@@ -17,28 +13,14 @@ _DBT_CH = "cd /opt/airflow/dbt/sancha1090 && dbt {cmd} --profiles-dir . --target
     schedule=[adsb_bronze_table],
     catchup=False,
     max_active_runs=1,
-    default_args={
-        "owner": "amit",
-        "retries": 1,
-        "retry_delay": timedelta(minutes=2),
-    },
+    default_args=default_args(),
     tags=["sancha1090", "silver", "adsb"],
 )
 def transform_adsb_silver():
 
     # +tag:adsb pulls in dim_aircraft_registry (the one cross-lane ancestor dim_aircraft depends on);
     # the P4 ADS-B aggregates are served by self-maintaining MVs (include/ch_incremental_mvs.py), not dbt models.
-    dbt_run_ch = BashOperator(
-        task_id="dbt_run_ch",
-        bash_command=_DBT_CH.format(cmd="run --select +tag:adsb"),
-    )
-    # dbt test (same selection) is the all_success leaf — a run or data-quality failure reds the run.
-    dbt_test_ch = BashOperator(
-        task_id="dbt_test_ch",
-        bash_command=_DBT_CH.format(cmd="test --select +tag:adsb"),
-    )
-
-    dbt_run_ch >> dbt_test_ch
+    dbt_run_test("--select +tag:adsb")
 
 
 transform_adsb_silver()

@@ -2,11 +2,7 @@
 
 -- Deploy-order guard: bronze.adsbx_aircraft_db is created by the operator's manual DDL at deploy, but
 -- transform_flights rebuilds this model from committed code — gate the ADSBx fill on the table existing.
-{%- if execute %}
-{%- set adsbx_rel = adapter.get_relation(database=none, schema='bronze', identifier='adsbx_aircraft_db') %}
-{%- else %}
-{%- set adsbx_rel = none %}
-{%- endif %}
+{%- set adsbx_rel = optional_relation('bronze', 'adsbx_aircraft_db') %}
 
 -- One row per airframe from the weekly registry snapshots, latest as_of_date wins.
 -- Country comes from the ICAO24 address block (dim_hex_country) — the registry CSV

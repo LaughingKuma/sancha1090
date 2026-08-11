@@ -1,21 +1,9 @@
 import collections
-import importlib.util
 import re
 import time
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-@pytest.fixture(scope="module")
-def livemap():
-    spec = importlib.util.spec_from_file_location("livemap_app", REPO_ROOT / "livemap" / "app.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def test_track_serves_rw_points_passthrough(livemap, monkeypatch):

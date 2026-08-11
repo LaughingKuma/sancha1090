@@ -3,9 +3,14 @@ from __future__ import annotations
 import gzip as _gzip
 import json
 import logging
+import re
 from datetime import date, timedelta
 from pathlib import Path
 
+import pytest
+import sqlalchemy as sa
+
+import include.adsblol_route_ledger as ledger
 import include.adsblol_routes as routes
 
 FIXTURE = Path(__file__).parent / "fixtures" / "trace_full_a61c53_2026-06-25.json"
@@ -18,6 +23,26 @@ def _doc():
 
 def _synthetic(points, icao="abc123", base=1782345600):
     return {"icao": icao, "timestamp": base, "trace": points}
+
+
+@pytest.fixture
+def ledger_eng():
+    eng = sa.create_engine("sqlite://")
+    ledger.ensure_table(eng)
+    return eng
+
+
+@pytest.fixture
+def quiet_routes(monkeypatch):
+    # Defaults keep run_daily offline and deterministic so each test states only its own arrangement.
+    caps = {"written": {}, "recorded": []}
+    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(routes, "write_parquet",
+                        lambda df, key: caps["written"].update({key: df.height}) or f"s3://b/{key}")
+    monkeypatch.setattr(routes.manifest, "record_load",
+                        lambda uri, _smin, _smax, rows, engine=None:  # noqa: ARG005 (engine kw-bound)
+                        caps["recorded"].append((uri, rows)))
+    return caps
 
 
 def test_real_trace_splits_into_rotation_legs():
@@ -171,21 +196,13 @@ def test_fetch_trace_raises_after_retries(monkeypatch):
         raise routes.requests.ConnectionError("boom")
 
     session = _FakeSession(_boom)
-    import pytest
     with pytest.raises(RuntimeError):
         routes.fetch_trace(DAY, "a61c53", session=session)
     assert calls["n"] == 3
 
 
-def test_run_daily_fetches_day_and_prior_lands_and_records(monkeypatch):
-    import sqlalchemy as sa
-
-    import include.adsblol_route_ledger as ledger
-
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
+def test_run_daily_fetches_day_and_prior_lands_and_records(monkeypatch, ledger_eng, quiet_routes):
     monkeypatch.setattr(routes, "route_targets", lambda _day, **_kw: ["a61c53"])
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
 
     fetched = []
 
@@ -193,18 +210,10 @@ def test_run_daily_fetches_day_and_prior_lands_and_records(monkeypatch):
         fetched.append((hexid, day.isoformat()))
         return _doc() if day == DAY else None  # D-1 missing
 
-    written = {}
-    monkeypatch.setattr(routes, "write_parquet",
-                        lambda df, key: written.update({key: df.height}) or f"s3://b/{key}")
-    recorded = []
-    monkeypatch.setattr(routes.manifest, "record_load",
-                        lambda uri, _smin, _smax, rows, engine=None:  # noqa: ARG005 (engine kw-bound)
-                        recorded.append((uri, rows)))
-
-    out = routes.run_daily(DAY, engine=eng, fetch=fake_fetch)
+    out = routes.run_daily(DAY, engine=ledger_eng, fetch=fake_fetch)
     assert set(fetched) == {("a61c53", "2026-06-25"), ("a61c53", "2026-06-24")}
     assert out["rows"] > 0 and out["path_rows"] > 0
-    import re
+    written = quiet_routes["written"]
     seg_keys = [k for k in written if k.startswith("bronze/adsblol_flight_segments/")]
     path_keys = [k for k in written if k.startswith("bronze/adsblol_flight_paths/")]
     assert len(seg_keys) == 1
@@ -214,42 +223,30 @@ def test_run_daily_fetches_day_and_prior_lands_and_records(monkeypatch):
     m = re.fullmatch(r"bronze/adsblol_flight_segments/dt=2026-06-25/part-(\d{8}T\d{12})\.parquet", seg_keys[0])
     assert m, seg_keys[0]
     assert path_keys[0] == f"bronze/adsblol_flight_paths/dt=2026-06-25/part-{m.group(1)}.parquet"
-    assert {r for _, r in recorded} == {out["rows"], out["path_rows"]}
+    # Sorted lists, not a set: equal seg/path counts must not mask a missing record_load call.
+    assert sorted(r for _, r in quiet_routes["recorded"]) == sorted([out["rows"], out["path_rows"]])
     # Both attempts recorded: the landed day and the missing D-1.
     assert ledger.filter_unattempted(
-        [("a61c53", "2026-06-25"), ("a61c53", "2026-06-24")], eng) == []
+        [("a61c53", "2026-06-25"), ("a61c53", "2026-06-24")], ledger_eng) == []
 
 
-def test_run_daily_reports_progress(monkeypatch):
-    import sqlalchemy as sa
-
-    import include.adsblol_route_ledger as ledger
-
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
+@pytest.mark.usefixtures("quiet_routes")
+def test_run_daily_reports_progress(monkeypatch, ledger_eng):
     monkeypatch.setattr(routes, "route_targets", lambda _day, **_kw: ["a61c53", "abc123"])
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
 
     seen = []
     # 2 hexes x (D, D-1) = 4 pairs; progress must fire once per pair, ending on (total, total).
-    routes.run_daily(DAY, engine=eng, fetch=lambda *_a, **_k: None,
+    routes.run_daily(DAY, engine=ledger_eng, fetch=lambda *_a, **_k: None,
                      progress=lambda done, total: seen.append((done, total)))
     assert [d for d, _ in seen] == [1, 2, 3, 4]
     assert all(t == 4 for _, t in seen)
     assert seen[-1] == (4, 4)
 
 
-def test_run_daily_explicit_targets_skips_route_query(monkeypatch):
-    import sqlalchemy as sa
-
-    import include.adsblol_route_ledger as ledger
-
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
+def test_run_daily_explicit_targets_skips_route_query(monkeypatch, ledger_eng, quiet_routes):
     # An explicit target list must bypass route_targets entirely (backfill re-segment path).
     monkeypatch.setattr(routes, "route_targets",
                         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("route_targets must not be called")))
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
 
     fetched = []
 
@@ -261,12 +258,7 @@ def test_run_daily_explicit_targets_skips_route_query(monkeypatch):
             return None  # no trace for this hex that day -> missing
         return _doc()
 
-    written = {}
-    monkeypatch.setattr(routes, "write_parquet",
-                        lambda df, key: written.update({key: df.height}) or f"s3://b/{key}")
-    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
-
-    out = routes.run_daily(DAY, targets=["a61c53", "deadbe", "ffff01"], engine=eng, fetch=fake_fetch)
+    out = routes.run_daily(DAY, targets=["a61c53", "deadbe", "ffff01"], engine=ledger_eng, fetch=fake_fetch)
     # Explicit targets fetch the given day ONLY -- no D-1 companion (each trace-day re-segments
     # independently and every affected D-1 already appears in the target list in its own right).
     assert set(fetched) == {("a61c53", "2026-06-25"), ("deadbe", "2026-06-25"), ("ffff01", "2026-06-25")}
@@ -275,21 +267,12 @@ def test_run_daily_explicit_targets_skips_route_query(monkeypatch):
     assert out["missing"] == 1
     assert out["errors"] == 1
     assert out["rows"] > 0
-    seg_keys = [k for k in written if k.startswith("bronze/adsblol_flight_segments/")]
+    seg_keys = [k for k in quiet_routes["written"] if k.startswith("bronze/adsblol_flight_segments/")]
     assert len(seg_keys) == 1
 
 
-def test_run_daily_exposes_landed_hexes_only(monkeypatch):
-    import sqlalchemy as sa
-
-    import include.adsblol_route_ledger as ledger
-
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(routes, "write_parquet", lambda _df, key: f"s3://b/{key}")
-    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
-
+@pytest.mark.usefixtures("quiet_routes")
+def test_run_daily_exposes_landed_hexes_only(ledger_eng):
     def fake_fetch(_day, hexid, **_kw):
         if hexid == "ffff01":
             raise RuntimeError("trace fetch kept failing")
@@ -297,24 +280,15 @@ def test_run_daily_exposes_landed_hexes_only(monkeypatch):
             return None  # missing
         return _doc()
 
-    out = routes.run_daily(DAY, targets=["a61c53", "deadbe", "ffff01"], engine=eng, fetch=fake_fetch)
+    out = routes.run_daily(DAY, targets=["a61c53", "deadbe", "ffff01"], engine=ledger_eng, fetch=fake_fetch)
     # Only the landed hex is exposed for supersede-deletion; missing/error hexes are absent.
     assert out["landed_hexes"] == ["a61c53"]
     assert out["landed"] == 1 and out["missing"] == 1 and out["errors"] == 1
 
 
-def test_run_daily_concurrent_fetches_each_pair_once(monkeypatch):
+@pytest.mark.usefixtures("quiet_routes")
+def test_run_daily_concurrent_fetches_each_pair_once(ledger_eng):
     import threading
-
-    import sqlalchemy as sa
-
-    import include.adsblol_route_ledger as ledger
-
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(routes, "write_parquet", lambda _df, key: f"s3://b/{key}")
-    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
 
     lock = threading.Lock()
     fetched = []
@@ -327,7 +301,7 @@ def test_run_daily_concurrent_fetches_each_pair_once(monkeypatch):
         return _doc()
 
     targets = ["a61c53", "abc123", "def456", "111222"]
-    out = routes.run_daily(DAY, targets=targets, engine=eng, fetch=fake_fetch, workers=3)
+    out = routes.run_daily(DAY, targets=targets, engine=ledger_eng, fetch=fake_fetch, workers=3)
     # Explicit targets -> DAY only; every pair fetched exactly once across the pool.
     assert sorted(fetched) == sorted((h, "2026-06-25") for h in targets)
     assert out["fetched"] == 4
@@ -337,17 +311,8 @@ def test_run_daily_concurrent_fetches_each_pair_once(monkeypatch):
     assert "MainThread" not in thread_names
 
 
-def test_run_daily_concurrent_counts_an_erroring_pair(monkeypatch):
-    import sqlalchemy as sa
-
-    import include.adsblol_route_ledger as ledger
-
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(routes, "write_parquet", lambda _df, key: f"s3://b/{key}")
-    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
-
+@pytest.mark.usefixtures("quiet_routes")
+def test_run_daily_concurrent_counts_an_erroring_pair(ledger_eng):
     def fake_fetch(_day, hexid, **_kw):
         if hexid == "ffff01":
             raise RuntimeError("trace fetch kept failing")
@@ -355,7 +320,7 @@ def test_run_daily_concurrent_counts_an_erroring_pair(monkeypatch):
             return None
         return _doc()
 
-    out = routes.run_daily(DAY, targets=["a61c53", "deadbe", "ffff01"], engine=eng,
+    out = routes.run_daily(DAY, targets=["a61c53", "deadbe", "ffff01"], engine=ledger_eng,
                            fetch=fake_fetch, workers=3)
     # A persistently-failing pair among concurrent fetches still tallies as one error, and the
     # good pair still lands (outcome semantics identical to the serial path).
@@ -365,52 +330,34 @@ def test_run_daily_concurrent_counts_an_erroring_pair(monkeypatch):
     assert out["errors"] == 1
     assert out["rows"] > 0
     assert ledger.filter_unattempted(
-        [("a61c53", "2026-06-25"), ("deadbe", "2026-06-25"), ("ffff01", "2026-06-25")], eng) == []
+        [("a61c53", "2026-06-25"), ("deadbe", "2026-06-25"), ("ffff01", "2026-06-25")], ledger_eng) == []
 
 
-def test_run_daily_skips_ledgered_pairs(monkeypatch):
-    import sqlalchemy as sa
-
-    import include.adsblol_route_ledger as ledger
-
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
+def test_run_daily_skips_ledgered_pairs(monkeypatch, ledger_eng):
     ledger.record_attempts([("a61c53", "2026-06-25", "landed"),
-                            ("a61c53", "2026-06-24", "landed")], eng)
+                            ("a61c53", "2026-06-24", "landed")], ledger_eng)
     monkeypatch.setattr(routes, "route_targets", lambda _day, **_kw: ["a61c53"])
-    out = routes.run_daily(DAY, engine=eng,
+    out = routes.run_daily(DAY, engine=ledger_eng,
                            fetch=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("fetched")))
     assert out["fetched"] == 0 and out["uri"] is None
 
 
-def test_run_daily_isolates_a_persistently_failing_pair(monkeypatch, caplog):
-    import sqlalchemy as sa
-
-    import include.adsblol_route_ledger as ledger
-
+def test_run_daily_isolates_a_persistently_failing_pair(monkeypatch, caplog, ledger_eng, quiet_routes):
     caplog.set_level(logging.WARNING, logger="include.adsblol_routes")
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
     monkeypatch.setattr(routes, "route_targets", lambda _day, **_kw: ["a61c53"])
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
 
     def fake_fetch(day, _hexid, **_kw):
         if day == DAY - timedelta(days=1):  # D-1 is the persistently-failing pair
             raise RuntimeError("trace fetch kept failing")
         return _doc()
 
-    written = []
-    monkeypatch.setattr(routes, "write_parquet",
-                        lambda _df, key: written.append(key) or f"s3://b/{key}")
-    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
-
-    out = routes.run_daily(DAY, engine=eng, fetch=fake_fetch)
+    out = routes.run_daily(DAY, engine=ledger_eng, fetch=fake_fetch)
     assert out["rows"] > 0  # the good pair still landed despite the other erroring
-    assert written  # write_parquet was reached, i.e. the run wasn't discarded
+    assert quiet_routes["written"]  # write_parquet was reached, i.e. the run wasn't discarded
     # Both pairs recorded in the ledger: 'error' behaves like 'missing' for filtering,
     # so both are inside their cooldown right after the run.
     assert ledger.filter_unattempted(
-        [("a61c53", "2026-06-25"), ("a61c53", "2026-06-24")], eng) == []
+        [("a61c53", "2026-06-25"), ("a61c53", "2026-06-24")], ledger_eng) == []
     # A persistently-failing pair must be identifiable from task logs, not just the aggregate error count.
     assert "a61c53" in caplog.text and "2026-06-24" in caplog.text
 
@@ -421,22 +368,14 @@ def _malformed_doc():
     return {"icao": "badc0d", "timestamp": 1782345600, "trace": [None]}
 
 
-def test_run_daily_isolates_a_malformed_trace_doc_serial(monkeypatch, caplog):
-    import sqlalchemy as sa
-
-    import include.adsblol_route_ledger as ledger
-
+@pytest.mark.usefixtures("quiet_routes")
+def test_run_daily_isolates_a_malformed_trace_doc_serial(caplog, ledger_eng):
     caplog.set_level(logging.WARNING, logger="include.adsblol_routes")
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(routes, "write_parquet", lambda _df, key: f"s3://b/{key}")
-    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
 
     def fake_fetch(_day, hexid, **_kw):
         return _malformed_doc() if hexid == "badc0d" else _doc()
 
-    out = routes.run_daily(DAY, targets=["a61c53", "badc0d"], engine=eng, fetch=fake_fetch)
+    out = routes.run_daily(DAY, targets=["a61c53", "badc0d"], engine=ledger_eng, fetch=fake_fetch)
     # trace_segments/trace_paths raising on the malformed doc must not abort the batch: the
     # good pair still lands and the bad one is isolated as an 'error' for ledger retry.
     assert out["fetched"] == 2
@@ -444,27 +383,19 @@ def test_run_daily_isolates_a_malformed_trace_doc_serial(monkeypatch, caplog):
     assert out["errors"] == 1
     assert out["rows"] > 0
     assert ledger.filter_unattempted(
-        [("a61c53", "2026-06-25"), ("badc0d", "2026-06-25")], eng) == []
+        [("a61c53", "2026-06-25"), ("badc0d", "2026-06-25")], ledger_eng) == []
     # A malformed doc must be identifiable from task logs (pair + traceback), not just the error tally.
     assert "badc0d" in caplog.text and "2026-06-25" in caplog.text
     assert "TypeError" in caplog.text
 
 
-def test_run_daily_isolates_a_malformed_trace_doc_concurrent(monkeypatch):
-    import sqlalchemy as sa
-
-    import include.adsblol_route_ledger as ledger
-
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(routes, "write_parquet", lambda _df, key: f"s3://b/{key}")
-    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
-
+@pytest.mark.usefixtures("quiet_routes")
+def test_run_daily_isolates_a_malformed_trace_doc_concurrent(ledger_eng):
     def fake_fetch(_day, hexid, **_kw):
         return _malformed_doc() if hexid == "badc0d" else _doc()
 
-    out = routes.run_daily(DAY, targets=["a61c53", "badc0d"], engine=eng, fetch=fake_fetch, workers=2)
+    out = routes.run_daily(DAY, targets=["a61c53", "badc0d"], engine=ledger_eng,
+                           fetch=fake_fetch, workers=2)
     # Same isolation on the concurrent path: fut.result() in _run_concurrent must never see the
     # exception (caught inside the worker), so the aggregation loop can't abort mid-flight.
     assert out["fetched"] == 2
@@ -472,23 +403,15 @@ def test_run_daily_isolates_a_malformed_trace_doc_concurrent(monkeypatch):
     assert out["errors"] == 1
     assert out["rows"] > 0
     assert ledger.filter_unattempted(
-        [("a61c53", "2026-06-25"), ("badc0d", "2026-06-25")], eng) == []
+        [("a61c53", "2026-06-25"), ("badc0d", "2026-06-25")], ledger_eng) == []
 
 
-def test_run_daily_includes_aged_errors_outside_current_targets(monkeypatch):
-    import sqlalchemy as sa
-
-    import include.adsblol_route_ledger as ledger
-
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
-    ledger.record_attempts([("a61c53", "2026-06-20", "error")], eng)
-    with eng.begin() as conn:
+@pytest.mark.usefixtures("quiet_routes")
+def test_run_daily_includes_aged_errors_outside_current_targets(ledger_eng):
+    ledger.record_attempts([("a61c53", "2026-06-20", "error")], ledger_eng)
+    with ledger_eng.begin() as conn:
         conn.execute(sa.text(
             "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(routes, "write_parquet", lambda _df, key: f"s3://b/{key}")
-    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
 
     fetched = []
 
@@ -499,7 +422,7 @@ def test_run_daily_includes_aged_errors_outside_current_targets(monkeypatch):
     out = routes.run_daily(
         DAY,
         targets=["a61c53"],
-        engine=eng,
+        engine=ledger_eng,
         fetch=fake_fetch,
         include_error_retries=True,
     )
@@ -507,20 +430,12 @@ def test_run_daily_includes_aged_errors_outside_current_targets(monkeypatch):
     assert out["retry_pairs"] == 1 and out["fetched"] == 2
 
 
-def test_run_daily_includes_aged_missing_outside_current_targets(monkeypatch):
-    import sqlalchemy as sa
-
-    import include.adsblol_route_ledger as ledger
-
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
-    ledger.record_attempts([("a61c53", "2026-06-20", "missing")], eng)
-    with eng.begin() as conn:
+@pytest.mark.usefixtures("quiet_routes")
+def test_run_daily_includes_aged_missing_outside_current_targets(ledger_eng):
+    ledger.record_attempts([("a61c53", "2026-06-20", "missing")], ledger_eng)
+    with ledger_eng.begin() as conn:
         conn.execute(sa.text(
             "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(routes, "write_parquet", lambda _df, key: f"s3://b/{key}")
-    monkeypatch.setattr(routes.manifest, "record_load", lambda *_a, **_kw: None)
 
     fetched = []
 
@@ -531,7 +446,7 @@ def test_run_daily_includes_aged_missing_outside_current_targets(monkeypatch):
     out = routes.run_daily(
         DAY,
         targets=["a61c53"],
-        engine=eng,
+        engine=ledger_eng,
         fetch=fake_fetch,
         include_missing_retries=True,
     )
@@ -539,13 +454,11 @@ def test_run_daily_includes_aged_missing_outside_current_targets(monkeypatch):
     assert out["retry_pairs"] == 1 and out["fetched"] == 2
 
 
-def test_run_daily_raises_after_recording_failed_pairs(monkeypatch):
-    import sqlalchemy as sa
-
+@pytest.mark.usefixtures("quiet_routes")
+def test_run_daily_raises_after_recording_failed_pairs():
+    # deliberately a bare engine (no ensure_table): run_daily must create the ledger itself
     eng = sa.create_engine("sqlite://")
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
 
-    import pytest
     with pytest.raises(RuntimeError, match="remain eligible for retry"):
         routes.run_daily(
             DAY,

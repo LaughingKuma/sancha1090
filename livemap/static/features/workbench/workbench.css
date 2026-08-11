@@ -122,19 +122,49 @@
 .wb-note { color: var(--ink-dim); font-size: 10px; line-height: 1.55; }
 .wb-empty { color: var(--ink-dim); font-style: italic; padding: 8px 0; }
 
-.wb-odchips, .wb-filters { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-bottom: 7px; }
+.wb-odchips, .wb-filters, .wb-classes, .wb-dims { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-bottom: 7px; }
 .wb-filters input { flex: 0 1 auto; }
 
-.wb-surf { display: flex; flex-direction: column; gap: 6px; }
-.wb-surf-go, .wb-surf-ghost {
-  display: flex; flex-direction: column; gap: 2px; text-align: left; width: 100%;
+/* Period strip: the landing numbers, each one a doorway — the clickable cells reset the button chrome. */
+.wb-strip { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 9px; }
+.wb-cell {
+  display: flex; flex-direction: column; gap: 2px; flex: 1 1 62px; min-width: 0; text-align: left;
   border: 1px solid var(--hair-soft); background: none; color: var(--ink);
-  font: inherit; font-size: 10.5px; padding: 8px 10px;
-  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%);
+  font: inherit; font-size: 10.5px; font-variant-numeric: tabular-nums; padding: 5px 6px;
 }
-.wb-surf-go { cursor: pointer; }
-.wb-surf-go:hover { background: rgba(255,176,0,0.07); border-color: var(--hair); }
-.wb-surf-ghost { opacity: 0.35; }
+.wb-cell-go { cursor: pointer; }
+.wb-cell-go:hover { background: rgba(255,176,0,0.07); border-color: var(--hair); }
+.wb-cell-v { font-family: "Chakra Petch", sans-serif; font-weight: 600; letter-spacing: 0.03em; }
+.wb-cell-k { color: var(--ink-dim); font-size: 8px; letter-spacing: 0.18em; text-transform: uppercase; }
+.wb-microbar { display: flex; height: 7px; width: 100%; overflow: hidden; }
+.wb-microbar .t-settled { background: var(--amber); }
+.wb-microbar .t-estimated { background: #b08ae6; }
+.wb-microbar .t-provisional { background: var(--teal); }
+.wb-microbar .t-none, .wb-microbar .t-unknown { background: var(--ink-dim); }
+
+.wb-panel { border: 1px solid var(--hair-soft); margin-bottom: 7px; }
+.wb-panel-head {
+  display: flex; width: 100%; align-items: center; gap: 8px; text-align: left;
+  background: none; border: none; border-bottom: 1px solid var(--hair-soft);
+  color: var(--amber-dim); cursor: pointer;
+  font: inherit; font-size: 8px; letter-spacing: 0.24em; text-transform: uppercase; padding: 6px 8px;
+}
+.wb-panel-head.wb-ghost { cursor: default; }
+.wb-panel-head:hover:not(.wb-ghost) { color: var(--amber); background: rgba(255,176,0,0.07); }
+.wb-panel-go { margin-left: auto; color: var(--ink-dim); }
+.wb-panel-body { padding: 6px 8px 8px; }
+
+/* Charts size off the host, so the host's height is the contract — never the drawing's. */
+.wb-chart { height: 160px; overflow: hidden; margin-bottom: 6px; }
+.wb-spark { height: 28px; overflow: hidden; margin-bottom: 6px; }
+
+.wb-flagcls {
+  color: var(--amber-dim); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.wb-detail { color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-rank .wb-delta { color: var(--ink-dim); flex: 0 0 auto; }
+
 
 .wb-row {
   display: flex; width: 100%; align-items: center; gap: 8px; text-align: left;

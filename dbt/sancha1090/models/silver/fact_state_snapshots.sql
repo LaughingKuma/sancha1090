@@ -1,7 +1,4 @@
-{{ config(
-    materialized='table',
-    properties=none
-) }}
+{{ config(materialized='table') }}
 
 select
     icao24,

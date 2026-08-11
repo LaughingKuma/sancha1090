@@ -6,7 +6,7 @@ log = logging.getLogger(__name__)
 
 # P4 cheap aggregates as self-maintaining AggregatingMergeTree MVs; shadow state until P5 (full design:
 # opensky-docs/relevant/2026-06-20-ch-migration-p4-parity-results.md). Three invariants the code depends on:
-# READS = the merge-aware read contract; raw *_state columns are opaque (uniqExactMerge/sum + GROUP BY only).
+# each spec's "read" is the merge-aware read contract; raw *_state columns are opaque (uniqExactMerge/sum + GROUP BY only).
 # MVs attach to append-only bronze, never the dbt-REPLACE'd silver (an MV can't survive a drop+recreate).
 # Context-lane obs = uniqExact((icao24,snapshot_time)): dedup-immune (an MV can't dedup across blocks),
 # where ADS-B is row-preserving over bronze so plain count() suffices.
@@ -75,6 +75,23 @@ GROUP BY snapshot_hour, airline_name, airline_country
 # MV form: regular equi-join (block is tiny) + argMinIf nearest by tuple (abs_dist, -snap_epoch, callsign)
 # == dbt's ORDER BY abs(d) ASC, snap_epoch DESC, callsign ASC. observations is uniqExact((hex,capture_ts)) (not
 # count()) so a cross-block crash-replay dup can't inflate it (see the count()-not-dup-immune note below).
+def _adsb_attribution(opensky_src: str, where_sql: str = "", alias_pad: str = " " * 9) -> str:
+    # (hex,capture_ts)->callsign attribution shared by the MV body and the windowed oracle; alias_pad
+    # keeps each caller's historical alignment (the oracle feeds the served-value gate — zero byte drift).
+    return f"""    SELECT
+        s.hex AS hex,
+        s.capture_ts AS capture_ts,
+        coalesce(nullIf(trimBoth(any(s.flight)), ''),
+                 argMinIf(o.callsign, (abs(o.snap_epoch - s.capture_ts), -o.snap_epoch, o.callsign),
+                          o.callsign IS NOT NULL AND abs(o.snap_epoch - s.capture_ts) <= {_BF_WINDOW_S})) AS callsign_filled,
+        multiIf(nullIf(trimBoth(any(s.flight)), '') IS NOT NULL, 'adsb',
+                countIf(o.callsign IS NOT NULL AND abs(o.snap_epoch - s.capture_ts) <= {_BF_WINDOW_S}) > 0,
+                'opensky_backfill', NULL){alias_pad}AS callsign_source
+    FROM {_ADSB} s
+    LEFT JOIN ({opensky_src}) o ON o.icao24 = s.hex{where_sql}
+    GROUP BY s.hex, s.capture_ts"""
+
+
 _ADSB_AIRLINE_MV_BODY = f"""
 SELECT
     toStartOfHour(toDateTime(t.capture_ts))       AS snapshot_hour,
@@ -84,18 +101,7 @@ SELECT
     uniqExactState((t.hex, t.capture_ts))         AS observations,
     uniqExactStateIf((t.hex, t.capture_ts), t.callsign_source = 'opensky_backfill') AS backfilled_observations
 FROM (
-    SELECT
-        s.hex AS hex,
-        s.capture_ts AS capture_ts,
-        coalesce(nullIf(trimBoth(any(s.flight)), ''),
-                 argMinIf(o.callsign, (abs(o.snap_epoch - s.capture_ts), -o.snap_epoch, o.callsign),
-                          o.callsign IS NOT NULL AND abs(o.snap_epoch - s.capture_ts) <= {_BF_WINDOW_S})) AS callsign_filled,
-        multiIf(nullIf(trimBoth(any(s.flight)), '') IS NOT NULL, 'adsb',
-                countIf(o.callsign IS NOT NULL AND abs(o.snap_epoch - s.capture_ts) <= {_BF_WINDOW_S}) > 0,
-                'opensky_backfill', NULL)         AS callsign_source
-    FROM {_ADSB} s
-    LEFT JOIN ({_OPENSKY_CALLSIGN}) o ON o.icao24 = s.hex
-    GROUP BY s.hex, s.capture_ts
+{_adsb_attribution(_OPENSKY_CALLSIGN)}
 ) t
 {_AL_JOIN.format(dim=_DIM_AIRLINES, cs="t.callsign_filled")}
 GROUP BY snapshot_hour, airline_name, airline_country
@@ -127,6 +133,7 @@ def adsb_airline_oracle_sql(lo: int, hi: int) -> str:
     # _BF_WINDOW_S of each capture_ts, so the window is result-preserving) to keep the join cost bounded.
     opensky_win = (f"{_OPENSKY_CALLSIGN} AND toUnixTimestamp64Micro(snapshot_time) / 1e6 "
                    f"BETWEEN {lo - _BF_WINDOW_S} AND {hi + _BF_WINDOW_S}")
+    where_sql = f"\n    WHERE s.capture_ts >= {lo} AND s.capture_ts < {hi}"
     return f"""
 SELECT
     coalesce(al.name, '')                                    AS airline_name,
@@ -136,19 +143,7 @@ SELECT
     uniqExact((t.hex, t.capture_ts))                        AS observations,
     uniqExactIf((t.hex, t.capture_ts), t.callsign_source = 'opensky_backfill') AS backfilled
 FROM (
-    SELECT
-        s.hex AS hex,
-        s.capture_ts AS capture_ts,
-        coalesce(nullIf(trimBoth(any(s.flight)), ''),
-                 argMinIf(o.callsign, (abs(o.snap_epoch - s.capture_ts), -o.snap_epoch, o.callsign),
-                          o.callsign IS NOT NULL AND abs(o.snap_epoch - s.capture_ts) <= {_BF_WINDOW_S})) AS callsign_filled,
-        multiIf(nullIf(trimBoth(any(s.flight)), '') IS NOT NULL, 'adsb',
-                countIf(o.callsign IS NOT NULL AND abs(o.snap_epoch - s.capture_ts) <= {_BF_WINDOW_S}) > 0,
-                'opensky_backfill', NULL)                    AS callsign_source
-    FROM {_ADSB} s
-    LEFT JOIN ({opensky_win}) o ON o.icao24 = s.hex
-    WHERE s.capture_ts >= {lo} AND s.capture_ts < {hi}
-    GROUP BY s.hex, s.capture_ts
+{_adsb_attribution(opensky_win, where_sql, alias_pad=" " * 20)}
 ) t
 {_AL_JOIN.format(dim=_DIM_AIRLINES, cs="t.callsign_filled")}
 GROUP BY airline_name, airline_country, h
@@ -239,6 +234,19 @@ ORDER BY snapshot_hour
     # 2) Airline traffic (OpenSky context) — hourly grain.
     # Accumulate-forever read since the 2026-07 stg_states unwindowing (the old 30d parity window inverted).
     al_join = _AL_JOIN.format(dim=_DIM_AIRLINES, cs="s.callsign")
+    # One SELECT shared by mv + seed (the country_select precedent): the two must aggregate identically.
+    airline_select = f"""
+SELECT
+    toStartOfHour(s.snapshot_time)                AS snapshot_hour,
+    al.name                                       AS airline_name,
+    al.country                                    AS airline_country,
+    uniqExactState(s.icao24)                      AS distinct_aircraft_state,
+    uniqExactState((s.icao24, s.snapshot_time))   AS observations_state
+FROM {_OPENSKY} s
+{al_join}
+WHERE {_GEO}
+GROUP BY snapshot_hour, airline_name, airline_country
+""".strip()
     specs["agg_airline_traffic_acc"] = {
         "drop_old": ["agg_airline_traffic"],
         "target": f"""
@@ -257,29 +265,11 @@ SETTINGS fsync_after_insert = 1, fsync_part_directory = 1
         "mv": f"""
 CREATE MATERIALIZED VIEW IF NOT EXISTS gold_ch.agg_airline_traffic_acc_mv
 TO gold_ch.agg_airline_traffic_acc AS
-SELECT
-    toStartOfHour(s.snapshot_time)                AS snapshot_hour,
-    al.name                                       AS airline_name,
-    al.country                                    AS airline_country,
-    uniqExactState(s.icao24)                      AS distinct_aircraft_state,
-    uniqExactState((s.icao24, s.snapshot_time))   AS observations_state
-FROM {_OPENSKY} s
-{al_join}
-WHERE {_GEO}
-GROUP BY snapshot_hour, airline_name, airline_country
+{airline_select}
 """.strip(),
         "seed": [f"""
 INSERT INTO gold_ch.agg_airline_traffic_acc
-SELECT
-    toStartOfHour(s.snapshot_time)                AS snapshot_hour,
-    al.name                                       AS airline_name,
-    al.country                                    AS airline_country,
-    uniqExactState(s.icao24)                      AS distinct_aircraft_state,
-    uniqExactState((s.icao24, s.snapshot_time))   AS observations_state
-FROM {_OPENSKY} s
-{al_join}
-WHERE {_GEO}
-GROUP BY snapshot_hour, airline_name, airline_country
+{airline_select}
 """.strip()],
         "read": """
 SELECT
@@ -394,13 +384,11 @@ ORDER BY distinct_aircraft DESC
 
 
 SPECS = _spec()
-# Read contract (uniqExactMerge/sum + GROUP BY) for the serving views — never read the _acc state columns raw.
-READS = {name: spec["read"] for name, spec in SPECS.items()}
 
 # P5 Superset cutover: expose each _acc's merge-aware read as a named gold_ch view, keyed by the original
 # mart name (drop_old[0]). P4 deferred this ("expose reads only through named views in P5"): consumers
 # (Superset datasets, SQL Lab) then read a plain table name and never touch the opaque *_state columns. The
-# body IS the READS contract, so a consumer reading through the view gets the merge-aware aggregate.
+# body IS the read contract, so a consumer reading through the view gets the merge-aware aggregate.
 SERVING_VIEWS = {spec["drop_old"][0]: spec["read"] for spec in SPECS.values() if spec.get("drop_old")}
 
 
@@ -461,7 +449,7 @@ def apply(*, reseed: bool = False, names=None) -> dict:
             out[name] = {"seeded_rows": seeded, "skipped_seed": not did_seed}
             log.info("ch_incremental_mvs %s: seeded_rows=%s skipped_seed=%s", name, seeded, not did_seed)
         # P5 serving views: each _acc's drop_old has already removed the old dbt table above, so CREATE OR
-        # REPLACE VIEW gets a clean name. The view body is the merge-aware READS contract (no opaque state).
+        # REPLACE VIEW gets a clean name. The view body is the merge-aware read contract (no opaque state).
         # Recreate only the processed specs' serving views so a scoped (names=) run can't touch other views.
         views = {spec["drop_old"][0]: spec["read"] for spec in specs.values() if spec.get("drop_old")}
         for base, read_sql in views.items():

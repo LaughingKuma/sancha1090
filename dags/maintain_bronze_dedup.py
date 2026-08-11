@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pendulum
 
 from airflow.sdk import dag, task
+
+from include.dag_defaults import default_args
 
 
 @dag(
@@ -16,11 +16,7 @@ from airflow.sdk import dag, task
     max_active_runs=1,
     # A protection task, like ch_serving_parity — runs from first boot without a manual unpause.
     is_paused_upon_creation=False,
-    default_args={
-        "owner": "amit",
-        "retries": 1,
-        "retry_delay": timedelta(minutes=10),
-    },
+    default_args=default_args(delay_min=10),
     tags=["sancha1090", "clickhouse", "maintenance"],
 )
 def maintain_bronze_dedup():
