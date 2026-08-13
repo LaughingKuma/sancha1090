@@ -2,7 +2,7 @@
 -- is populated at any realistic warehouse size, so a zero-row class is the failure signal.
 with classes as (
     select arrayJoin(['tiebreak_endpoint', 'single_source', 'one_sided_intl',
-                      'feasibility_snap', 'diversion', 'military']) as flag_class
+                      'feasibility_snap', 'diversion', 'same_endpoint', 'military']) as flag_class
 )
 select c.flag_class as empty_class
 from classes c

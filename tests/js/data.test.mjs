@@ -97,7 +97,8 @@ test("fetchSummary: full envelope shape, invalid daily entries dropped", async (
       available: true, flagged: 22259,
       classes: {
         tiebreak_endpoint: 8400, single_source: 5660, one_sided_intl: 6921,
-        feasibility_snap: 705, diversion: 0, military: 2014, unknown_class: 111,
+        feasibility_snap: 705, diversion: 0, same_endpoint: 12296, military: 2014,
+        unknown_class: 111,
       },
     },
     tiers: {
@@ -119,7 +120,7 @@ test("fetchSummary: full envelope shape, invalid daily entries dropped", async (
   // classCounts keeps an explicit 0 (!= null check) but drops the unrecognized class key
   assert.deepEqual(r.flags.classes, {
     tiebreak_endpoint: 8400, single_source: 5660, one_sided_intl: 6921,
-    feasibility_snap: 705, diversion: 0, military: 2014,
+    feasibility_snap: 705, diversion: 0, same_endpoint: 12296, military: 2014,
   });
 
   assert.equal(r.tiers.available, true);

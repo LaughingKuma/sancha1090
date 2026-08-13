@@ -308,9 +308,11 @@ reconstruction-tier badge (settled / estimated / provisional / none) so a dead-e
 visible before it happens, and selecting an instance enters a focus mode that dims the live
 fleet and draws that flight's reconstructed path alone. A companion mart,
 `gold.fct_flight_flags`, precomputes the workbench's anomaly feed: one row per flight and
-flag, across six classes — endpoint decided on a rank tiebreak, single-source flight,
+flag, across seven classes — endpoint decided on a rank tiebreak, single-source flight,
 one-sided international resolution, feasibility-gate intervention, destination diverging from
-the service's modal destination for that origin, and military airframe. The feed is browsable by class. Trends rank routes,
+the service's modal destination for that origin, origin resolving to the same airport as the
+destination (defect-shaped rather than a real out-and-back, and excluded from the diversion
+class so one defect is flagged once), and military airframe. The feed is browsable by class. Trends rank routes,
 airlines or airports against the window immediately before, with per-key daily series; the
 overview assembles the whole period — headline counts, tier mix, flags, movers, and the estimate
 drift tile (windowed on when estimates were served, the only day axis the settlement mart

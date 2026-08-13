@@ -51,7 +51,8 @@ const tierCounts = (t) => {
   return o;
 };
 const FLAG_CLASSES = [
-  "tiebreak_endpoint", "single_source", "one_sided_intl", "feasibility_snap", "diversion", "military",
+  "tiebreak_endpoint", "single_source", "one_sided_intl", "feasibility_snap", "diversion",
+  "same_endpoint", "military",
 ];
 // a class the frontend has no chip for would render as an unlabelled doorway — drop it
 const classCounts = (c) => {

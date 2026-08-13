@@ -1,7 +1,7 @@
-import { esc, panel, navigate, rangeParams } from "../shell.js?v=6.42";
-import { fetchSummary, fetchFlags } from "../data.js?v=6.42";
-import { spark, stackedBars, HUE } from "../chart.js?v=6.42";
-import { renderFlagRows } from "./flags.js?v=6.42";
+import { esc, panel, navigate, rangeParams } from "../shell.js?v=6.43";
+import { fetchSummary, fetchFlags } from "../data.js?v=6.43";
+import { spark, stackedBars, HUE } from "../chart.js?v=6.43";
+import { renderFlagRows } from "./flags.js?v=6.43";
 
 const TIER_KEYS = ["settled", "estimated", "provisional", "none", "unknown"];
 const TIER_HUE = {

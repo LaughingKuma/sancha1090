@@ -13,6 +13,10 @@ ADSBX_DB_URL = "https://downloads.adsbexchange.com/downloads/basic-ac-db.json.gz
 # ~81% of the measured 2026-07-16 snapshot (615,656 airframes): tolerates shrinkage, rejects truncation.
 ADSBX_DB_MIN_ROWS = 500_000
 
+# Decay guard, not a catastrophe floor: 1/614,377 (2026-08-12) clears with huge margin; a creeping
+# upstream corruption that would sail under ADSBX_DB_MIN_ROWS aborts here instead.
+ADSBX_DB_MAX_DROP_RATE = 0.001
+
 
 @dag(
     dag_id="ingest_adsbx_db",
@@ -29,13 +33,13 @@ def ingest_adsbx_db():
 
     @task
     def download_and_land(**context) -> dict:
-        import gzip
         import io
 
         import httpx
         import polars as pl
 
         from include import manifest
+        from include.adsbx_parse import parse_basic_ac_db
         from include.s3_helpers import write_parquet
 
         buf = io.BytesIO()
@@ -43,9 +47,10 @@ def ingest_adsbx_db():
             r.raise_for_status()
             for chunk in r.iter_bytes():
                 buf.write(chunk)
-        # Full-file inference: the default 100-row window can type a sparse field (year, icaotype) from
-        # nulls only and then raise mid-parse when values appear later in the 615k-row file.
-        df = pl.read_ndjson(io.BytesIO(gzip.decompress(buf.getvalue())), infer_schema_length=None)
+
+        df, total, rejected = parse_basic_ac_db(buf.getvalue(), ADSBX_DB_MAX_DROP_RATE)
+        del buf
+        print(f"adsbx_db parse: kept={df.height} total={total} rejected={rejected}", flush=True)
 
         # Registry-grade 6-hex keys only — TIS-B/garbage addresses can never join anything.
         df = df.filter(pl.col("icao").str.contains(r"^[0-9a-fA-F]{6}$"))

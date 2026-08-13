@@ -53,6 +53,62 @@ def _live_anchor(row):
             row.get("gs"), row.get("track"), "live")
 
 
+async def _serve_estimate(ctx, flight_id: str, fid: int, got, *, settled: bool) -> JSONResponse:
+    try:
+        od, flight = await asyncio.to_thread(ctx._fetch_od, fid)
+    except Exception as exc:
+        print(f"livemap estimate O/D fetch failed: {type(exc).__name__}: {exc}", flush=True)
+        return _estimate_response(_empty_estimate(ctx, flight_id, "no_input", False, 0))
+
+    route_pts, plan_ts = await ctx._route_prior(got["points"], flight)
+    fp = await asyncio.to_thread(ctx.ess.input_fingerprint, got["points"], od, route_pts, plan_ts)
+    now = time.time()
+    # cache policy is arm-explicit: settled looks up and puts, provisional touches neither. PR-3:
+    # provisional inputs are estimated and served, logged input_provisional=1, and NEVER cached —
+    # same invariant (and reason) as the rung-2 _path_cache bypass
+    key = (fid, fp, ctx.ess.METHOD_VERSION) if settled else None
+
+    if settled:
+        hit = ctx._est_cache.get(key)
+        if hit and hit[0] > now:
+            # public-only re-check: private suppresses nothing, so a cache hit is always servable there
+            if ctx.PUBLIC_MODE:
+                icao24, callsign, mart_ladd = got["auth"][:3]
+                if ctx._is_ladd_suppressed(
+                    icao24,
+                    callsign,
+                    mv_is_ladd=mart_ladd,
+                    suppress=ctx._ladd_suppress,
+                ):
+                    return _estimate_response(_empty_estimate(ctx, flight_id, "no_input", False, 0))
+            # the canonical fid key makes 42/042 share an entry — echo the CALLER's spelling, not the seeder's
+            return _estimate_response({**hit[1], "flight_id": flight_id})
+
+    r = await asyncio.to_thread(ctx.est.estimate, got["points"], od, route_pts=route_pts)
+    ctx._stamp_route_plan(r, plan_ts)
+    payload = ctx.ess.build_response(flight_id, r, not settled, int(got["as_of"]))
+    if settled:
+        ctx._est_cache_put(key, payload, now)
+    eid = ctx.ess.new_estimate_id()
+    ctx._enqueue_estimate_log(
+        ctx.ess.build_log_rows(
+            eid,
+            fid,
+            got["auth"][0],
+            r,
+            payload,
+            got["points"],
+            fp,
+            ctx.ess.utcnow(),
+            producer=ctx.EST_PRODUCER,
+        )
+    )
+    if settled:
+        return _estimate_response(payload)
+    # the causal key rides only segments-bearing provisional responses — empties stay header-uniform
+    return _estimate_response(payload, eid if payload["segments"] else None)
+
+
 def build_router(ctx) -> APIRouter:
     router = APIRouter()
 
@@ -70,34 +126,7 @@ def build_router(ctx) -> APIRouter:
 
         fid = int(flight_id)
         if got["status"] == "provisional":
-            try:
-                od, flight = await asyncio.to_thread(ctx._fetch_od, fid)
-            except Exception as exc:
-                print(f"livemap estimate O/D fetch failed: {type(exc).__name__}: {exc}", flush=True)
-                return _estimate_response(_empty_estimate(ctx, flight_id, "no_input", False, 0))
-            route_pts, plan_ts = await ctx._route_prior(got["points"], flight)
-            fp = await asyncio.to_thread(ctx.ess.input_fingerprint, got["points"], od, route_pts, plan_ts)
-            r = await asyncio.to_thread(ctx.est.estimate, got["points"], od, route_pts=route_pts)
-            ctx._stamp_route_plan(r, plan_ts)
-            # PR-3: provisional inputs are estimated and served, logged input_provisional=1, and
-            # NEVER cached — same invariant (and reason) as the rung-2 _path_cache bypass
-            payload = ctx.ess.build_response(flight_id, r, True, int(got["as_of"]))
-            eid = ctx.ess.new_estimate_id()
-            ctx._enqueue_estimate_log(
-                ctx.ess.build_log_rows(
-                    eid,
-                    fid,
-                    got["auth"][0],
-                    r,
-                    payload,
-                    got["points"],
-                    fp,
-                    ctx.ess.utcnow(),
-                    producer=ctx.EST_PRODUCER,
-                )
-            )
-            # the causal key rides only segments-bearing responses — empties stay header-uniform
-            return _estimate_response(payload, eid if payload["segments"] else None)
+            return await _serve_estimate(ctx, flight_id, fid, got, settled=False)
 
         if got["status"] == "settled_empty":
             r = ctx.est.estimate([], ctx.est.OD())
@@ -118,49 +147,7 @@ def build_router(ctx) -> APIRouter:
             )
             return _estimate_response(payload)
 
-        try:
-            od, flight = await asyncio.to_thread(ctx._fetch_od, fid)
-        except Exception as exc:
-            print(f"livemap estimate O/D fetch failed: {type(exc).__name__}: {exc}", flush=True)
-            return _estimate_response(_empty_estimate(ctx, flight_id, "no_input", False, 0))
-
-        route_pts, plan_ts = await ctx._route_prior(got["points"], flight)
-        fp = await asyncio.to_thread(ctx.ess.input_fingerprint, got["points"], od, route_pts, plan_ts)
-        key = (fid, fp, ctx.ess.METHOD_VERSION)
-        now = time.time()
-        hit = ctx._est_cache.get(key)
-        if hit and hit[0] > now:
-            # public-only re-check: private suppresses nothing, so a cache hit is always servable there
-            if ctx.PUBLIC_MODE:
-                icao24, callsign, mart_ladd = got["auth"][:3]
-                if ctx._is_ladd_suppressed(
-                    icao24,
-                    callsign,
-                    mv_is_ladd=mart_ladd,
-                    suppress=ctx._ladd_suppress,
-                ):
-                    return _estimate_response(_empty_estimate(ctx, flight_id, "no_input", False, 0))
-            # the canonical fid key makes 42/042 share an entry — echo the CALLER's spelling, not the seeder's
-            return _estimate_response({**hit[1], "flight_id": flight_id})
-
-        r = await asyncio.to_thread(ctx.est.estimate, got["points"], od, route_pts=route_pts)
-        ctx._stamp_route_plan(r, plan_ts)
-        payload = ctx.ess.build_response(flight_id, r, False, int(got["as_of"]))
-        ctx._est_cache_put(key, payload, now)
-        ctx._enqueue_estimate_log(
-            ctx.ess.build_log_rows(
-                ctx.ess.new_estimate_id(),
-                fid,
-                got["auth"][0],
-                r,
-                payload,
-                got["points"],
-                fp,
-                ctx.ess.utcnow(),
-                producer=ctx.EST_PRODUCER,
-            )
-        )
-        return _estimate_response(payload)
+        return await _serve_estimate(ctx, flight_id, fid, got, settled=True)
 
     @router.get("/estimate/live/{icao24}")
     async def estimate_live(icao24: str) -> JSONResponse:

@@ -120,6 +120,33 @@ join recon r on r.flight_id = m.flight_id
 where m.modal_n >= {{ var('flag_diversion_min_support') }}
   and m.modal_n / m.support_total >= {{ var('flag_diversion_min_share') }}
   and m.dest_icao != m.modal_dest
+  -- same_endpoint labels origin = dest on its own; leaving those here double-flags one defect shape
+  and r.origin_icao != m.dest_icao
+
+union all
+
+-- Sampled cases are O/D resolution defects, not out-and-backs, so the modal dest is the evidence —
+-- but only when it clears the diversion arm's own support/share gates; a sub-threshold modal is noise.
+select
+    r.flight_id,
+    r.icao24,
+    r.callsign,
+    r.start_day,
+    'same_endpoint',
+    concat('at ', coalesce(r.origin_icao, '-'),
+           if(coalesce(m.modal_dest, '') != ''
+                and coalesce(m.modal_dest, '') != coalesce(r.origin_icao, '')
+                and coalesce(m.modal_n, 0) >= {{ var('flag_diversion_min_support') }}
+                and coalesce(m.modal_n, 0) / greatest(coalesce(m.support_total, 0), 1)
+                    >= {{ var('flag_diversion_min_share') }},
+              concat(' vs modal ', coalesce(m.modal_dest, '-'), ' ',
+                     toString(coalesce(m.modal_n, 0)), '/', toString(coalesce(m.support_total, 0))),
+              ''))
+from recon r
+left join div_modal m on m.flight_id = r.flight_id
+where r.origin_icao is not null
+  and r.dest_icao is not null
+  and r.origin_icao = r.dest_icao
 
 union all
 

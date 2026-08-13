@@ -1,8 +1,8 @@
 import {
   W, esc, panel, navigate, rangeParams, renderRows, renderPager, openAirline, openAirport,
-} from "../shell.js?v=6.42";
-import { fetchTrends } from "../data.js?v=6.42";
-import { line, SERIES_HUES } from "../chart.js?v=6.42";
+} from "../shell.js?v=6.43";
+import { fetchTrends } from "../data.js?v=6.43";
+import { line, SERIES_HUES } from "../chart.js?v=6.43";
 
 const DIMS = ["route", "airline", "airport"];
 // rank rows are wide (key · n · aircraft · Δ), so trends pages at 20 while the lists page at 50

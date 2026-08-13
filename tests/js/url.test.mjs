@@ -92,6 +92,10 @@ test("wb_class: valid class round-trips, invalid class reads as null", () => {
   setHistory(null);
   assert.equal(readUrl().flagClass, "diversion");
 
+  setLoc("?wb_class=same_endpoint");
+  setHistory(null);
+  assert.equal(readUrl().flagClass, "same_endpoint");
+
   setLoc("?wb_class=not_a_class");
   setHistory(null);
   assert.equal(readUrl().flagClass, null);

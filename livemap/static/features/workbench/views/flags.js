@@ -1,10 +1,11 @@
 import {
   W, esc, panel, navigate, rangeParams, renderPager, focusInstance, jstDayOf, PAGE_LIMIT,
-} from "../shell.js?v=6.42";
-import { fetchFlags } from "../data.js?v=6.42";
+} from "../shell.js?v=6.43";
+import { fetchFlags } from "../data.js?v=6.43";
 
 const CLASSES = [
-  "tiebreak_endpoint", "single_source", "one_sided_intl", "feasibility_snap", "diversion", "military",
+  "tiebreak_endpoint", "single_source", "one_sided_intl", "feasibility_snap", "diversion",
+  "same_endpoint", "military",
 ];
 // the wire/URL value is the mart's exact class name — only the label loses the underscores
 const label = (c) => String(c || "").replaceAll("_", " ");

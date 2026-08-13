@@ -2,7 +2,8 @@
 const VIEWS = new Set(["overview", "drill", "log", "flags", "trends"]);
 const RANGE_RE = /^(?:7d|30d|90d|all|\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2})$/;
 const CLASSES = new Set([
-  "tiebreak_endpoint", "single_source", "one_sided_intl", "feasibility_snap", "diversion", "military",
+  "tiebreak_endpoint", "single_source", "one_sided_intl", "feasibility_snap", "diversion",
+  "same_endpoint", "military",
 ]);
 const DIMS = new Set(["route", "airline", "airport"]);
 // <icao24>.<start_epoch>, never flight_id: the id churns on every rebuild, the pair does not

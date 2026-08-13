@@ -1,7 +1,7 @@
 import {
   W, esc, panel, navigate, rangeParams, renderInstances, renderPager, setStatus, PAGE_LIMIT,
-} from "../shell.js?v=6.42";
-import { fetchInstances } from "../data.js?v=6.42";
+} from "../shell.js?v=6.43";
+import { fetchInstances } from "../data.js?v=6.43";
 
 const dayValue = () => {
   const m = /^(\d{4}-\d{2}-\d{2})\.\.(\1)$/.exec(W.range || "");

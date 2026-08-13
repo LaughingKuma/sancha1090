@@ -1,8 +1,8 @@
-import { readUrl, writeUrl } from "./url.js?v=6.42";
-import { enterFocus, exitFocus, dropFocus, isFocused } from "./focus.js?v=6.42";
-import { fetchInstances } from "./data.js?v=6.42";
-import { pickCandidate } from "./resolve.js?v=6.42";
-import { destroyCharts } from "./chart.js?v=6.42";
+import { readUrl, writeUrl } from "./url.js?v=6.43";
+import { enterFocus, exitFocus, dropFocus, isFocused } from "./focus.js?v=6.43";
+import { fetchInstances } from "./data.js?v=6.43";
+import { pickCandidate } from "./resolve.js?v=6.43";
+import { destroyCharts } from "./chart.js?v=6.43";
 
 // Callsigns, registrations and airport names are attacker-transmittable and rows are built as HTML.
 export function esc(v) {
@@ -42,11 +42,11 @@ const TIER_LABEL = { settled: "● STL", estimated: "◐ EST", provisional: "○
 const TIER_GLYPH = { settled: "●", estimated: "◐", provisional: "○", none: "·" };
 const PRESETS = { "7d": 7, "30d": 30, "90d": 90 };
 const VIEW_SRC = {
-  overview: "./views/overview.js?v=6.42",
-  drill: "./views/drill.js?v=6.42",
-  log: "./views/log.js?v=6.42",
-  flags: "./views/flags.js?v=6.42",
-  trends: "./views/trends.js?v=6.42",
+  overview: "./views/overview.js?v=6.43",
+  drill: "./views/drill.js?v=6.43",
+  log: "./views/log.js?v=6.43",
+  flags: "./views/flags.js?v=6.43",
+  trends: "./views/trends.js?v=6.43",
 };
 
 // The server windows on JST calendar days — shift, then read the UTC date parts.
