@@ -7,12 +7,16 @@ TIER_TBL = f"{CH_DB}.fct_flight_recon_tier"
 RECON_TBL = f"{CH_DB}.fct_flights_reconciled"
 FLAGS_TBL = f"{CH_DB}.fct_flight_flags"
 EST_TBL = f"{CH_DB}.fct_est_settlement"
+EST_BREAKDOWN_TBL = f"{CH_DB}.agg_est_breakdown_daily"
 
+# The module's declared set of deploy-order-optional marts — every mart a fetcher degrades on.
+OPTIONAL_TABLES = ("fct_flight_flags", "fct_flight_recon_tier", "fct_est_settlement",
+                   "agg_est_breakdown_daily")
 # Only ever run on a degradation path: the happy path pays one round trip and lets an
 # unknown-table error tell it which optional mart is missing.
 PROBE_TABLES_QUERY = (
     "SELECT name FROM system.tables WHERE database = {db:String} "
-    "AND name IN ('fct_flight_flags', 'fct_flight_recon_tier', 'fct_est_settlement')"
+    "AND name IN (" + ", ".join(f"'{t}'" for t in OPTIONAL_TABLES) + ")"
 )
 
 # Sentinel-guarded ANDs: every optional filter is always bound (never conditionally interpolated),
@@ -170,17 +174,89 @@ _EST_DEDUP = (
 )
 # The standing drift read (README): unique scored inputs, per-point errors pooled — full-recompute
 # rows repeat an input, and a median of per-segment medians measurably hides drift.
-_EST_POOL = (
-    "arraySort(groupArrayArray(errs_km)) AS pool, "
-    "if(length(pool) = 0, -1., toFloat64(pool[toUInt32(ceil(0.5 * length(pool)))])) AS v1, "
-    "toFloat64(count()) AS v2"
-)
+_EST_POOL_ARR = "arraySort(groupArrayArray(errs_km)) AS pool"
+
+
+def _pool_pct(p: float, alias: str) -> str:
+    # One ceil-indexing convention for every percentile read; -1 is the empty-pool sentinel.
+    return f"if(length(pool) = 0, -1., toFloat64(pool[toUInt32(ceil({p} * length(pool)))])) AS {alias}"
+
+
+_EST_POOL = f"{_EST_POOL_ARR}, " + _pool_pct(0.5, "v1") + ", toFloat64(count()) AS v2"
 SUMMARY_EST_ARMS = (
     " UNION ALL SELECT 'est', 'p50', '', v1, v2 FROM ("
     f"SELECT {_EST_POOL} FROM ({_EST_DEDUP})) "
     "UNION ALL SELECT 'est_daily', k, '', v1, v2 FROM ("
     "SELECT toString(toDate(computed_at, 'Asia/Tokyo')) AS k, "
     f"{_EST_POOL} FROM ({_EST_DEDUP}) GROUP BY k)"
+)
+
+
+# Estimates view: the same deduped pool as the summary tile, split per config_hash so an
+# instrument change reads as a break in the series rather than blending into the one before it.
+_EST_POOL_PCTS = f"{_EST_POOL_ARR}, " + _pool_pct(0.5, "p50") + ", " + _pool_pct(0.9, "p90")
+# config_hash is UInt64 — it goes out as a string, since JS Numbers lose the low bits.
+# The `cfg` alias is deliberate: an alias named for its own source column shadows it in GROUP BY.
+ESTIMATES_HEADLINE_QUERY = (
+    "SELECT cfg, n, p50, p90, first_day, last_day FROM ("
+    "SELECT toString(config_hash) AS cfg, toUInt64(count()) AS n, "
+    f"{_EST_POOL_PCTS}, "
+    "toString(min(toDate(computed_at, 'Asia/Tokyo'))) AS first_day, "
+    "toString(max(toDate(computed_at, 'Asia/Tokyo'))) AS last_day, "
+    "max(computed_at) AS last_seen "
+    f"FROM ({_EST_DEDUP}) GROUP BY config_hash) ORDER BY last_seen DESC, cfg"
+)
+ESTIMATES_DAILY_QUERY = (
+    "SELECT day, cfg, p50, p90, n FROM ("
+    "SELECT toString(toDate(computed_at, 'Asia/Tokyo')) AS day, toString(config_hash) AS cfg, "
+    f"{_EST_POOL_PCTS}, toUInt64(count()) AS n "
+    f"FROM ({_EST_DEDUP}) GROUP BY day, config_hash) ORDER BY day, cfg"
+)
+# The breakdown mart is UTC-day grain (toDate(computed_at)) while the series above is JST — a
+# deliberate seam: a day-grain mart carries no sub-day detail to re-bucket honestly.
+ESTIMATES_MIX_QUERY = (
+    "SELECT dimension, value, producer, toUInt64(sum(n)) AS n "
+    f"FROM {EST_BREAKDOWN_TBL} WHERE day BETWEEN {{day_from:Date}} AND {{day_to:Date}} "
+    "GROUP BY dimension, value, producer ORDER BY dimension, n DESC, value, producer"
+)
+# Raw rows, NOT the deduped pool: these count the logging stream itself (what got settled, what is
+# still awaiting truth, what was dropped as ambiguous), which dedup would understate.
+# Aliases must not reuse a source column name — `AS settled` makes the next countIf nest aggregates.
+ESTIMATES_OUTCOMES_QUERY = (
+    "SELECT toUInt64(countIf(settled = 1)) AS n_settled, "
+    "toUInt64(countIf(settled = 0 AND skip_ambiguous = 0)) AS n_awaiting, "
+    "toUInt64(countIf(skip_ambiguous = 1)) AS n_ambiguous, "
+    "toUInt64(countIf(input_provisional = 1)) AS n_input_provisional, "
+    "toUInt64(countIf(input_provisional = 0)) AS n_input_settled "
+    f"FROM {EST_TBL} "
+    "WHERE toDate(computed_at, 'Asia/Tokyo') BETWEEN {day_from:Date} AND {day_to:Date}"
+)
+MIX_DIMENSIONS = ("skip", "segment_kind", "uncertainty_bin")
+
+# Coverage windows on the reconciled JST start day (the flags pattern) — the tier mart's own
+# start_day is UTC, so windowing on it would split a 23:30 UTC flight off from its JST day.
+_COVERAGE_JOIN = (
+    f"FROM {RECON_TBL} r LEFT JOIN {TIER_TBL} t ON t.flight_id = r.flight_id "
+    "WHERE toDate(r.start_time, 'Asia/Tokyo') BETWEEN {day_from:Date} AND {day_to:Date}"
+)
+COVERAGE_TIER_DAILY_QUERY = (
+    "SELECT toString(toDate(r.start_time, 'Asia/Tokyo')) AS day, "
+    "if(coalesce(t.tier, '') = '', 'unknown', t.tier) AS tier, toUInt64(count()) AS n "
+    + _COVERAGE_JOIN + " GROUP BY day, tier ORDER BY day, tier"
+)
+# Fixed edges (issue #171 ruling 3); 900 s is the tier seam and has to be an exact edge. roundDown
+# maps a gap to its bin's lower bound, so the edges stay in the SQL rather than in the shaper.
+GAP_EDGES = (0, 60, 300, 900, 3600, 10800, 21600, 43200)
+COVERAGE_GAP_HIST_QUERY = (
+    f"SELECT toUInt64(roundDown(t.largest_gap_s, {list(GAP_EDGES)})) AS ge, toUInt64(count()) AS n "
+    + _COVERAGE_JOIN + " AND t.largest_gap_s IS NOT NULL GROUP BY ge ORDER BY ge"
+)
+# observed_fraction is a per-flight value, so the per-day median IS the pooled read — never a
+# mean of aggregates.
+COVERAGE_OBSERVED_QUERY = (
+    "SELECT toString(toDate(r.start_time, 'Asia/Tokyo')) AS day, "
+    "toFloat64(quantileExact(0.5)(t.observed_fraction)) AS med, toUInt64(count()) AS n "
+    + _COVERAGE_JOIN + " AND t.observed_fraction IS NOT NULL GROUP BY day ORDER BY day"
 )
 
 
@@ -337,6 +413,12 @@ def parse_od(od: str):
     return (parts[0], parts[1]) if len(parts) == 2 and parts[0] and parts[1] else ("", "")
 
 
+def _day_params(day_from, day_to) -> dict:
+    # Blank/malformed days bind a wide sentinel range rather than dropping the clause.
+    return {"day_from": day_from or datetime.date(1900, 1, 1),
+            "day_to": day_to or datetime.date(2999, 12, 31)}
+
+
 def instances_params(callsign, airline, hex_, reg, airport, od, type_, military, day_from, day_to) -> dict:
     od_o, od_d = parse_od(od)
     return {
@@ -348,9 +430,7 @@ def instances_params(callsign, airline, hex_, reg, airport, od, type_, military,
         "od_o": od_o, "od_d": od_d,
         "type": (type_ or "").strip(),
         "military": 1 if military else 0,
-        "day_from": day_from or datetime.date(1900, 1, 1),
-        "day_to": day_to or datetime.date(2999, 12, 31),
-    }
+    } | _day_params(day_from, day_to)
 
 
 def shape_instance_row(row) -> dict:
@@ -374,11 +454,15 @@ def shape_od_breakdown(rows) -> list:
 
 def flags_params(class_, day_from, day_to) -> dict:
     # An unrecognised class just binds and matches nothing — no server-side allow-list to drift.
-    return {
-        "class": (class_ or "").strip(),
-        "day_from": day_from or datetime.date(1900, 1, 1),
-        "day_to": day_to or datetime.date(2999, 12, 31),
-    }
+    return {"class": (class_ or "").strip()} | _day_params(day_from, day_to)
+
+
+def estimates_params(day_from, day_to) -> dict:
+    return _day_params(day_from, day_to)
+
+
+def coverage_params(day_from, day_to) -> dict:
+    return _day_params(day_from, day_to)
 
 
 def shape_flag_row(row) -> dict:
@@ -468,6 +552,64 @@ def shape_summary(rows, has_flags: bool, has_tier: bool, has_est: bool) -> dict:
     out["est"]["available"] = has_est
     out["est"]["daily"] = [[d] + est_daily[d] for d in sorted(est_daily)]
     return out
+
+
+def empty_estimates() -> dict:
+    return {"available": True, "headline": [], "daily": [],
+            "mix": {"available": True} | {d: [] for d in MIX_DIMENSIONS},
+            "outcomes": {"settled": 0, "awaiting": 0, "ambiguous": 0},
+            "input_split": {"provisional": 0, "settled": 0}}
+
+
+def empty_coverage() -> dict:
+    return {"available": True, "tier_daily": [], "gap_bins": [], "observed": []}
+
+
+def _pooled_km(v):
+    # -1 is the empty-pool sentinel from the pooled quantile expression, never a real distance
+    return round(v, 3) if v is not None and v >= 0 else None
+
+
+def shape_estimates(headline_rows, daily_rows, mix_rows, outcomes_row, mix_available: bool) -> dict:
+    out = empty_estimates()
+    out["headline"] = [
+        {"config_hash": cfg, "n": int(n), "p50_km": _pooled_km(p50), "p90_km": _pooled_km(p90),
+         "first_day": first_day, "last_day": last_day}
+        for cfg, n, p50, p90, first_day, last_day in headline_rows
+    ]
+    out["daily"] = [
+        {"day": day, "config_hash": cfg, "p50_km": _pooled_km(p50), "p90_km": _pooled_km(p90),
+         "n": int(n)}
+        for day, cfg, p50, p90, n in daily_rows
+    ]
+    out["mix"]["available"] = mix_available
+    for dim, value, producer, n in mix_rows:
+        # a dimension the view has no panel for would render nowhere — drop it rather than carry it
+        if dim in MIX_DIMENSIONS:
+            out["mix"][dim].append({"value": value, "producer": producer, "n": int(n)})
+    if outcomes_row:
+        settled, awaiting, ambiguous, prov_in, settled_in = outcomes_row
+        out["outcomes"] = {"settled": int(settled), "awaiting": int(awaiting),
+                           "ambiguous": int(ambiguous)}
+        out["input_split"] = {"provisional": int(prov_in), "settled": int(settled_in)}
+    return out
+
+
+def shape_coverage(tier_rows, gap_rows, obs_rows) -> dict:
+    tier_daily: dict = {}
+    for day, tier, n in tier_rows:
+        if int(n):
+            tier_daily.setdefault(day, {})[tier] = int(n)
+    by_edge = {int(ge): int(n) for ge, n in gap_rows}
+    # every bin is always present (0 where empty), so the histogram's shape can't shift under the eye
+    bins = [{"ge": lo, "lt": GAP_EDGES[i + 1] if i + 1 < len(GAP_EDGES) else None,
+             "n": by_edge.get(lo, 0)}
+            for i, lo in enumerate(GAP_EDGES)]
+    return {"available": True,
+            "tier_daily": [[d, tier_daily[d]] for d in sorted(tier_daily)],
+            "gap_bins": bins,
+            "observed": [{"day": day, "median": round(med, 4), "n": int(n)}
+                         for day, med, n in obs_rows]}
 
 
 def shape_trends(dim: str, rank_rows, series_rows, total, limit, offset) -> dict:

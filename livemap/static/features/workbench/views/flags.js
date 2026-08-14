@@ -1,7 +1,7 @@
 import {
   W, esc, panel, navigate, rangeParams, renderPager, focusInstance, jstDayOf, PAGE_LIMIT,
-} from "../shell.js?v=6.43";
-import { fetchFlags } from "../data.js?v=6.43";
+} from "../shell.js?v=6.44";
+import { fetchFlags } from "../data.js?v=6.44";
 
 const CLASSES = [
   "tiebreak_endpoint", "single_source", "one_sided_intl", "feasibility_snap", "diversion",

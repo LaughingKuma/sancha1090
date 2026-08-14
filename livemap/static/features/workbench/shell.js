@@ -1,8 +1,8 @@
-import { readUrl, writeUrl } from "./url.js?v=6.43";
-import { enterFocus, exitFocus, dropFocus, isFocused } from "./focus.js?v=6.43";
-import { fetchInstances } from "./data.js?v=6.43";
-import { pickCandidate } from "./resolve.js?v=6.43";
-import { destroyCharts } from "./chart.js?v=6.43";
+import { readUrl, writeUrl } from "./url.js?v=6.44";
+import { enterFocus, exitFocus, dropFocus, isFocused } from "./focus.js?v=6.44";
+import { fetchInstances } from "./data.js?v=6.44";
+import { pickCandidate } from "./resolve.js?v=6.44";
+import { destroyCharts } from "./chart.js?v=6.44";
 
 // Callsigns, registrations and airport names are attacker-transmittable and rows are built as HTML.
 export function esc(v) {
@@ -42,11 +42,13 @@ const TIER_LABEL = { settled: "● STL", estimated: "◐ EST", provisional: "○
 const TIER_GLYPH = { settled: "●", estimated: "◐", provisional: "○", none: "·" };
 const PRESETS = { "7d": 7, "30d": 30, "90d": 90 };
 const VIEW_SRC = {
-  overview: "./views/overview.js?v=6.43",
-  drill: "./views/drill.js?v=6.43",
-  log: "./views/log.js?v=6.43",
-  flags: "./views/flags.js?v=6.43",
-  trends: "./views/trends.js?v=6.43",
+  overview: "./views/overview.js?v=6.44",
+  drill: "./views/drill.js?v=6.44",
+  log: "./views/log.js?v=6.44",
+  flags: "./views/flags.js?v=6.44",
+  trends: "./views/trends.js?v=6.44",
+  estimates: "./views/estimates.js?v=6.44",
+  coverage: "./views/coverage.js?v=6.44",
 };
 
 // The server windows on JST calendar days — shift, then read the UTC date parts.
@@ -330,8 +332,8 @@ export function buildRail() {
     '<button type="button" class="wb-view" role="tab" aria-controls="wb-body" data-view="log">log</button>' +
     '<button type="button" class="wb-view" role="tab" aria-controls="wb-body" data-view="flags">flags</button>' +
     '<button type="button" class="wb-view" role="tab" aria-controls="wb-body" data-view="trends">trends</button>' +
-    '<button type="button" class="wb-view wb-ghost" role="tab" aria-selected="false" disabled title="slice 3">est</button>' +
-    '<button type="button" class="wb-view wb-ghost" role="tab" aria-selected="false" disabled title="slice 3">cov</button></div>' +
+    '<button type="button" class="wb-view" role="tab" aria-controls="wb-body" data-view="estimates">est</button>' +
+    '<button type="button" class="wb-view" role="tab" aria-controls="wb-body" data-view="coverage">cov</button></div>' +
     '<div class="wb-range" title="date range applies to instance lists">' +
     '<button type="button" class="wb-chip" data-range="7d">7d</button>' +
     '<button type="button" class="wb-chip" data-range="30d">30d</button>' +

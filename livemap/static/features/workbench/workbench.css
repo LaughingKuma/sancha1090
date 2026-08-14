@@ -49,7 +49,7 @@
 .wb-view[aria-selected="true"] {
   background: rgba(255,176,0,0.16); color: var(--amber); border-color: var(--hair);
 }
-.wb-view[disabled], .wb-ghost { opacity: 0.35; cursor: default; }
+.wb-view[disabled] { opacity: 0.35; cursor: default; }
 
 .wb-range { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 9px 13px 0; }
 .wb-chip {
@@ -149,8 +149,7 @@
   color: var(--amber-dim); cursor: pointer;
   font: inherit; font-size: 8px; letter-spacing: 0.24em; text-transform: uppercase; padding: 6px 8px;
 }
-.wb-panel-head.wb-ghost { cursor: default; }
-.wb-panel-head:hover:not(.wb-ghost) { color: var(--amber); background: rgba(255,176,0,0.07); }
+.wb-panel-head:hover { color: var(--amber); background: rgba(255,176,0,0.07); }
 .wb-panel-go { margin-left: auto; color: var(--ink-dim); }
 .wb-panel-body { padding: 6px 8px 8px; }
 
@@ -203,7 +202,30 @@
 .wb-tmix .t-settled { color: var(--amber); }
 .wb-tmix .t-estimated { color: #b08ae6; }
 .wb-tmix .t-provisional { color: var(--teal); }
-.wb-tmix .t-none { color: var(--ink-dim); }
+.wb-tmix .t-none, .wb-tmix .t-unknown { color: var(--ink-dim); }
+.wb-legend { flex-wrap: wrap; gap: 4px 9px; margin-bottom: 6px; }
+
+/* Estimates: one block per config era, the era still in force carried in amber. */
+.wb-era {
+  display: flex; flex-direction: column; gap: 2px;
+  border-bottom: 1px solid var(--hair-soft); padding: 5px 2px;
+  font-variant-numeric: tabular-nums;
+}
+.wb-era .wb-name { color: var(--ink-dim); }
+.wb-era-p { margin-left: auto; color: var(--ink-dim); font-size: 9.5px; }
+.wb-era-p90 { margin-left: 0; opacity: 0.75; }
+/* equal specificity as the base .wb-name rule — the current-era override must come last to win */
+.wb-era-cur .wb-name, .wb-era-cur .wb-era-p { color: var(--amber); }
+
+/* Mix rows: value · producer · count, read-only (no doorway exists for a breakdown bucket). */
+.wb-mix { margin-bottom: 4px; }
+.wb-kv {
+  display: flex; align-items: baseline; gap: 7px; padding: 3px 2px;
+  border-bottom: 1px solid var(--hair-soft); font-variant-numeric: tabular-nums;
+}
+.wb-kv-k { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-kv-p { flex: 0 0 auto; color: var(--amber-dim); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; }
+.wb-kv-n { margin-left: auto; flex: 0 0 auto; color: var(--ink-dim); }
 
 .wb-pager { display: flex; align-items: center; gap: 7px; padding-top: 9px; color: var(--ink-dim); font-size: 9px; }
 .wb-pager .wb-count { margin-left: auto; letter-spacing: 0.1em; }

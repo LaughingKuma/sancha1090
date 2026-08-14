@@ -104,6 +104,21 @@ def build_router(store) -> APIRouter:
             {"available": True, "complete": False, "flags": [], "classes": {},
              "total": 0, "limit": limit, "offset": offset})
 
+    @router.get("/workbench/estimates")
+    async def estimates(day_from: str = "", day_to: str = "") -> JSONResponse:
+        df = wb.parse_day(day_from)
+        dt = wb.parse_day(day_to)
+        # available:false stays reserved for a missing mart; complete:false is the outage signal
+        return await _serve_cached(store, "estimates", (df, dt), store.fetch_estimates,
+                                   wb.empty_estimates() | {"complete": False})
+
+    @router.get("/workbench/coverage")
+    async def coverage(day_from: str = "", day_to: str = "") -> JSONResponse:
+        df = wb.parse_day(day_from)
+        dt = wb.parse_day(day_to)
+        return await _serve_cached(store, "coverage", (df, dt), store.fetch_coverage,
+                                   wb.empty_coverage() | {"complete": False})
+
     @router.get("/workbench/search")
     async def search(q: str = "", limit: int = 20) -> JSONResponse:
         empty = {"airlines": [], "services": [], "airframes": [], "airports": []}

@@ -87,6 +87,23 @@ test("round-trip of every wb_* param", () => {
   assert.equal(back.type, "b738");
 });
 
+test("VIEWS accepts the slice-3 views, and still rejects an unknown one", () => {
+  for (const v of ["estimates", "coverage"]) {
+    setLoc(`?wb=${v}`);
+    setHistory(null);
+    assert.equal(readUrl().view, v);
+
+    setLoc("");
+    const calls = setHistory(null);
+    writeUrl({ view: v, range: "30d", airline: null, service: null, od: null, inst: null,
+      mil: false, flagClass: null, dim: "route", page: 1, hex: null, apt: null, type: null });
+    assert.ok(calls[0][2].includes(`wb=${v}`), `wb=${v} must survive the write`);
+  }
+  setLoc("?wb=not_a_view");
+  setHistory(null);
+  assert.equal(readUrl().view, "overview");
+});
+
 test("wb_class: valid class round-trips, invalid class reads as null", () => {
   setLoc("?wb_class=diversion");
   setHistory(null);

@@ -1,7 +1,7 @@
-import { S } from "./state.js?v=6.43";
-import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.43";
-import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.43";
-import { map, overlay } from "./mapsetup.js?v=6.43";
+import { S } from "./state.js?v=6.44";
+import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.44";
+import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.44";
+import { map, overlay } from "./mapsetup.js?v=6.44";
 
 // Spotlight panel (v5.6) — pure reader of S.selected + S.snap.
 const spEl = (id) => document.getElementById(id);

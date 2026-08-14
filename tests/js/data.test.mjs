@@ -5,6 +5,8 @@ import {
   fetchSummary,
   fetchTrends,
   fetchFlags,
+  fetchEstimates,
+  fetchCoverage,
 } from "../../livemap/static/features/workbench/data.js";
 
 function mockFetch(payload, ok = true) {
@@ -221,6 +223,104 @@ test("fetchFlags: available:false and hostile-length flag_class/detail truncatio
   assert.equal(r.available, false); // mart-not-deployed signal
   assert.equal(r.rows[0].flagClass, "c".repeat(24));
   assert.equal(r.rows[0].detail, "d".repeat(96));
+});
+
+test("fetchEstimates: config_hash stays an opaque string, unknown mix dimensions dropped", async () => {
+  mockFetch({
+    available: true,
+    headline: [
+      { config_hash: "2537707548349448576", n: 15, p50_km: 0.316, p90_km: 2.831,
+        first_day: "2026-07-29", last_day: "2026-07-29" },
+      { config_hash: "6202974745002248186", n: 5, p50_km: null, p90_km: null,
+        first_day: "2026-07-24", last_day: "2026-07-24" },
+    ],
+    daily: [
+      { day: "2026-07-24", config_hash: "6202974745002248186", p50_km: 5.808, p90_km: 14.788, n: 5 },
+      { day: "", config_hash: "6202974745002248186", p50_km: 1, p90_km: 2, n: 1 },
+    ],
+    mix: {
+      available: true,
+      skip: [{ value: "gap:on_ground_edge", producer: "serving-private", n: 23 }, { value: "", producer: "x", n: 9 }],
+      segment_kind: [{ value: "gap", producer: "serving", n: 68 }],
+      uncertainty_bin: [{ value: "dr", producer: "serving", n: 29 }],
+      bogus_dim: [{ value: "nope", producer: "serving", n: 1 }],
+    },
+    outcomes: { settled: 232, awaiting: 93, ambiguous: 8 },
+    input_split: { provisional: 258, settled: 75 },
+  });
+  const r = await fetchEstimates({});
+  assert.equal(r.available, true);
+  // the UInt64 hash must survive verbatim — Number() would round it to ...448600
+  assert.equal(r.headline[0].configHash, "2537707548349448576");
+  assert.equal(typeof r.headline[0].configHash, "string");
+  assert.equal(r.headline[0].p50Km, 0.316);
+  assert.equal(r.headline[1].p50Km, null); // an empty pool stays null, never 0
+  assert.deepEqual(r.daily, [
+    { day: "2026-07-24", configHash: "6202974745002248186", p50Km: 5.808, p90Km: 14.788, n: 5 },
+  ]); // the day-less row is dropped
+  assert.deepEqual(Object.keys(r.mix).sort(), ["available", "segment_kind", "skip", "uncertainty_bin"]);
+  assert.deepEqual(r.mix.skip, [{ value: "gap:on_ground_edge", producer: "serving-private", n: 23 }]);
+  assert.deepEqual(r.outcomes, { settled: 232, awaiting: 93, ambiguous: 8 });
+  assert.deepEqual(r.inputSplit, { provisional: 258, settled: 75 });
+});
+
+test("fetchEstimates: available:false and an independently-absent mix section", async () => {
+  mockFetch({
+    available: false, headline: [], daily: [],
+    mix: { available: false, skip: [], segment_kind: [], uncertainty_bin: [] },
+    outcomes: { settled: 0, awaiting: 0, ambiguous: 0 },
+    input_split: { provisional: 0, settled: 0 },
+  });
+  let r = await fetchEstimates({});
+  assert.equal(r.available, false);
+  assert.equal(r.mix.available, false);
+
+  // the ledger serves while only the breakdown mart is missing
+  mockFetch({
+    available: true, headline: [], daily: [],
+    mix: { available: false, skip: [], segment_kind: [], uncertainty_bin: [] },
+    outcomes: { settled: 1, awaiting: 0, ambiguous: 0 }, input_split: { provisional: 1, settled: 0 },
+  });
+  r = await fetchEstimates({});
+  assert.equal(r.available, true);
+  assert.equal(r.mix.available, false);
+});
+
+test("fetchCoverage: tier drop-unknown, bins without an edge dropped, median-less days dropped", async () => {
+  mockFetch({
+    available: true,
+    tier_daily: [
+      ["2026-08-05", { settled: 3809, estimated: 2556, bogus_tier: 7, unknown: 2 }],
+      ["", { settled: 1 }],
+    ],
+    gap_bins: [
+      { ge: 0, lt: 60, n: 2100 },
+      { ge: 60, lt: 300, n: 6876 },
+      { ge: 43200, lt: null, n: 2 },
+      { ge: null, lt: 60, n: 99 },
+    ],
+    observed: [
+      { day: "2026-08-05", median: 0.0942, n: 6365 },
+      { day: "2026-08-06", median: null, n: 0 },
+    ],
+  });
+  const r = await fetchCoverage({});
+  assert.equal(r.available, true);
+  // tierCounts keeps the aggregate-only "unknown" bucket and drops a tier the frontend has no colour for
+  assert.deepEqual(r.tierDaily, [["2026-08-05", { settled: 3809, estimated: 2556, unknown: 2 }]]);
+  assert.deepEqual(r.gapBins, [
+    { ge: 0, lt: 60, n: 2100 },
+    { ge: 60, lt: 300, n: 6876 },
+    { ge: 43200, lt: null, n: 2 }, // open-ended last bin keeps a null lt
+  ]);
+  assert.deepEqual(r.observed, [{ day: "2026-08-05", median: 0.0942, n: 6365 }]);
+});
+
+test("fetchEstimates/fetchCoverage: complete:false renders as unavailable, never as zeros", async () => {
+  mockFetch({ complete: false, available: true, headline: [], daily: [], mix: {}, outcomes: {}, input_split: {} });
+  assert.equal(await fetchEstimates({}), null);
+  mockFetch({ complete: false, available: true, tier_daily: [], gap_bins: [], observed: [] });
+  assert.equal(await fetchCoverage({}), null);
 });
 
 test("seq-guard: overlapping fetchInstances calls — the earlier resolves null when superseded", async () => {

@@ -1,8 +1,8 @@
 import {
   W, esc, panel, navigate, rangeParams, renderInstances, renderRows, renderPager,
   tierMixHTML, PAGE_LIMIT,
-} from "../shell.js?v=6.43";
-import { fetchAirlines, fetchServices, fetchInstances } from "../data.js?v=6.43";
+} from "../shell.js?v=6.44";
+import { fetchAirlines, fetchServices, fetchInstances } from "../data.js?v=6.44";
 
 // airline → service → instance; a search hit on an airframe or airport enters at the instance level
 const level = () => (W.service || W.hex || W.apt ? "instances" : W.airline ? "services" : "airlines");

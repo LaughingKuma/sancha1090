@@ -1,6 +1,9 @@
 // One increment-only sequence per endpoint (the trackFetchSeq pattern) so a stale response never lands;
 // "deeplink" is a second instances lane, since a wb_inst resolve runs alongside the view's own list fetch.
-const seq = { airlines: 0, services: 0, instances: 0, deeplink: 0, search: 0, summary: 0, trends: 0, flags: 0 };
+const seq = {
+  airlines: 0, services: 0, instances: 0, deeplink: 0, search: 0, summary: 0, trends: 0, flags: 0,
+  estimates: 0, coverage: 0,
+};
 
 const qs = (o) => {
   const p = new URLSearchParams();
@@ -228,6 +231,70 @@ export async function fetchFlags(params) {
       })),
     ),
     classes: classCounts(j.classes),
+  };
+}
+
+// config_hash is a UInt64 the server already stringified — it stays an opaque key, never a Number.
+const cfgKey = (v) => text(v, 24);
+const MIX_DIMS = ["skip", "segment_kind", "uncertainty_bin"];
+const mixRows = (a) =>
+  (Array.isArray(a) ? a : [])
+    .map((r) => ({ value: text(r && r.value, 48), producer: text(r && r.producer, 24), n: num(r && r.n) ?? 0 }))
+    .filter((r) => r.value !== "");
+
+export async function fetchEstimates(params) {
+  const j = await call("estimates", `/workbench/estimates${qs(params)}`);
+  if (!j) return null;
+  if (j.complete === false) return null; // server-marked outage renders as unavailable, never as zeros
+  const m = j.mix || {};
+  const o = j.outcomes || {};
+  const i = j.input_split || {};
+  const mix = {};
+  // a dimension the view has no panel for is dropped, the classCounts precedent
+  for (const d of MIX_DIMS) mix[d] = mixRows(m[d]);
+  return {
+    available: j.available !== false,
+    headline: rows(j, "headline").map((r) => ({
+      configHash: cfgKey(r.config_hash),
+      n: num(r.n) ?? 0,
+      p50Km: num(r.p50_km),
+      p90Km: num(r.p90_km),
+      firstDay: text(r.first_day, 10),
+      lastDay: text(r.last_day, 10),
+    })),
+    daily: rows(j, "daily")
+      .map((r) => ({
+        day: text(r.day, 10),
+        configHash: cfgKey(r.config_hash),
+        p50Km: num(r.p50_km),
+        p90Km: num(r.p90_km),
+        n: num(r.n) ?? 0,
+      }))
+      .filter((r) => r.day !== ""),
+    mix: { available: m.available !== false, ...mix },
+    outcomes: {
+      settled: num(o.settled) ?? 0,
+      awaiting: num(o.awaiting) ?? 0,
+      ambiguous: num(o.ambiguous) ?? 0,
+    },
+    inputSplit: { provisional: num(i.provisional) ?? 0, settled: num(i.settled) ?? 0 },
+  };
+}
+
+export async function fetchCoverage(params) {
+  const j = await call("coverage", `/workbench/coverage${qs(params)}`);
+  if (!j) return null;
+  if (j.complete === false) return null; // server-marked outage renders as unavailable, never as zeros
+  return {
+    available: j.available !== false,
+    tierDaily: tierDays(j.tier_daily),
+    // ge is the bin's identity — a bin without one can't be placed on the axis
+    gapBins: rows(j, "gap_bins")
+      .map((b) => ({ ge: num(b.ge), lt: num(b.lt), n: num(b.n) ?? 0 }))
+      .filter((b) => b.ge !== null),
+    observed: rows(j, "observed")
+      .map((r) => ({ day: text(r.day, 10), median: num(r.median), n: num(r.n) ?? 0 }))
+      .filter((r) => r.day !== "" && r.median !== null),
   };
 }
 

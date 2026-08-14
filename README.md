@@ -300,10 +300,10 @@ drawn path, settled or provisional, plus an `[estimate ahead]` control that appe
 the selected aircraft is still in the live snapshot.
 
 The private instance additionally hosts an **analysis workbench**: a left-rail console with an
-overview home, an anomaly flags feed, a trends view, an airline → service (callsign) →
-flight-instance drill, a flat filterable flight log, and typed search (callsign / registration /
-airline / airport), all served by private-only `/workbench/*` endpoints over the reconciled
-ClickHouse marts. Every instance row carries a precomputed
+overview home, an anomaly flags feed, a trends view, an estimate-quality view, a coverage-health
+view, an airline → service (callsign) → flight-instance drill, a flat filterable flight log, and
+typed search (callsign / registration / airline / airport), all served by private-only
+`/workbench/*` endpoints over the reconciled ClickHouse marts. Every instance row carries a precomputed
 reconstruction-tier badge (settled / estimated / provisional / none) so a dead-end click is
 visible before it happens, and selecting an instance enters a focus mode that dims the live
 fleet and draws that flight's reconstructed path alone. A companion mart,
@@ -317,9 +317,15 @@ airlines or airports against the window immediately before, with per-key daily s
 overview assembles the whole period — headline counts, tier mix, flags, movers, and the estimate
 drift tile (windowed on when estimates were served, the only day axis the settlement mart
 carries) — in one ClickHouse round trip on the healthy path (a missing optional mart adds a
-schema probe and one requery), and each number whose explaining view exists is a
-doorway into it (the estimate and coverage tiles stay plain until their views ship). Workbench
-state is URL-addressable
+schema probe and one requery), and each number is a doorway into its explaining view. The
+estimates view splits that drift read per estimator configuration — a pooled p50/p90 headline
+and daily series per config era, so an instrument change reads as a break in the chart rather
+than blending into the era before it — alongside the skip / segment-kind / uncertainty mix per
+serving instance and the raw logging-stream outcomes (settled, still awaiting truth, dropped as
+ambiguous). The coverage view turns the tier mart into the pipeline's health dashboard: tier
+mix per day, a fixed-bin histogram of each flight's largest observation gap (the 15-minute
+settled/estimated seam is an exact bin edge), and the per-day median observed fraction.
+Workbench state is URL-addressable
 (deep links key instances by airframe + start time, which survive mart rebuilds). The feature
 is gated by a `/features` endpoint that only the private instance registers — the public map
 serves none of the workbench, not even its static modules.

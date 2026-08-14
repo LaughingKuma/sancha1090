@@ -1,7 +1,7 @@
 # name -> (default TTL seconds — LIVEMAP_WB_*_CACHE_TTL_S-overridable — and fixed max size).
 _CACHE_SPECS = {"airlines": (300.0, 64), "services": (300.0, 256), "instances": (120.0, 512),
                 "search": (120.0, 256), "summary": (300.0, 64), "trends": (300.0, 128),
-                "flags": (120.0, 256)}
+                "flags": (120.0, 256), "estimates": (300.0, 64), "coverage": (300.0, 64)}
 
 
 # Workbench evidence layer (private-only): everything constructor-injected (no globals-backed
@@ -175,6 +175,51 @@ class WorkbenchStore:
         return {"available": True, "flags": [wb.shape_flag_row(r) for r in rows],
                 "classes": {c: n for c, n in class_rows},
                 "total": total, "limit": limit, "offset": offset}
+
+    def fetch_estimates(self, day_from, day_to) -> dict:
+        wb = self.wb
+        params = wb.estimates_params(day_from, day_to)
+        mix_available = True
+        client = self.client_factory()
+        try:
+            try:
+                headline = client.query(wb.ESTIMATES_HEADLINE_QUERY, parameters=params).result_rows
+                daily = client.query(wb.ESTIMATES_DAILY_QUERY, parameters=params).result_rows
+                outcomes = client.query(wb.ESTIMATES_OUTCOMES_QUERY, parameters=params).result_rows
+            except Exception as exc:
+                if not self._is_unknown_table_error(exc):
+                    raise
+                # only fct_est_settlement can be missing here — no section keeps a source without it
+                return wb.empty_estimates() | {"available": False}
+            try:
+                mix = client.query(wb.ESTIMATES_MIX_QUERY, parameters=params).result_rows
+            except Exception as exc:
+                if not self._is_unknown_table_error(exc):
+                    raise
+                # the breakdown mart deploys independently of the ledger — only the mix goes dark
+                mix, mix_available = [], False
+        finally:
+            client.close()
+        return wb.shape_estimates(headline, daily, mix, outcomes[0] if outcomes else None,
+                                  mix_available)
+
+    def fetch_coverage(self, day_from, day_to) -> dict:
+        wb = self.wb
+        params = wb.coverage_params(day_from, day_to)
+        client = self.client_factory()
+        try:
+            try:
+                tier_rows = client.query(wb.COVERAGE_TIER_DAILY_QUERY, parameters=params).result_rows
+                gap_rows = client.query(wb.COVERAGE_GAP_HIST_QUERY, parameters=params).result_rows
+                obs_rows = client.query(wb.COVERAGE_OBSERVED_QUERY, parameters=params).result_rows
+            except Exception as exc:
+                if not self._is_unknown_table_error(exc):
+                    raise
+                # the reconciled mart is never optional, so this can only be the tier mart
+                return wb.empty_coverage() | {"available": False}
+        finally:
+            client.close()
+        return wb.shape_coverage(tier_rows, gap_rows, obs_rows)
 
     def fetch_search(self, q, limit) -> dict:
         wb = self.wb

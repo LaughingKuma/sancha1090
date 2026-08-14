@@ -1,5 +1,5 @@
 // The URL is the only saved-view store (design §1) — every navigation step is a history entry.
-const VIEWS = new Set(["overview", "drill", "log", "flags", "trends"]);
+const VIEWS = new Set(["overview", "drill", "log", "flags", "trends", "estimates", "coverage"]);
 const RANGE_RE = /^(?:7d|30d|90d|all|\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2})$/;
 const CLASSES = new Set([
   "tiebreak_endpoint", "single_source", "one_sided_intl", "feasibility_snap", "diversion",

@@ -1,8 +1,8 @@
-import { W, buildRail, applyUrl } from "./shell.js?v=6.43";
-import { mountSearch } from "./search.js?v=6.43";
+import { W, buildRail, applyUrl } from "./shell.js?v=6.44";
+import { mountSearch } from "./search.js?v=6.44";
 
 function injectCss() {
-  const href = new URL("./workbench.css?v=6.43", import.meta.url).href;
+  const href = new URL("./workbench.css?v=6.44", import.meta.url).href;
   if (document.querySelector(`link[href="${href}"]`)) return;
   const link = document.createElement("link");
   link.rel = "stylesheet";

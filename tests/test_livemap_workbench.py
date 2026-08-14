@@ -22,7 +22,8 @@ def test_private_route_table_includes_workbench(livemap):
     paths = {getattr(r, "path", None) for r in livemap.app.routes}
     assert "/features" in paths
     for p in ("/workbench/airlines", "/workbench/services", "/workbench/instances", "/workbench/search",
-              "/workbench/summary", "/workbench/trends", "/workbench/flags"):
+              "/workbench/summary", "/workbench/trends", "/workbench/flags",
+              "/workbench/estimates", "/workbench/coverage"):
         assert p in paths
 
 
@@ -36,6 +37,7 @@ def test_public_route_table_excludes_workbench(livemap_public):
     "/features", "/workbench/airlines", "/workbench/services",
     "/workbench/instances", "/workbench/search",
     "/workbench/summary", "/workbench/trends", "/workbench/flags",
+    "/workbench/estimates", "/workbench/coverage",
 ])
 def test_public_workbench_paths_404(livemap_public, path):
     r = TestClient(livemap_public.app).get(path)
@@ -136,6 +138,25 @@ _SHAPE_CASES = {
                           "detail": "dest RJNA vs modal RJGG 79/87"}],
                "classes": {"one_sided_intl": 6922, "single_source": 5662},
                "total": 486, "limit": 50, "offset": 0}),
+    "estimates": ("/workbench/estimates",
+                  {"available": True,
+                   "headline": [{"config_hash": "2537707548349448576", "n": 15, "p50_km": 0.316,
+                                 "p90_km": 2.831, "first_day": "2026-07-29", "last_day": "2026-07-29"}],
+                   "daily": [{"day": "2026-07-29", "config_hash": "2537707548349448576",
+                              "p50_km": 0.316, "p90_km": 2.831, "n": 15}],
+                   "mix": {"available": True,
+                           "skip": [{"value": "gap:on_ground_edge", "producer": "serving-private",
+                                     "n": 23}],
+                           "segment_kind": [{"value": "gap", "producer": "serving", "n": 68}],
+                           "uncertainty_bin": [{"value": "dr", "producer": "serving", "n": 29}]},
+                   "outcomes": {"settled": 232, "awaiting": 93, "ambiguous": 8},
+                   "input_split": {"provisional": 258, "settled": 75}}),
+    "coverage": ("/workbench/coverage",
+                 {"available": True,
+                  "tier_daily": [["2026-08-05", {"settled": 3809, "estimated": 2556}]],
+                  "gap_bins": [{"ge": 0, "lt": 60, "n": 2100},
+                               {"ge": 43200, "lt": None, "n": 2}],
+                  "observed": [{"day": "2026-08-05", "median": 0.0942, "n": 6365}]}),
 }
 
 
@@ -330,6 +351,10 @@ _CACHE_CASES = {
                 "/workbench/summary?day_from=2026-07-11&day_to=2026-08-08"),
     "trends": ("/workbench/trends?dim=route", "/workbench/trends?dim=airline"),
     "flags": ("/workbench/flags?class=diversion", "/workbench/flags?class=military"),
+    "estimates": ("/workbench/estimates?day_from=2026-07-10&day_to=2026-08-08",
+                  "/workbench/estimates?day_from=2026-07-11&day_to=2026-08-08"),
+    "coverage": ("/workbench/coverage?day_from=2026-07-10&day_to=2026-08-08",
+                 "/workbench/coverage?day_from=2026-07-11&day_to=2026-08-08"),
 }
 
 
@@ -397,6 +422,14 @@ _NEVER_500_CASES = {
     "flags": ("/workbench/flags?limit=50&offset=0",
               {"available": True, "complete": False, "flags": [], "classes": {}, "total": 0,
                "limit": 50, "offset": 0}),
+    "estimates": ("/workbench/estimates",
+                  {"available": True, "complete": False, "headline": [], "daily": [],
+                   "mix": {"available": True, "skip": [], "segment_kind": [], "uncertainty_bin": []},
+                   "outcomes": {"settled": 0, "awaiting": 0, "ambiguous": 0},
+                   "input_split": {"provisional": 0, "settled": 0}}),
+    "coverage": ("/workbench/coverage",
+                 {"available": True, "complete": False, "tier_daily": [], "gap_bins": [],
+                  "observed": []}),
 }
 
 
@@ -596,6 +629,130 @@ def test_fetch_wb_summary_probe_drops_absent_sections(livemap, monkeypatch):
     assert "fct_flight_recon_tier" in retried
 
 
+class _Slice3Client(_LadderClient):
+    # _LadderClient's row table knows nothing about the estimates/coverage query shapes — this
+    # subclass answers each of them with one plausible row so a fetcher never trips on an empty read.
+    def query(self, sql, **_kw):
+        for name in self.missing:
+            if name in sql:
+                raise _FakeUnknownTableError("Code: 60. DB::Exception: (UNKNOWN_TABLE)")
+        rows = []
+        if "AS first_day, " in sql:
+            rows = [("111", 2, 5.0, 9.0, "2026-07-29", "2026-07-29")]
+        elif sql.startswith("SELECT day, cfg,"):
+            rows = [("2026-07-29", "111", 5.0, 9.0, 2)]
+        elif "n_settled" in sql:
+            rows = [(4, 1, 1, 3, 3)]
+        elif "dimension, value, producer" in sql:
+            rows = [("skip", "gap:on_ground_edge", "serving-private", 3)]
+        elif "AS tier, " in sql:
+            rows = [("2026-07-29", "settled", 2)]
+        elif "roundDown" in sql:
+            rows = [(0, 1)]
+        elif "quantileExact" in sql:
+            rows = [("2026-07-29", 0.8, 3)]
+        self.sqls.append(sql)
+
+        class _Res:
+            result_rows = rows
+
+        return _Res()
+
+
+def test_fetch_wb_estimates_unavailable_without_the_ledger(livemap, monkeypatch):
+    client = _Slice3Client(missing=("fct_est_settlement",))
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: client)
+    out = livemap.wb_store.fetch_estimates(None, None)
+    assert out == livemap.wb.empty_estimates() | {"available": False}
+    assert out["available"] is False
+
+
+def test_fetch_wb_estimates_serves_while_only_the_breakdown_mart_is_missing(livemap, monkeypatch):
+    # the two marts deploy independently — a missing breakdown must dim the mix, not the whole view
+    client = _Slice3Client(missing=("agg_est_breakdown_daily",))
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: client)
+    out = livemap.wb_store.fetch_estimates(None, None)
+    assert out["available"] is True
+    assert out["mix"] == {"available": False, "skip": [], "segment_kind": [], "uncertainty_bin": []}
+    assert out["headline"][0]["config_hash"] == "111"
+    assert out["outcomes"] == {"settled": 4, "awaiting": 1, "ambiguous": 1}
+
+
+def test_fetch_wb_coverage_unavailable_without_the_tier_mart(livemap, monkeypatch):
+    client = _Slice3Client(missing=("fct_flight_recon_tier",))
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: client)
+    out = livemap.wb_store.fetch_coverage(None, None)
+    assert out == livemap.wb.empty_coverage() | {"available": False}
+
+
+def test_fetch_wb_coverage_always_serves_all_eight_gap_bins(livemap, monkeypatch):
+    client = _Slice3Client(missing=())
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: client)
+    out = livemap.wb_store.fetch_coverage(None, None)
+    # a bin that no flight landed in must still be drawn — otherwise the histogram's shape shifts
+    assert [b["ge"] for b in out["gap_bins"]] == list(livemap.wb.GAP_EDGES)
+    assert out["gap_bins"][-1]["lt"] is None
+    assert [b["n"] for b in out["gap_bins"]] == [1, 0, 0, 0, 0, 0, 0, 0]
+
+
+def test_estimates_config_hash_serialized_as_string(livemap, monkeypatch):
+    # config_hash is UInt64 — 2537707548349448576 loses its low bits as a JS Number
+    client = _Slice3Client(missing=())
+    monkeypatch.setattr(livemap.wb_store, "client_factory", lambda: client)
+    out = livemap.wb_store.fetch_estimates(None, None)
+    assert isinstance(out["headline"][0]["config_hash"], str)
+    assert isinstance(out["daily"][0]["config_hash"], str)
+    assert "toString(config_hash)" in livemap.wb.ESTIMATES_HEADLINE_QUERY
+    assert "toString(config_hash)" in livemap.wb.ESTIMATES_DAILY_QUERY
+
+
+@pytest.mark.parametrize("name", ["estimates", "coverage"])
+def test_slice3_day_params_parse_and_reach_the_fetcher(livemap, monkeypatch, name):
+    seen = {}
+
+    def fake(day_from, day_to):
+        seen["days"] = (day_from, day_to)
+        return {}
+
+    monkeypatch.setattr(livemap.wb_store, f"fetch_{name}", fake)
+    c = TestClient(livemap.app)
+    c.get(f"/workbench/{name}?day_from=2026-07-29&day_to=2026-08-08")
+    assert seen["days"] == (datetime.date(2026, 7, 29), datetime.date(2026, 8, 8))
+    c.get(f"/workbench/{name}?day_from=garbage&day_to=")
+    assert seen["days"] == (None, None)   # malformed days degrade to the wide sentinel range
+
+
+def test_slice3_pools_never_average_per_row_medians(livemap):
+    # median-of-medians is banned: the per-row err_p50_km/err_p90_km columns are a filter, never an input
+    wb = livemap.wb
+    for q in (wb.ESTIMATES_HEADLINE_QUERY, wb.ESTIMATES_DAILY_QUERY):
+        assert "arraySort(groupArrayArray(errs_km)) AS pool" in q
+        assert "ORDER BY computed_at, estimate_id LIMIT 1 BY input_fingerprint, seg_idx" in q
+        assert "avg(" not in q and "quantile" not in q
+        # err_p50_km appears only as the dedup fragment's NOT NULL gate, never inside an aggregate
+        assert q.count("err_p50_km") == 1
+        assert "err_p90_km" not in q
+
+
+def test_optional_mart_catalogue_covers_every_degraded_table(livemap):
+    # the probe query is the module's declared optional-mart set — a mart a fetcher degrades on but
+    # the catalogue omits would make a summary-style probe silently mis-answer "which one is gone?"
+    wb = livemap.wb
+    for name in ("fct_flight_flags", "fct_flight_recon_tier", "fct_est_settlement",
+                 "agg_est_breakdown_daily"):
+        assert name in wb.OPTIONAL_TABLES
+        assert f"'{name}'" in wb.PROBE_TABLES_QUERY
+
+
+def test_coverage_windows_on_reconciled_jst_never_the_tier_marts_utc_day(livemap):
+    # the tier mart's start_day is UTC; every coverage query has to window on the reconciled JST start
+    wb = livemap.wb
+    for q in (wb.COVERAGE_TIER_DAILY_QUERY, wb.COVERAGE_GAP_HIST_QUERY, wb.COVERAGE_OBSERVED_QUERY):
+        assert "toDate(r.start_time, 'Asia/Tokyo') BETWEEN {day_from:Date} AND {day_to:Date}" in q
+        assert "start_day" not in q
+    assert "if(coalesce(t.tier, '') = '', 'unknown', t.tier)" in wb.COVERAGE_TIER_DAILY_QUERY
+
+
 def test_flags_pin_lazy_materialization_off(livemap, monkeypatch):
     # same CH 26.5 optimizer defect as the vanilla instances read: the tier LEFT JOIN plus the
     # Nullable(DateTime64) sort key needs both settings or the query raises instead of paging
@@ -788,6 +945,39 @@ def test_workbench_sql_executes_on_live_ch(livemap):
         run(wb.FLAGS_QUERY_NO_TIER, flparams, qs)
         run(wb.FLAGS_COUNT_QUERY, flparams)
         run(wb.FLAGS_CLASSES_QUERY, flparams)
+
+        # slice 3: both a real window and the wide sentinel range, since the sentinel is what an
+        # unset/garbage day binds and it is the shape that scans the whole mart
+        for dparams in (wb.estimates_params(datetime.date(2026, 1, 1), datetime.date(2026, 1, 7)),
+                        wb.estimates_params(None, None)):
+            run(wb.ESTIMATES_HEADLINE_QUERY, dparams)
+            run(wb.ESTIMATES_DAILY_QUERY, dparams)
+            run(wb.ESTIMATES_MIX_QUERY, dparams)
+            run(wb.ESTIMATES_OUTCOMES_QUERY, dparams)
+        for cparams in (wb.coverage_params(datetime.date(2026, 1, 1), datetime.date(2026, 1, 7)),
+                        wb.coverage_params(None, None)):
+            run(wb.COVERAGE_TIER_DAILY_QUERY, cparams)
+            run(wb.COVERAGE_GAP_HIST_QUERY, cparams)
+            run(wb.COVERAGE_OBSERVED_QUERY, cparams)
+    finally:
+        client.close()
+
+
+def test_slice3_query_forms_need_no_optimizer_pins(livemap):
+    # measured 2026-08-13 on CH 26.5: every slice-3 form runs clean with BOTH defect-carrying
+    # optimizations at their server defaults, so pinning them here would be cargo-cult
+    client = _live_ch_client()
+    wb = livemap.wb
+    settings = {"query_plan_optimize_lazy_materialization": 1, "use_top_k_dynamic_filtering": 1}
+    params = wb.coverage_params(datetime.date(2026, 1, 1), datetime.date(2026, 1, 7))
+    try:
+        for sql in (wb.ESTIMATES_HEADLINE_QUERY, wb.ESTIMATES_DAILY_QUERY, wb.ESTIMATES_MIX_QUERY,
+                    wb.ESTIMATES_OUTCOMES_QUERY, wb.COVERAGE_TIER_DAILY_QUERY,
+                    wb.COVERAGE_GAP_HIST_QUERY, wb.COVERAGE_OBSERVED_QUERY):
+            try:
+                client.query(sql, parameters=params, settings=settings)
+            except Exception as exc:   # an optional mart may be absent — tolerate only that
+                assert livemap._is_unknown_table_error(exc), f"unexpected live-CH failure: {exc}"
     finally:
         client.close()
 
@@ -842,11 +1032,16 @@ _ORACLE_SCHEMA = (
     ") ENGINE = MergeTree ORDER BY tuple()",
     "CREATE TABLE {db}.fct_flight_recon_tier ("
     "flight_id Nullable(UInt64), tier String, effective_gap_s Nullable(Int64), "
-    "n_points Nullable(UInt64), is_military Nullable(UInt8)"
+    "n_points Nullable(UInt64), is_military Nullable(UInt8), largest_gap_s Nullable(UInt32), "
+    "observed_fraction Nullable(Float64)"
     ") ENGINE = MergeTree ORDER BY tuple()",
     "CREATE TABLE {db}.fct_est_settlement ("
     "estimate_id UUID, seg_idx UInt8, input_fingerprint UInt64, computed_at DateTime64(3, 'UTC'), "
-    "settled UInt8, skip_ambiguous UInt8, err_p50_km Nullable(Float64), errs_km Array(Float32)"
+    "settled UInt8, skip_ambiguous UInt8, err_p50_km Nullable(Float64), errs_km Array(Float32), "
+    "config_hash UInt64, producer LowCardinality(String), input_provisional UInt8"
+    ") ENGINE = MergeTree ORDER BY tuple()",
+    "CREATE TABLE {db}.agg_est_breakdown_daily ("
+    "day Date, producer LowCardinality(String), dimension String, value String, n UInt64"
     ") ENGINE = MergeTree ORDER BY tuple()",
 )
 # A starts 23:30 UTC, so its JST day is the NEXT calendar day; both flag rows carry the UTC
@@ -862,33 +1057,101 @@ _ORACLE_SEED = (
     "INSERT INTO {db}.fct_flight_flags VALUES "
     "(1001, toDate('2026-07-28'), 'single_source', 'only adsblol voted'), "
     "(1002, toDate('2026-07-28'), 'single_source', 'only adsblol voted')",
-    "INSERT INTO {db}.fct_flight_recon_tier VALUES (1001, 'settled', 12, 400, 0)",
+    "INSERT INTO {db}.fct_flight_recon_tier VALUES (1001, 'settled', 12, 400, 0, 12, 0.9)",
 )
+
+# ---- seeded slice-3 oracle: its own database, so the estimates/coverage literals below are
+# ---- hand-computed from THIS seed and can't be perturbed by the pair the other class needs.
+_ORACLE3_DB = f"wb_oracle_pr3_{uuid.uuid4().hex[:8]}"
+_D30 = datetime.date(2026, 7, 30)
+# 2001/2003/2005/2006 land on JST 07-29 (23:30, 23:59, 23:00 and 15:00 UTC on 07-28); 2002/2004 on
+# JST 07-28. 2005 has NO tier row — it is the LEFT JOIN miss that must read 'unknown'.
+_ORACLE3_SEED = (
+    "INSERT INTO {db}.fct_flights_reconciled VALUES "
+    "(2001, 'aaa111', 'ANA1', toDateTime64('2026-07-28 23:30:00', 6, 'UTC'), NULL, "
+    "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL), "
+    "(2002, 'aaa222', 'ANA2', toDateTime64('2026-07-28 12:00:00', 6, 'UTC'), NULL, "
+    "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL), "
+    "(2003, 'aaa333', 'ANA3', toDateTime64('2026-07-28 23:59:00', 6, 'UTC'), NULL, "
+    "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL), "
+    "(2004, 'aaa444', 'ANA4', toDateTime64('2026-07-28 00:30:00', 6, 'UTC'), NULL, "
+    "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL), "
+    "(2005, 'aaa555', 'ANA5', toDateTime64('2026-07-28 23:00:00', 6, 'UTC'), NULL, "
+    "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL), "
+    "(2006, 'aaa666', 'ANA6', toDateTime64('2026-07-28 15:00:00', 6, 'UTC'), NULL, "
+    "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
+    # 899 and 900 straddle the 15-minute tier seam, which the fixed edges make an exact boundary
+    "INSERT INTO {db}.fct_flight_recon_tier VALUES "
+    "(2001, 'settled', 12, 400, 0, 899, 0.80), "
+    "(2002, 'estimated', 12, 400, 0, 900, 0.40), "
+    "(2003, 'settled', 12, 400, 0, 59, 0.90), "
+    "(2004, 'none', NULL, NULL, 0, NULL, NULL), "
+    "(2006, 'estimated', 12, 400, 0, 3600, 0.10)",
+    # config 111: A+B pool to ten point-errors 1..10; C repeats A's fingerprint LATER, so the
+    # dedup must drop it (were it kept, the pool would run to 100 and p90 would read 100).
+    "INSERT INTO {db}.fct_est_settlement VALUES "
+    "(generateUUIDv4(), 0, 7001, toDateTime64('2026-07-28 23:30:00', 3, 'UTC'), 1, 0, 3.0, "
+    "[1, 2, 3, 4, 5], 111, 'serving-private', 0), "
+    "(generateUUIDv4(), 0, 7002, toDateTime64('2026-07-28 23:31:00', 3, 'UTC'), 1, 0, 8.0, "
+    "[6, 7, 8, 9, 10], 111, 'serving-private', 0), "
+    "(generateUUIDv4(), 0, 7001, toDateTime64('2026-07-28 23:32:00', 3, 'UTC'), 1, 0, 100.0, "
+    "[100, 100, 100, 100, 100], 111, 'serving-private', 1), "
+    "(generateUUIDv4(), 0, 7003, toDateTime64('2026-07-29 23:30:00', 3, 'UTC'), 1, 0, 20.0, "
+    "[20, 20, 20, 20], 222, 'serving-public', 0), "
+    "(generateUUIDv4(), 0, 7004, toDateTime64('2026-07-28 23:40:00', 3, 'UTC'), 0, 0, NULL, "
+    "[], 111, 'serving', 1), "
+    "(generateUUIDv4(), 0, 7005, toDateTime64('2026-07-28 23:41:00', 3, 'UTC'), 0, 1, NULL, "
+    "[], 111, 'serving', 1)",
+    # UTC-day grain, deliberately skewed against the JST series above (the documented seam)
+    "INSERT INTO {db}.agg_est_breakdown_daily VALUES "
+    "(toDate('2026-07-28'), 'serving-private', 'skip', 'gap:on_ground_edge', 3), "
+    "(toDate('2026-07-28'), 'serving-public', 'skip', 'gap:on_ground_edge', 2), "
+    "(toDate('2026-07-29'), 'serving-private', 'segment_kind', 'gap', 7), "
+    "(toDate('2026-07-29'), 'serving', 'uncertainty_bin', 'dr', 1), "
+    "(toDate('2026-07-29'), 'serving-private', 'bogus_dim', 'x', 5)",
+)
+
+
+def _seeded_oracle(db, seed):
+    client = _live_ch_client()
+    try:
+        client.command(f"DROP DATABASE IF EXISTS {db}")
+        client.command(f"CREATE DATABASE {db}")
+        for stmt in _ORACLE_SCHEMA + seed:
+            client.command(stmt.format(db=db))
+        yield client
+    finally:
+        client.command(f"DROP DATABASE IF EXISTS {db}")
+        client.close()
+
+
+def _oracle_wb(monkeypatch, db, mod_name):
+    # the schema knob is read at import time, so the env has to be set before exec_module
+    monkeypatch.setenv("LIVEMAP_CH_DB", db)
+    spec = importlib.util.spec_from_file_location(mod_name, REPO_ROOT / "livemap" / "workbench.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 @pytest.fixture
 def oracle_ch():
-    client = _live_ch_client()
-    try:
-        client.command(f"DROP DATABASE IF EXISTS {_ORACLE_DB}")
-        client.command(f"CREATE DATABASE {_ORACLE_DB}")
-        for stmt in _ORACLE_SCHEMA + _ORACLE_SEED:
-            client.command(stmt.format(db=_ORACLE_DB))
-        yield client
-    finally:
-        client.command(f"DROP DATABASE IF EXISTS {_ORACLE_DB}")
-        client.close()
+    yield from _seeded_oracle(_ORACLE_DB, _ORACLE_SEED)
 
 
 @pytest.fixture
 def wb_oracle(monkeypatch):
-    # the schema knob is read at import time, so the env has to be set before exec_module
-    monkeypatch.setenv("LIVEMAP_CH_DB", _ORACLE_DB)
-    spec = importlib.util.spec_from_file_location("wb_oracle_pr2",
-                                                  REPO_ROOT / "livemap" / "workbench.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return _oracle_wb(monkeypatch, _ORACLE_DB, "wb_oracle_pr2")
+
+
+@pytest.fixture
+def oracle3_ch():
+    yield from _seeded_oracle(_ORACLE3_DB, _ORACLE3_SEED)
+
+
+@pytest.fixture
+def wb_oracle3(monkeypatch):
+    return _oracle_wb(monkeypatch, _ORACLE3_DB, "wb_oracle_pr3")
 
 
 class TestSeededJstOracle:
@@ -943,3 +1206,123 @@ class TestSeededJstOracle:
         p28 = wb_oracle.trends_params(_D28, _D28, 10, 0)
         rows28 = oracle_ch.query(wb_oracle.TRENDS_RANK_QUERY["route"], parameters=p28).result_rows
         assert [(r[0], r[1], r[2]) for r in rows28] == [("CTS-HND", 1, 1)]
+
+
+# ---- seeded slice-3 oracles: hand-computed pooled percentiles and JST coverage literals ----
+
+def _estimates(ch, wb, day_from, day_to, mix_available=True):
+    p = wb.estimates_params(day_from, day_to)
+    return wb.shape_estimates(
+        ch.query(wb.ESTIMATES_HEADLINE_QUERY, parameters=p).result_rows,
+        ch.query(wb.ESTIMATES_DAILY_QUERY, parameters=p).result_rows,
+        ch.query(wb.ESTIMATES_MIX_QUERY, parameters=p).result_rows,
+        ch.query(wb.ESTIMATES_OUTCOMES_QUERY, parameters=p).result_rows[0],
+        mix_available,
+    )
+
+
+def _coverage(ch, wb, day_from, day_to):
+    p = wb.coverage_params(day_from, day_to)
+    return wb.shape_coverage(
+        ch.query(wb.COVERAGE_TIER_DAILY_QUERY, parameters=p).result_rows,
+        ch.query(wb.COVERAGE_GAP_HIST_QUERY, parameters=p).result_rows,
+        ch.query(wb.COVERAGE_OBSERVED_QUERY, parameters=p).result_rows,
+    )
+
+
+class TestSeededEstimatesOracle:
+    def test_pooled_p50_p90_use_ceil_indexing_over_the_deduped_pool(self, oracle3_ch, wb_oracle3):
+        # config 111's two surviving rows pool to [1..10]: p50 = pool[ceil(0.5*10)] = pool[5] = 5,
+        # p90 = pool[ceil(0.9*10)] = pool[9] = 9. A mean of the two per-row medians would read 5.5.
+        out = _estimates(oracle3_ch, wb_oracle3, _D29, _D30)
+        by_cfg = {e["config_hash"]: e for e in out["headline"]}
+        assert by_cfg["111"]["p50_km"] == 5.0
+        assert by_cfg["111"]["p90_km"] == 9.0
+        assert by_cfg["111"]["n"] == 2      # the repeated-fingerprint recompute row is NOT counted
+        # config 222 pools to [20,20,20,20]: p50 = pool[2], p90 = pool[ceil(3.6)] = pool[4]
+        assert (by_cfg["222"]["p50_km"], by_cfg["222"]["p90_km"], by_cfg["222"]["n"]) == (20.0, 20.0, 1)
+
+    def test_duplicate_fingerprint_recompute_is_excluded_by_the_dedup(self, oracle3_ch, wb_oracle3):
+        # the third row repeats fingerprint 7001 with errors of 100 km; without LIMIT 1 BY the pool
+        # would run to fifteen values and p90 would read 100
+        out = _estimates(oracle3_ch, wb_oracle3, _D29, _D30)
+        by_cfg = {e["config_hash"]: e for e in out["headline"]}
+        assert by_cfg["111"]["p90_km"] != 100.0
+        # ...yet the raw logging stream still counts it: four settled rows against two scored inputs
+        assert out["outcomes"]["settled"] == 4
+
+    def test_headline_orders_latest_last_seen_first_and_hashes_are_strings(self, oracle3_ch, wb_oracle3):
+        out = _estimates(oracle3_ch, wb_oracle3, _D29, _D30)
+        assert [e["config_hash"] for e in out["headline"]] == ["222", "111"]
+        assert all(isinstance(e["config_hash"], str) for e in out["headline"])
+        assert out["headline"][0]["first_day"] == out["headline"][0]["last_day"] == "2026-07-30"
+        assert out["headline"][1]["first_day"] == out["headline"][1]["last_day"] == "2026-07-29"
+
+    def test_daily_series_carries_config_hash_so_an_era_change_reads_as_a_break(self, oracle3_ch, wb_oracle3):
+        out = _estimates(oracle3_ch, wb_oracle3, _D29, _D30)
+        assert out["daily"] == [
+            {"day": "2026-07-29", "config_hash": "111", "p50_km": 5.0, "p90_km": 9.0, "n": 2},
+            {"day": "2026-07-30", "config_hash": "222", "p50_km": 20.0, "p90_km": 20.0, "n": 1},
+        ]
+
+    def test_window_is_jst_on_computed_at(self, oracle3_ch, wb_oracle3):
+        # every scored row was written 2026-07-28/29 UTC — a UTC window would find them on 07-28
+        one = _estimates(oracle3_ch, wb_oracle3, _D29, _D29)
+        assert [e["config_hash"] for e in one["headline"]] == ["111"]
+        assert _estimates(oracle3_ch, wb_oracle3, _D28, _D28)["headline"] == []
+
+    def test_outcomes_and_input_split_count_raw_rows(self, oracle3_ch, wb_oracle3):
+        out = _estimates(oracle3_ch, wb_oracle3, _D29, _D30)
+        assert out["outcomes"] == {"settled": 4, "awaiting": 1, "ambiguous": 1}
+        assert out["input_split"] == {"provisional": 3, "settled": 3}
+
+    def test_mix_is_utc_day_grain_the_documented_seam(self, oracle3_ch, wb_oracle3):
+        # the breakdown mart's day is UTC, so the SAME window that finds config 111's JST 07-29
+        # series picks up the mart's 07-29 UTC rows — not the 07-28 UTC ones that produced it
+        one = _estimates(oracle3_ch, wb_oracle3, _D29, _D29)
+        assert one["mix"]["skip"] == []
+        assert one["mix"]["segment_kind"] == [{"value": "gap", "producer": "serving-private", "n": 7}]
+        assert one["mix"]["uncertainty_bin"] == [{"value": "dr", "producer": "serving", "n": 1}]
+        both = _estimates(oracle3_ch, wb_oracle3, _D28, _D29)
+        # producer is a facet, not a rollup: the two skip producers stay separate rows, n DESC
+        assert both["mix"]["skip"] == [
+            {"value": "gap:on_ground_edge", "producer": "serving-private", "n": 3},
+            {"value": "gap:on_ground_edge", "producer": "serving-public", "n": 2},
+        ]
+        assert "bogus_dim" not in both["mix"]   # a dimension the view has no panel for is dropped
+
+    def test_mix_absent_leaves_the_rest_of_the_view_intact(self, oracle3_ch, wb_oracle3):
+        out = _estimates(oracle3_ch, wb_oracle3, _D29, _D30, mix_available=False)
+        assert out["available"] is True
+        assert out["mix"]["available"] is False
+        assert out["headline"][0]["config_hash"] == "222"
+
+
+class TestSeededCoverageOracle:
+    def test_tier_mix_buckets_on_jst_and_names_the_join_miss_unknown(self, oracle3_ch, wb_oracle3):
+        out = _coverage(oracle3_ch, wb_oracle3, _D28, _D29)
+        # 2001/2003/2005/2006 start at 23:30, 23:59, 23:00 and 15:00 UTC on 07-28 -> JST 07-29
+        assert out["tier_daily"] == [
+            ["2026-07-28", {"estimated": 1, "none": 1}],
+            ["2026-07-29", {"estimated": 1, "settled": 2, "unknown": 1}],
+        ]
+        # 2005 has no tier row at all — the LEFT JOIN miss must read 'unknown', never a real tier
+        one = _coverage(oracle3_ch, wb_oracle3, _D29, _D29)
+        assert one["tier_daily"] == [["2026-07-29", {"estimated": 1, "settled": 2, "unknown": 1}]]
+
+    def test_gap_histogram_edges_are_exact_and_every_bin_is_served(self, oracle3_ch, wb_oracle3):
+        out = _coverage(oracle3_ch, wb_oracle3, _D28, _D29)
+        assert [b["ge"] for b in out["gap_bins"]] == [0, 60, 300, 900, 3600, 10800, 21600, 43200]
+        assert [b["lt"] for b in out["gap_bins"]] == [60, 300, 900, 3600, 10800, 21600, 43200, None]
+        # 59 -> bin 0, 899 -> bin 300, 900 -> bin 900 (the 15-minute tier seam is an EXACT edge,
+        # so the boundary value lands above it), 3600 -> bin 3600; the NULL-gap row is excluded
+        assert [b["n"] for b in out["gap_bins"]] == [1, 0, 1, 1, 1, 0, 0, 0]
+
+    def test_observed_fraction_is_a_per_day_median_over_non_null_values(self, oracle3_ch, wb_oracle3):
+        out = _coverage(oracle3_ch, wb_oracle3, _D28, _D29)
+        # JST 07-29 holds 0.80, 0.90, 0.10 (2005 contributes no tier row) -> median 0.80, n 3;
+        # JST 07-28 holds only 0.40 (2004's NULL is excluded, not read as a zero) -> 0.40, n 1
+        assert out["observed"] == [
+            {"day": "2026-07-28", "median": 0.4, "n": 1},
+            {"day": "2026-07-29", "median": 0.8, "n": 3},
+        ]

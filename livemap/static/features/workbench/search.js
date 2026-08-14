@@ -1,5 +1,5 @@
-import { esc, openAirline, openService, openAirframe, openAirport } from "./shell.js?v=6.43";
-import { fetchSearch } from "./data.js?v=6.43";
+import { esc, openAirline, openService, openAirframe, openAirport } from "./shell.js?v=6.44";
+import { fetchSearch } from "./data.js?v=6.44";
 
 const MIN_Q = 2; // the endpoint serves an empty envelope below this — don't spend a request on it
 const DEBOUNCE_MS = 180;

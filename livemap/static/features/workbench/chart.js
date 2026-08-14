@@ -78,14 +78,36 @@ export async function spark(host, xs, ys, color) {
   );
 }
 
+// s.dash is optional (uPlot ignores undefined) — it carries the p90 arm of a paired p50/p90 series.
 export async function line(host, xs, seriesArr) {
   return makeChart(
     host,
     {
       ...box(host, 160),
-      series: [{}, ...seriesArr.map((s) => ({ label: s.label, stroke: s.color, width: 1.25, points: { show: false } }))],
+      series: [
+        {},
+        ...seriesArr.map((s) => ({
+          label: s.label, stroke: s.color, width: 1.25, dash: s.dash, points: { show: false },
+        })),
+      ],
     },
     [xs, ...seriesArr.map((s) => s.ys)],
+  );
+}
+
+// Categorical bars: x is a bin INDEX, so the axis prints the caller's labels rather than a scale.
+export async function bars(host, ys, labels, color) {
+  const uPlot = await ensureUPlot();
+  const paths = uPlot.paths.bars({ size: [0.82, 26] });
+  return makeChart(
+    host,
+    {
+      ...box(host, 130),
+      scales: { x: { time: false } },
+      axes: [{ values: (_u, vals) => vals.map((v) => labels[v] ?? "") }, {}],
+      series: [{}, { stroke: color, fill: `${color}55`, width: 1, paths, points: { show: false } }],
+    },
+    [ys.map((_, i) => i), ys],
   );
 }
 

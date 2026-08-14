@@ -1,7 +1,7 @@
-import { esc, panel, navigate, rangeParams } from "../shell.js?v=6.43";
-import { fetchSummary, fetchFlags } from "../data.js?v=6.43";
-import { spark, stackedBars, HUE } from "../chart.js?v=6.43";
-import { renderFlagRows } from "./flags.js?v=6.43";
+import { esc, panel, navigate, rangeParams } from "../shell.js?v=6.44";
+import { fetchSummary, fetchFlags } from "../data.js?v=6.44";
+import { spark, stackedBars, HUE } from "../chart.js?v=6.44";
+import { renderFlagRows } from "./flags.js?v=6.44";
 
 const TIER_KEYS = ["settled", "estimated", "provisional", "none", "unknown"];
 const TIER_HUE = {
@@ -62,10 +62,9 @@ function strip(host, s) {
 function panelBody(host, title, patch) {
   const box = document.createElement("div");
   box.className = "wb-panel";
-  box.innerHTML = patch
-    ? `<button type="button" class="wb-panel-head">${esc(title)}<span class="wb-panel-go">▸</span></button>`
-    : `<span class="wb-panel-head wb-ghost">${esc(title)}<span class="wb-panel-go">slice 3</span></span>`;
-  if (patch) box.querySelector(".wb-panel-head").addEventListener("click", () => navigate(patch));
+  box.innerHTML =
+    `<button type="button" class="wb-panel-head">${esc(title)}<span class="wb-panel-go">▸</span></button>`;
+  box.querySelector(".wb-panel-head").addEventListener("click", () => navigate(patch));
   const body = document.createElement("div");
   body.className = "wb-panel-body";
   box.appendChild(body);
@@ -149,7 +148,8 @@ function trendsPanel(host, s) {
 }
 
 function estPanel(host, s) {
-  const body = panelBody(host, "estimates", null);
+  // view navigation only — the two new views carry the rail's range, never a list scope
+  const body = panelBody(host, "estimates", { view: "estimates", page: 1 });
   if (!s.est.available || s.est.errP50Km == null)
     return body.insertAdjacentHTML("beforeend", '<div class="wb-empty">—</div>');
   const ys = s.est.daily.map(([, p]) => p);
@@ -164,7 +164,7 @@ function estPanel(host, s) {
 }
 
 function coveragePanel(host, s) {
-  const body = panelBody(host, "coverage", null);
+  const body = panelBody(host, "coverage", { view: "coverage", page: 1 });
   if (!s.tiers.available || !s.tiers.daily.length)
     return body.insertAdjacentHTML("beforeend", '<div class="wb-empty">—</div>');
   const el = chartHost(body, "wb-chart");
