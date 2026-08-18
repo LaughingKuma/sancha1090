@@ -1,0 +1,279 @@
+/* Tokens come from index.html's :root — the rail must read as the same instrument, not a bolted-on panel. */
+.wb-stale {
+  position: fixed; z-index: 12; left: 18px; top: 118px; padding: 8px 12px;
+  border: 1px solid var(--hair); background: var(--panel); color: var(--ink);
+  font-family: "Spline Sans Mono", ui-monospace, monospace; font-size: 10.5px;
+}
+.wb-rail {
+  position: fixed; z-index: 12; left: 18px; top: 118px; bottom: 178px; width: 322px;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--hair); background: var(--panel);
+  backdrop-filter: blur(9px) saturate(1.1);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 11px), calc(100% - 11px) 100%, 0 100%);
+  box-shadow: 0 18px 40px -20px rgba(0,0,0,0.9), inset 0 0 0 1px rgba(255,255,255,0.02);
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 10.5px; color: var(--ink); font-variant-numeric: tabular-nums;
+}
+/* author display rules outrank the UA [hidden] rule — every hideable node needs its own guard */
+.wb-rail[hidden], .wb-tab[hidden], .wb-drop[hidden], .wb-custom[hidden] { display: none !important; }
+
+.wb-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 13px 9px; border-bottom: 1px solid var(--hair-soft);
+}
+.wb-title {
+  font-family: "Chakra Petch", sans-serif; font-weight: 700;
+  font-size: 11px; letter-spacing: 0.24em; color: var(--amber);
+}
+.wb-collapse {
+  background: none; border: none; color: var(--ink-dim); cursor: pointer;
+  font: inherit; font-size: 12px; padding: 2px 4px; line-height: 1;
+}
+.wb-collapse:hover { color: var(--amber); }
+
+/* Collapsed state: a vertical edge tab, so the map is unobstructed but the surface is one click away. */
+.wb-tab {
+  position: fixed; z-index: 12; left: 0; top: 148px;
+  writing-mode: vertical-rl; text-orientation: mixed;
+  border: 1px solid var(--hair); border-left: none; background: var(--panel);
+  backdrop-filter: blur(9px); color: var(--amber); cursor: pointer;
+  font-family: "Chakra Petch", sans-serif; font-weight: 700;
+  font-size: 10px; letter-spacing: 0.24em; padding: 12px 5px;
+}
+.wb-tab:hover { background: rgba(255,176,0,0.1); }
+
+.wb-views { display: flex; padding: 9px 13px 0; }
+.wb-view {
+  flex: 1 1 auto; background: none; color: var(--ink-dim); cursor: pointer;
+  border: 1px solid var(--hair-soft); border-right-width: 0;
+  font: inherit; font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase;
+  padding: 5px 0; text-align: center;
+}
+.wb-view:last-child { border-right-width: 1px; }
+.wb-view:hover:not([disabled]) { color: var(--ink); }
+.wb-view[aria-selected="true"] {
+  background: rgba(255,176,0,0.16); color: var(--amber); border-color: var(--hair);
+}
+.wb-view[disabled] { opacity: 0.35; cursor: default; }
+
+.wb-range { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 9px 13px 0; }
+.wb-chip {
+  background: none; color: var(--ink-dim); cursor: pointer;
+  border: 1px solid var(--hair-soft); border-radius: 1px;
+  font: inherit; font-size: 8.5px; letter-spacing: 0.14em; text-transform: uppercase;
+  padding: 3px 6px; line-height: 1;
+}
+.wb-chip:hover:not([disabled]) { color: var(--ink); border-color: var(--ink-dim); }
+.wb-chip[aria-pressed="true"] {
+  color: var(--amber); border-color: var(--hair); background: rgba(255,176,0,0.1);
+}
+.wb-chip[disabled] { opacity: 0.4; cursor: default; }
+.wb-custom { display: flex; gap: 5px; align-items: center; width: 100%; }
+.wb-rail input {
+  background: rgba(0,0,0,0.35); border: 1px solid var(--hair-soft); color: var(--ink);
+  font: inherit; font-size: 10px; padding: 3px 5px; border-radius: 1px; min-width: 0;
+}
+.wb-rail input::placeholder { color: var(--ink-dim); }
+
+.wb-search { position: relative; padding: 9px 13px 0; }
+.wb-search-box {
+  display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--hair-soft); background: rgba(0,0,0,0.35); padding: 3px 7px;
+}
+.wb-search-box .gl { color: var(--amber-dim); font-size: 11px; }
+.wb-search-box input { flex: 1 1 auto; border: none; background: none; padding: 2px 0; }
+/* the native search widget's grey clear button is the one non-HUD glyph in the rail */
+.wb-search-box input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+.wb-drop {
+  position: absolute; left: 13px; right: 13px; top: calc(100% - 2px); z-index: 3;
+  max-height: 264px; overflow-y: auto;
+  background: rgba(5,9,14,0.97); border: 1px solid var(--hair);
+  box-shadow: 0 18px 40px -20px rgba(0,0,0,0.95);
+}
+.wb-group {
+  font-size: 8px; letter-spacing: 0.24em; text-transform: uppercase;
+  color: var(--amber-dim); padding: 7px 9px 3px;
+}
+.wb-opt {
+  display: flex; width: 100%; gap: 8px; align-items: baseline; text-align: left;
+  background: none; border: none; color: var(--ink); cursor: pointer;
+  font: inherit; font-size: 10.5px; font-variant-numeric: tabular-nums; padding: 3px 9px;
+}
+.wb-opt:hover, .wb-opt[aria-selected="true"] { background: rgba(255,176,0,0.07); }
+.wb-opt-main { font-family: "Chakra Petch", sans-serif; font-weight: 600; letter-spacing: 0.03em; }
+.wb-opt-side { margin-left: auto; color: var(--ink-dim); font-size: 9.5px; }
+
+.wb-body {
+  flex: 1 1 auto; overflow-y: auto; padding: 9px 13px 12px;
+  scrollbar-width: thin; scrollbar-color: var(--ink-dim) transparent;
+}
+.wb-body::-webkit-scrollbar { width: 4px; }
+.wb-body::-webkit-scrollbar-track { background: transparent; }
+.wb-body::-webkit-scrollbar-thumb { background: var(--ink-dim); border-radius: 2px; }
+
+.wb-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 7px; }
+.wb-crumb {
+  background: none; border: none; color: var(--ink-dim); cursor: pointer;
+  font: inherit; font-size: 9px; letter-spacing: 0.1em; padding: 0;
+}
+.wb-crumb:hover { color: var(--amber); }
+.wb-crumb[aria-current="page"] { color: var(--ink); cursor: default; }
+.wb-crumb-sep { color: var(--ink-dim); opacity: 0.5; font-size: 9px; }
+
+.wb-sect {
+  font-size: 8px; letter-spacing: 0.24em; text-transform: uppercase;
+  color: var(--amber-dim); margin: 9px 0 4px;
+}
+.wb-note { color: var(--ink-dim); font-size: 10px; line-height: 1.55; }
+.wb-empty { color: var(--ink-dim); font-style: italic; padding: 8px 0; }
+
+.wb-odchips, .wb-filters, .wb-classes, .wb-dims { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-bottom: 7px; }
+.wb-filters input { flex: 0 1 auto; }
+
+/* Period strip: the landing numbers, each one a doorway — the clickable cells reset the button chrome. */
+.wb-strip { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 9px; }
+.wb-cell {
+  display: flex; flex-direction: column; gap: 2px; flex: 1 1 62px; min-width: 0; text-align: left;
+  border: 1px solid var(--hair-soft); background: none; color: var(--ink);
+  font: inherit; font-size: 10.5px; font-variant-numeric: tabular-nums; padding: 5px 6px;
+}
+.wb-cell-go { cursor: pointer; }
+.wb-cell-go:hover { background: rgba(255,176,0,0.07); border-color: var(--hair); }
+.wb-cell-v { font-family: "Chakra Petch", sans-serif; font-weight: 600; letter-spacing: 0.03em; }
+.wb-cell-k { color: var(--ink-dim); font-size: 8px; letter-spacing: 0.18em; text-transform: uppercase; }
+.wb-microbar { display: flex; height: 7px; width: 100%; overflow: hidden; }
+.wb-microbar .t-settled { background: var(--amber); }
+.wb-microbar .t-estimated { background: #b08ae6; }
+.wb-microbar .t-provisional { background: var(--teal); }
+.wb-microbar .t-none, .wb-microbar .t-unknown { background: var(--ink-dim); }
+
+.wb-panel { border: 1px solid var(--hair-soft); margin-bottom: 7px; }
+.wb-panel-head {
+  display: flex; width: 100%; align-items: center; gap: 8px; text-align: left;
+  background: none; border: none; border-bottom: 1px solid var(--hair-soft);
+  color: var(--amber-dim); cursor: pointer;
+  font: inherit; font-size: 8px; letter-spacing: 0.24em; text-transform: uppercase; padding: 6px 8px;
+}
+.wb-panel-head:hover { color: var(--amber); background: rgba(255,176,0,0.07); }
+.wb-panel-go { margin-left: auto; color: var(--ink-dim); }
+.wb-panel-body { padding: 6px 8px 8px; }
+
+/* Charts size off the host, so the host's height is the contract — never the drawing's. */
+.wb-chart { height: 160px; overflow: hidden; margin-bottom: 6px; }
+.wb-spark { height: 28px; overflow: hidden; margin-bottom: 6px; }
+
+.wb-flagcls {
+  color: var(--amber-dim); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.wb-detail { color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-rank .wb-delta { color: var(--ink-dim); flex: 0 0 auto; }
+
+
+.wb-row {
+  display: flex; width: 100%; align-items: center; gap: 8px; text-align: left;
+  background: none; border: none; border-bottom: 1px solid var(--hair-soft);
+  color: var(--ink); cursor: pointer; font: inherit; font-size: 10.5px;
+  font-variant-numeric: tabular-nums; padding: 5px 2px;
+}
+.wb-row:hover { background: rgba(255,176,0,0.07); }
+.wb-row.wb-active { color: var(--amber); background: rgba(255,176,0,0.09); }
+.wb-row.wb-active .wb-date, .wb-row.wb-active .wb-sub-od { color: var(--amber); }
+.wb-row.wb-stack { flex-direction: column; align-items: stretch; gap: 2px; }
+.wb-row-main { display: flex; align-items: center; gap: 7px; }
+.wb-row-sub { display: flex; justify-content: space-between; gap: 8px; color: var(--ink-dim); font-size: 9.5px; }
+/* min-width:0 lets the flex item shrink, so a 100-char airline name ellipsises instead of pushing the row */
+.wb-name {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600; letter-spacing: 0.03em;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wb-date { color: var(--ink-dim); }
+.wb-n { margin-left: auto; color: var(--ink-dim); }
+.wb-sub-od { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.wb-tier {
+  display: inline-flex; align-items: center; line-height: 1; white-space: nowrap;
+  border: 1px solid currentColor; border-radius: 1px;
+  font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 4px;
+}
+.wb-tier.t-settled { color: var(--amber); }
+.wb-tier.t-estimated { color: #b08ae6; }
+.wb-tier.t-provisional { color: var(--teal); }
+.wb-tier.t-none { color: var(--ink-dim); border-style: dashed; }
+.wb-tier.t-unknown { color: var(--ink-dim); border-style: dotted; }
+.wb-tier.t-mil { color: var(--mil); }
+
+.wb-tmix { display: inline-flex; gap: 6px; flex: 0 0 auto; font-size: 9px; }
+.wb-tmix .t-settled { color: var(--amber); }
+.wb-tmix .t-estimated { color: #b08ae6; }
+.wb-tmix .t-provisional { color: var(--teal); }
+.wb-tmix .t-none, .wb-tmix .t-unknown { color: var(--ink-dim); }
+.wb-legend { flex-wrap: wrap; gap: 4px 9px; margin-bottom: 6px; }
+
+/* Estimates: one block per config era, the era still in force carried in amber. */
+.wb-era {
+  display: flex; flex-direction: column; gap: 2px;
+  border-bottom: 1px solid var(--hair-soft); padding: 5px 2px;
+  font-variant-numeric: tabular-nums;
+}
+.wb-era .wb-name { color: var(--ink-dim); }
+.wb-era-p { margin-left: auto; color: var(--ink-dim); font-size: 9.5px; }
+.wb-era-p90 { margin-left: 0; opacity: 0.75; }
+/* equal specificity as the base .wb-name rule — the current-era override must come last to win */
+.wb-era-cur .wb-name, .wb-era-cur .wb-era-p { color: var(--amber); }
+
+/* Mix rows: value · producer · count, read-only (no doorway exists for a breakdown bucket). */
+.wb-mix { margin-bottom: 4px; }
+.wb-kv {
+  display: flex; align-items: baseline; gap: 7px; padding: 3px 2px;
+  border-bottom: 1px solid var(--hair-soft); font-variant-numeric: tabular-nums;
+}
+.wb-kv-k { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-kv-p { flex: 0 0 auto; color: var(--amber-dim); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; }
+.wb-kv-n { margin-left: auto; flex: 0 0 auto; color: var(--ink-dim); }
+
+.wb-pager { display: flex; align-items: center; gap: 7px; padding-top: 9px; color: var(--ink-dim); font-size: 9px; }
+.wb-pager .wb-count { margin-left: auto; letter-spacing: 0.1em; }
+
+/* Honest empty state, shown in the row itself so the list never reflows (the ff-nopath pattern). */
+.wb-nopath { color: var(--ink-dim); font-style: italic; animation: wbNoPath 0.25s ease; }
+@keyframes wbNoPath { from { opacity: 0.15; } to { opacity: 1; } }
+
+.wb-focus {
+  position: fixed; z-index: 30; top: 18px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 11px;
+  border: 1px solid var(--hair); background: var(--panel); backdrop-filter: blur(9px);
+  padding: 9px 13px; max-width: min(720px, calc(100vw - 36px));
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%);
+  box-shadow: 0 18px 40px -20px rgba(0,0,0,0.9);
+}
+.wb-focus .wb-kick { font-size: 8px; letter-spacing: 0.3em; color: var(--amber-dim); }
+.wb-focus .wb-cs {
+  font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 15px;
+  letter-spacing: 0.04em; color: var(--amber);
+}
+.wb-focus .wb-meta { font-size: 10px; color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+.wb-focus .wb-exit {
+  background: none; border: none; color: var(--ink-dim); cursor: pointer;
+  font: inherit; font-size: 13px; padding: 2px 4px; line-height: 1;
+}
+.wb-focus .wb-exit:hover { color: var(--ink); }
+
+.wb-sr {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.wb-rail button:focus-visible, .wb-rail input:focus-visible,
+.wb-tab:focus-visible, .wb-focus button:focus-visible {
+  outline: 2px solid var(--ink-dim); outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-rail *, .wb-focus *, .wb-tab { animation: none !important; transition: none !important; }
+}
+
+@media (max-width: 620px) {
+  .wb-rail { left: 8px; right: 8px; width: auto; top: 96px; bottom: 160px; }
+}

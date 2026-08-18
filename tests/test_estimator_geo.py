@@ -1,7 +1,7 @@
 from itertools import pairwise
 
 import pytest
-from conftest import load_livemap_module
+from _livemap_loader import load_livemap_module
 
 est = load_livemap_module("estimator.py")
 

@@ -35,6 +35,7 @@ def build_router(ctx) -> APIRouter:
             "ok": fresh,
             "count": len(ctx._snapshot["aircraft"]),
             "server_ts": ctx._snapshot["server_ts"],
+            "static_build": ctx._static_build(),
         }
         # counters tick synchronously per enqueue and pre-gate denials never enqueue — public
         # exposure would let callers bracket a probe and pierce the uniform denial wire (rev 10.2)

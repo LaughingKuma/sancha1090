@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readUrl, writeUrl } from "../../livemap/static/features/workbench/url.js";
+import { readUrl, writeUrl } from "../../livemap/src/features/workbench/url.js";
 
 // node has no DOM globals — stub the minimum readUrl/writeUrl touch, fresh per test.
 function setLoc(search = "", pathname = "/app", hash = "") {

@@ -1,7 +1,14 @@
-import { S } from "./state.js?v=6.44";
-import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.44";
-import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.44";
-import { map, overlay } from "./mapsetup.js?v=6.44";
+import { S } from "./state.js?v=6.45";
+import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.45";
+import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.45";
+import { map, overlay } from "./mapsetup.js?v=6.45";
+import { createMapFacade } from "./facade.js?v=6.45";
+
+// Composed here because this module holds every dependency and owns the spotlight, which shares the
+// facade's /path pipeline. It is the only thing a feature island ever receives.
+export const mapApi = createMapFacade({
+  S, map, mapEl: document.getElementById("map"), setHistPath, clearHistPath, clearSelection,
+});
 
 // Spotlight panel (v5.6) — pure reader of S.selected + S.snap.
 const spEl = (id) => document.getElementById(id);
@@ -151,72 +158,42 @@ function fetchLiveEstimate(hex) {
       if (seq === S.estFetchSeq) S.estPendingKey = null;
     });
 }
-// A path far from the current view must visibly do something — frame the whole journey unless both ends are
-// already on-screen. Endpoints, not a point-count fraction: dense per-second approach fixes cluster at one end
-// and would fool a fraction test into thinking a trans-ocean flight is "mostly in view".
-export function maybeFitHistPath(pts) {
-  if (pts.length < 2) return;
-  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-  for (const p of pts) { w = Math.min(w, p.lon); e = Math.max(e, p.lon); s = Math.min(s, p.lat); n = Math.max(n, p.lat); }
-  // antimeridian: a naive lon box wider than 180° is the wrong way round the globe — shift western-hemisphere
-  // lons +360 so the box wraps the dateline the short way (fitBounds accepts lngs > 180). HNL legs hit this.
-  if (e - w > 180) {
-    w = Infinity; e = -Infinity;
-    for (const p of pts) { const lon = p.lon < 0 ? p.lon + 360 : p.lon; w = Math.min(w, lon); e = Math.max(e, lon); }
-  }
-  const b = map.getBounds();
-  const inView = (p) => p.lon >= b.getWest() && p.lon <= b.getEast() && p.lat >= b.getSouth() && p.lat <= b.getNorth();
-  // maplibre honours prefers-reduced-motion, so the flight is instant for those users
-  if (!(inView(pts[0]) && inView(pts[pts.length - 1])))
-    map.fitBounds([[w, s], [e, n]], { padding: 80, maxZoom: 11, duration: 700 });
-}
 // Clicking a recent-sightings row draws that historical flight's fused path; clicking it again clears it.
 function selectSighting(fid, li, route) {
   clearEstimate();
-  const seq = ++S.pathFetchSeq; // any click supersedes an in-flight fetch — including a toggle-off re-click
   restoreHint(); // drop any lingering row hint (no-path / sparse) from a prior pick
   if (S.histFlightId === fid) {
-    clearHistPath();
-    S.histPathN = 0;
+    mapApi.clearPath(); // re-click the drawn row → toggle off, orphaning an in-flight fetch
     updateEstButton();
     clearActiveRow();
     renderSpotlight();
     return;
-  } // re-click the drawn row → toggle off
+  }
   clearActiveRow();
   activeRow = li;
   li.classList.add("ff-active");
   li.setAttribute("aria-pressed", "true");
+  const drawn = mapApi.showFlightPath(fid, { fit: true }); // claims the pipeline + drops any prior path NOW
   S.histFlightId = fid; // claim active now so a re-click toggles even before the fetch resolves
-  S.histPathN = setHistPath([]); // drop any prior path immediately; the fetch fills it back in
   updateEstButton();
-  fetch(`/path/${encodeURIComponent(fid)}`, { cache: "no-store" })
-    .then((r) => r.json())
-    .then((j) => {
-      if (seq !== S.pathFetchSeq) return; // a newer pick or a deselect superseded this fetch
-      const n = setHistPath(j.points);
-      S.histPathN = n;
-      S.histProvisional = !!j.provisional && n > 0; // empty provisional draws nothing — no badge either
-      renderSpotlight(); // sp-badges re-renders from cardData — show/drop the chip now, not next tick
-      // a re-render (expand) between click and callback detaches the captured route node — resolve the live one
-      const liveRoute = route.isConnected ? route
-        : (S.histFlightId === fid && activeRow) ? activeRow.querySelector(".ff-route") : null;
-      if (!n) { if (liveRoute) showRouteHint(liveRoute, "no recorded path"); } // drew nothing → say so, honestly
-      else {
-        maybeFitHistPath(S.histPts); // drew a path → frame it if it's off-screen
-        // all-sparse (breadcrumbs, no line): name the dots so they don't read as a mystery
-        if (S.histSegments.length === 0 && liveRoute) showRouteHint(liveRoute, `sparse path · ${n} fixes`);
-      }
-    })
-    .catch(() => { /* best-effort: the active row stays, no path drawn */ });
+  drawn.then(({ status, n }) => {
+    if (status === "superseded") return; // a newer pick or a deselect owns the path
+    renderSpotlight(); // sp-badges re-renders from cardData — show/drop the chip now, not next tick
+    // a re-render (expand) between click and callback detaches the captured route node — resolve the live one
+    const liveRoute = route.isConnected ? route
+      : (S.histFlightId === fid && activeRow) ? activeRow.querySelector(".ff-route") : null;
+    if (!liveRoute) return;
+    if (status === "failed") showRouteHint(liveRoute, "path unavailable");
+    else if (!n) showRouteHint(liveRoute, "no recorded path"); // drew nothing → say so, honestly
+    // all-sparse (breadcrumbs, no line): name the dots so they don't read as a mystery
+    else if (S.histSegments.length === 0) showRouteHint(liveRoute, `sparse path · ${n} fixes`);
+  });
 }
 // A deselect or a switch to another aircraft drops the drawn history path with the selection.
 function resetHistPath() {
   clearEstimate();
-  S.pathFetchSeq++; // orphan any in-flight /path fetch
   restoreHint();
-  clearHistPath();
-  S.histPathN = 0;
+  mapApi.clearPath();
   updateEstButton();
   clearActiveRow();
 }

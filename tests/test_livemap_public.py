@@ -1,12 +1,10 @@
 import collections
-import importlib.util
 import types
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from _livemap_loader import load_livemap_module
 
 
 def _load(monkeypatch, public):
@@ -17,12 +15,7 @@ def _load(monkeypatch, public):
         monkeypatch.delenv("LIVEMAP_PUBLIC_MODE", raising=False)
     # A missing cache path keeps _ladd_suppress = None (no stray container cache) so /track short-circuits.
     monkeypatch.setenv("LIVEMAP_LADD_CACHE_PATH", "/nonexistent/ladd_cache.json")
-    spec = importlib.util.spec_from_file_location(
-        f"livemap_public_{public}", REPO_ROOT / "livemap" / "app.py"
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return load_livemap_module("app.py", name=f"livemap_public_{public}")
 
 
 @pytest.fixture

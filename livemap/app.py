@@ -18,10 +18,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
 def _load_sibling(name):
     # file-relative: resolves in the baked image (/app) AND under spec-loaded tests alike
-    spec = importlib.util.spec_from_file_location(
-        name, os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{name}.py"))
+    spec = importlib.util.spec_from_file_location(name, os.path.join(_HERE, f"{name}.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -108,6 +110,26 @@ FEEDER_LON = float(os.environ.get("LIVEMAP_FEEDER_LON", "139.6692"))
 # Public-instance hardening — every effect below is gated on this flag so the private LAN instance is
 # byte-identical when it is unset (the middleware isn't even registered).
 PUBLIC_MODE = os.environ.get("LIVEMAP_PUBLIC_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+# One contract file for both languages: the bundle bakes it, /features serves it, so a stale bundle
+# refuses to mount instead of misreading envelopes.
+with open(os.path.join(_HERE, "wb_contract.json")) as _f:
+    WB_CONTRACT = json.load(_f)["contract"]
+BUILD_JSON_PATH = os.path.join(_HERE, "static", "features", "workbench", "build.json")
+
+
+def _static_build():
+    # the build's own stamp, so /healthz names the bundle actually served (image or dev mount alike)
+    try:
+        with open(BUILD_JSON_PATH) as f:
+            b = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(b, dict):
+        return None  # a wrong-shaped stamp must not 500 the healthcheck the container lives by
+    return {"sha": b.get("sha"), "contract": b.get("contract"), "built_at": b.get("built_at"),
+            "matches": b.get("contract") == WB_CONTRACT}
+
+
 # ruling 4 (2026-07-25): sidecar-attributed serving exhaust; legacy 'serving' = pre-split rows
 EST_PRODUCER = "serving-public" if PUBLIC_MODE else "serving-private"
 # Per-IP token bucket on the per-request DB endpoints only (/aircraft + /history are in-memory reads, free).
@@ -826,8 +848,9 @@ if not PUBLIC_MODE:
     # workbench read path and gets ONLY the read-client factory — never _ch_writer_client.
     wb_store = _load_sibling("wb_store").WorkbenchStore(wb, cache.put, _ch_client,
                                                         _is_unknown_table_error, _env_num)
+    wb_models = _load_sibling("wb_models")
     routes_workbench = _load_sibling("routes_workbench")
-    app.include_router(routes_workbench.build_router(wb_store))
+    app.include_router(routes_workbench.build_router(wb_store, _ctx))
 
 
 # Header-less statics get heuristic-cached by browsers — a stale map.js once outlived its index.html

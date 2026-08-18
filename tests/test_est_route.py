@@ -1,4 +1,4 @@
-from conftest import load_livemap_module
+from _livemap_loader import load_livemap_module
 
 er = load_livemap_module("est_route.py")
 

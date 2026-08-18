@@ -330,6 +330,28 @@ Workbench state is URL-addressable
 is gated by a `/features` endpoint that only the private instance registers — the public map
 serves none of the workbench, not even its static modules.
 
+The workbench frontend lives in `livemap/src/features/workbench/` and is bundled by Vite
+(`make livemap-build`, after `npm ci --prefix livemap`) into `livemap/static/features/workbench/`
+— build output, not tracked. It is a feature island behind a typed map facade: the map hands it a
+`MapFacade` at `init(mapApi, features)` and nothing else, so the bundle is self-contained and imports
+no map module. The facade (`livemap/static/facade.js`, contract in `livemap/src/map/facade.d.ts`) owns
+the drawn-path pipeline both the workbench and the spotlight drive — one `/path` fetch, one sequence
+claim, one winner — along with the live-fleet dim and the map's click guard. The livemap image builds it in a pinned node stage, so both
+instances serve image-baked assets and neither bind-mounts `livemap/static`; frontend changes
+ship by `make livemap-image` (build gate, then the compose build with `GIT_SHA=HEAD` stamped into
+`/healthz static_build`) + container recreate. For live editing, `make livemap-watch` rebuilds on
+change and `docker-compose.frontend-dev.yml` re-adds the bind mount on the private instance only:
+`docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.frontend-dev.yml up -d livemap`.
+
+The ten workbench envelopes are typed once, in `livemap/wb_models.py` (Pydantic, served as
+OpenAPI `response_model`, mirrored by hand in `src/features/workbench/wire.d.ts`) and pinned by
+`tests/fixtures/workbench/schema_snapshot.json`. `livemap/wb_contract.json` is the compatibility
+handshake: `/features` serves it, the bundle bakes it in and refuses to mount on mismatch, and
+`/healthz` reports the baked build (`static_build: {sha, contract, built_at, matches}`). Rule: an
+envelope change bumps the contract, then `scripts/wb_schema_snapshot.py --write` regenerates the
+snapshot (it refuses a changed schema under an unchanged contract — a guard on the regenerate path; the
+`/features` ↔ bundle handshake is what enforces it at runtime) and `wire.d.ts` follows.
+
 `/path` itself follows a three-rung freshness ladder. Live position always comes from the
 120-second RisingWave window above. A click on a flight that reconciled after
 `fct_flight_path`'s own settled build head gets a provisional trajectory instead: the endpoint
@@ -441,6 +463,7 @@ and backup profile.
 sancha1090/
 ├── docker-compose.yml               # Full stack
 ├── docker-compose.override.yml      # Host port bindings (loopback only)
+├── docker-compose.frontend-dev.yml  # Opt-in livemap static bind mount for live editing
 ├── docker-compose.local.yml         # Host-specific overrides (gitignored)
 ├── .env.example                     # Secrets template
 ├── dags/                            # Thin Airflow DAGs
@@ -466,6 +489,12 @@ task set), ingest discovery and the fail-loud boundary guards, manifest bookkeep
 dedup contracts, parity-gate logic, ADS-B schema drift, and the OpenSky credit budget.
 `tests/test_credit_budget.py` computes the daily credit cost from the live region config and
 the ingest schedule, then asserts it stays under the 8,000/day active-feeder quota.
+
+The workbench rail also has a browser oracle: `make e2e` builds the workbench bundle, then runs Playwright (Chromium) against the
+livemap app in fixture mode (`tests/e2e/serve_fixture.py` — the workbench store answers from
+`tests/fixtures/workbench/rows`, no ClickHouse or RisingWave) and encodes the release checklist,
+plus a public-instance smoke that asserts zero workbench DOM and requests, and a stale-bundle
+smoke that asserts the contract-mismatch line renders in place of the rail.
 
 ## Acknowledgements
 

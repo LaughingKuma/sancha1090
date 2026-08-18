@@ -1,0 +1,1697 @@
+{
+ "contract": 1,
+ "schemas": {
+  "Airlines": {
+   "$defs": {
+    "AirlineRow": {
+     "additionalProperties": false,
+     "properties": {
+      "first_day": {
+       "title": "First Day",
+       "type": "string"
+      },
+      "last_day": {
+       "title": "Last Day",
+       "type": "string"
+      },
+      "n_flights": {
+       "title": "N Flights",
+       "type": "integer"
+      },
+      "n_services": {
+       "title": "N Services",
+       "type": "integer"
+      },
+      "name": {
+       "title": "Name",
+       "type": "string"
+      },
+      "tiers": {
+       "additionalProperties": {
+        "type": "integer"
+       },
+       "title": "Tiers",
+       "type": "object"
+      }
+     },
+     "required": [
+      "name",
+      "n_flights",
+      "n_services",
+      "first_day",
+      "last_day",
+      "tiers"
+     ],
+     "title": "AirlineRow",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "airlines": {
+     "items": {
+      "$ref": "#/$defs/AirlineRow"
+     },
+     "title": "Airlines",
+     "type": "array"
+    },
+    "limit": {
+     "title": "Limit",
+     "type": "integer"
+    },
+    "offset": {
+     "title": "Offset",
+     "type": "integer"
+    },
+    "total": {
+     "title": "Total",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "total",
+    "limit",
+    "offset",
+    "airlines"
+   ],
+   "title": "Airlines",
+   "type": "object"
+  },
+  "Coverage": {
+   "$defs": {
+    "GapBin": {
+     "additionalProperties": false,
+     "properties": {
+      "ge": {
+       "title": "Ge",
+       "type": "integer"
+      },
+      "lt": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Lt"
+      },
+      "n": {
+       "title": "N",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "ge",
+      "lt",
+      "n"
+     ],
+     "title": "GapBin",
+     "type": "object"
+    },
+    "Observed": {
+     "additionalProperties": false,
+     "properties": {
+      "day": {
+       "title": "Day",
+       "type": "string"
+      },
+      "median": {
+       "title": "Median",
+       "type": "number"
+      },
+      "n": {
+       "title": "N",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "day",
+      "median",
+      "n"
+     ],
+     "title": "Observed",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "available": {
+     "title": "Available",
+     "type": "boolean"
+    },
+    "complete": {
+     "default": true,
+     "title": "Complete",
+     "type": "boolean"
+    },
+    "gap_bins": {
+     "items": {
+      "$ref": "#/$defs/GapBin"
+     },
+     "title": "Gap Bins",
+     "type": "array"
+    },
+    "observed": {
+     "items": {
+      "$ref": "#/$defs/Observed"
+     },
+     "title": "Observed",
+     "type": "array"
+    },
+    "tier_daily": {
+     "items": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+       {
+        "type": "string"
+       },
+       {
+        "additionalProperties": {
+         "type": "integer"
+        },
+        "type": "object"
+       }
+      ],
+      "type": "array"
+     },
+     "title": "Tier Daily",
+     "type": "array"
+    }
+   },
+   "required": [
+    "available",
+    "tier_daily",
+    "gap_bins",
+    "observed"
+   ],
+   "title": "Coverage",
+   "type": "object"
+  },
+  "Estimates": {
+   "$defs": {
+    "EstDaily": {
+     "additionalProperties": false,
+     "properties": {
+      "config_hash": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Config Hash"
+      },
+      "day": {
+       "title": "Day",
+       "type": "string"
+      },
+      "n": {
+       "title": "N",
+       "type": "integer"
+      },
+      "p50_km": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "P50 Km"
+      },
+      "p90_km": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "P90 Km"
+      }
+     },
+     "required": [
+      "day",
+      "config_hash",
+      "p50_km",
+      "p90_km",
+      "n"
+     ],
+     "title": "EstDaily",
+     "type": "object"
+    },
+    "EstHeadline": {
+     "additionalProperties": false,
+     "properties": {
+      "config_hash": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Config Hash"
+      },
+      "first_day": {
+       "title": "First Day",
+       "type": "string"
+      },
+      "last_day": {
+       "title": "Last Day",
+       "type": "string"
+      },
+      "n": {
+       "title": "N",
+       "type": "integer"
+      },
+      "p50_km": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "P50 Km"
+      },
+      "p90_km": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "P90 Km"
+      }
+     },
+     "required": [
+      "config_hash",
+      "n",
+      "p50_km",
+      "p90_km",
+      "first_day",
+      "last_day"
+     ],
+     "title": "EstHeadline",
+     "type": "object"
+    },
+    "EstInputSplit": {
+     "additionalProperties": false,
+     "properties": {
+      "provisional": {
+       "title": "Provisional",
+       "type": "integer"
+      },
+      "settled": {
+       "title": "Settled",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "provisional",
+      "settled"
+     ],
+     "title": "EstInputSplit",
+     "type": "object"
+    },
+    "EstMix": {
+     "additionalProperties": false,
+     "properties": {
+      "available": {
+       "title": "Available",
+       "type": "boolean"
+      },
+      "segment_kind": {
+       "items": {
+        "$ref": "#/$defs/MixRow"
+       },
+       "title": "Segment Kind",
+       "type": "array"
+      },
+      "skip": {
+       "items": {
+        "$ref": "#/$defs/MixRow"
+       },
+       "title": "Skip",
+       "type": "array"
+      },
+      "uncertainty_bin": {
+       "items": {
+        "$ref": "#/$defs/MixRow"
+       },
+       "title": "Uncertainty Bin",
+       "type": "array"
+      }
+     },
+     "required": [
+      "available",
+      "skip",
+      "segment_kind",
+      "uncertainty_bin"
+     ],
+     "title": "EstMix",
+     "type": "object"
+    },
+    "EstOutcomes": {
+     "additionalProperties": false,
+     "properties": {
+      "ambiguous": {
+       "title": "Ambiguous",
+       "type": "integer"
+      },
+      "awaiting": {
+       "title": "Awaiting",
+       "type": "integer"
+      },
+      "settled": {
+       "title": "Settled",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "settled",
+      "awaiting",
+      "ambiguous"
+     ],
+     "title": "EstOutcomes",
+     "type": "object"
+    },
+    "MixRow": {
+     "additionalProperties": false,
+     "properties": {
+      "n": {
+       "title": "N",
+       "type": "integer"
+      },
+      "producer": {
+       "title": "Producer",
+       "type": "string"
+      },
+      "value": {
+       "title": "Value",
+       "type": "string"
+      }
+     },
+     "required": [
+      "value",
+      "producer",
+      "n"
+     ],
+     "title": "MixRow",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "available": {
+     "title": "Available",
+     "type": "boolean"
+    },
+    "complete": {
+     "default": true,
+     "title": "Complete",
+     "type": "boolean"
+    },
+    "daily": {
+     "items": {
+      "$ref": "#/$defs/EstDaily"
+     },
+     "title": "Daily",
+     "type": "array"
+    },
+    "headline": {
+     "items": {
+      "$ref": "#/$defs/EstHeadline"
+     },
+     "title": "Headline",
+     "type": "array"
+    },
+    "input_split": {
+     "$ref": "#/$defs/EstInputSplit"
+    },
+    "mix": {
+     "$ref": "#/$defs/EstMix"
+    },
+    "outcomes": {
+     "$ref": "#/$defs/EstOutcomes"
+    }
+   },
+   "required": [
+    "available",
+    "headline",
+    "daily",
+    "mix",
+    "outcomes",
+    "input_split"
+   ],
+   "title": "Estimates",
+   "type": "object"
+  },
+  "Features": {
+   "$defs": {
+    "FeatureFlags": {
+     "additionalProperties": false,
+     "properties": {
+      "workbench": {
+       "title": "Workbench",
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "workbench"
+     ],
+     "title": "FeatureFlags",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "contract": {
+     "title": "Contract",
+     "type": "integer"
+    },
+    "features": {
+     "$ref": "#/$defs/FeatureFlags"
+    }
+   },
+   "required": [
+    "features",
+    "contract"
+   ],
+   "title": "Features",
+   "type": "object"
+  },
+  "Flags": {
+   "$defs": {
+    "Airport": {
+     "additionalProperties": false,
+     "properties": {
+      "city": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "City"
+      },
+      "iata": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Iata"
+      },
+      "icao": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Icao"
+      }
+     },
+     "required": [
+      "icao",
+      "iata",
+      "city"
+     ],
+     "title": "Airport",
+     "type": "object"
+    },
+    "FlagRow": {
+     "additionalProperties": false,
+     "properties": {
+      "airline": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Airline"
+      },
+      "callsign": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Callsign"
+      },
+      "day": {
+       "title": "Day",
+       "type": "string"
+      },
+      "dest": {
+       "$ref": "#/$defs/Airport"
+      },
+      "detail": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Detail"
+      },
+      "effective_gap_s": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Effective Gap S"
+      },
+      "end_ts": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "End Ts"
+      },
+      "flag_class": {
+       "title": "Flag Class",
+       "type": "string"
+      },
+      "flight_id": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Flight Id"
+      },
+      "icao24": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Icao24"
+      },
+      "is_military": {
+       "title": "Is Military",
+       "type": "boolean"
+      },
+      "n_points": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "N Points"
+      },
+      "origin": {
+       "$ref": "#/$defs/Airport"
+      },
+      "registration": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Registration"
+      },
+      "start_ts": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Start Ts"
+      },
+      "tier": {
+       "enum": [
+        "settled",
+        "estimated",
+        "provisional",
+        "none",
+        "unknown"
+       ],
+       "title": "Tier",
+       "type": "string"
+      },
+      "typecode": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Typecode"
+      }
+     },
+     "required": [
+      "flight_id",
+      "day",
+      "start_ts",
+      "end_ts",
+      "icao24",
+      "registration",
+      "typecode",
+      "callsign",
+      "airline",
+      "origin",
+      "dest",
+      "tier",
+      "effective_gap_s",
+      "n_points",
+      "is_military",
+      "flag_class",
+      "detail"
+     ],
+     "title": "FlagRow",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "available": {
+     "title": "Available",
+     "type": "boolean"
+    },
+    "classes": {
+     "additionalProperties": {
+      "type": "integer"
+     },
+     "title": "Classes",
+     "type": "object"
+    },
+    "complete": {
+     "default": true,
+     "title": "Complete",
+     "type": "boolean"
+    },
+    "flags": {
+     "items": {
+      "$ref": "#/$defs/FlagRow"
+     },
+     "title": "Flags",
+     "type": "array"
+    },
+    "limit": {
+     "title": "Limit",
+     "type": "integer"
+    },
+    "offset": {
+     "title": "Offset",
+     "type": "integer"
+    },
+    "total": {
+     "title": "Total",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "total",
+    "limit",
+    "offset",
+    "available",
+    "flags",
+    "classes"
+   ],
+   "title": "Flags",
+   "type": "object"
+  },
+  "Instances": {
+   "$defs": {
+    "Airport": {
+     "additionalProperties": false,
+     "properties": {
+      "city": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "City"
+      },
+      "iata": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Iata"
+      },
+      "icao": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Icao"
+      }
+     },
+     "required": [
+      "icao",
+      "iata",
+      "city"
+     ],
+     "title": "Airport",
+     "type": "object"
+    },
+    "InstanceRow": {
+     "additionalProperties": false,
+     "properties": {
+      "airline": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Airline"
+      },
+      "callsign": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Callsign"
+      },
+      "day": {
+       "title": "Day",
+       "type": "string"
+      },
+      "dest": {
+       "$ref": "#/$defs/Airport"
+      },
+      "effective_gap_s": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Effective Gap S"
+      },
+      "end_ts": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "End Ts"
+      },
+      "flight_id": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Flight Id"
+      },
+      "icao24": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Icao24"
+      },
+      "is_military": {
+       "title": "Is Military",
+       "type": "boolean"
+      },
+      "n_points": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "N Points"
+      },
+      "origin": {
+       "$ref": "#/$defs/Airport"
+      },
+      "registration": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Registration"
+      },
+      "start_ts": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Start Ts"
+      },
+      "tier": {
+       "enum": [
+        "settled",
+        "estimated",
+        "provisional",
+        "none",
+        "unknown"
+       ],
+       "title": "Tier",
+       "type": "string"
+      },
+      "typecode": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Typecode"
+      }
+     },
+     "required": [
+      "flight_id",
+      "day",
+      "start_ts",
+      "end_ts",
+      "icao24",
+      "registration",
+      "typecode",
+      "callsign",
+      "airline",
+      "origin",
+      "dest",
+      "tier",
+      "effective_gap_s",
+      "n_points",
+      "is_military"
+     ],
+     "title": "InstanceRow",
+     "type": "object"
+    },
+    "OdChip": {
+     "additionalProperties": false,
+     "properties": {
+      "d": {
+       "title": "D",
+       "type": "string"
+      },
+      "n": {
+       "title": "N",
+       "type": "integer"
+      },
+      "o": {
+       "title": "O",
+       "type": "string"
+      }
+     },
+     "required": [
+      "o",
+      "d",
+      "n"
+     ],
+     "title": "OdChip",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "instances": {
+     "items": {
+      "$ref": "#/$defs/InstanceRow"
+     },
+     "title": "Instances",
+     "type": "array"
+    },
+    "limit": {
+     "title": "Limit",
+     "type": "integer"
+    },
+    "military_filter_available": {
+     "default": true,
+     "title": "Military Filter Available",
+     "type": "boolean"
+    },
+    "od_breakdown": {
+     "items": {
+      "$ref": "#/$defs/OdChip"
+     },
+     "title": "Od Breakdown",
+     "type": "array"
+    },
+    "offset": {
+     "title": "Offset",
+     "type": "integer"
+    },
+    "total": {
+     "title": "Total",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "total",
+    "limit",
+    "offset",
+    "instances",
+    "od_breakdown"
+   ],
+   "title": "Instances",
+   "type": "object"
+  },
+  "Search": {
+   "$defs": {
+    "SearchAirframe": {
+     "additionalProperties": false,
+     "properties": {
+      "icao24": {
+       "title": "Icao24",
+       "type": "string"
+      },
+      "n_instances": {
+       "title": "N Instances",
+       "type": "integer"
+      },
+      "registration": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Registration"
+      },
+      "typecode": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Typecode"
+      }
+     },
+     "required": [
+      "icao24",
+      "registration",
+      "typecode",
+      "n_instances"
+     ],
+     "title": "SearchAirframe",
+     "type": "object"
+    },
+    "SearchAirline": {
+     "additionalProperties": false,
+     "properties": {
+      "n_flights": {
+       "title": "N Flights",
+       "type": "integer"
+      },
+      "name": {
+       "title": "Name",
+       "type": "string"
+      }
+     },
+     "required": [
+      "name",
+      "n_flights"
+     ],
+     "title": "SearchAirline",
+     "type": "object"
+    },
+    "SearchAirport": {
+     "additionalProperties": false,
+     "properties": {
+      "city": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "City"
+      },
+      "iata": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Iata"
+      },
+      "icao": {
+       "title": "Icao",
+       "type": "string"
+      },
+      "name": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Name"
+      }
+     },
+     "required": [
+      "icao",
+      "iata",
+      "name",
+      "city"
+     ],
+     "title": "SearchAirport",
+     "type": "object"
+    },
+    "SearchService": {
+     "additionalProperties": false,
+     "properties": {
+      "airline": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Airline"
+      },
+      "callsign": {
+       "title": "Callsign",
+       "type": "string"
+      },
+      "n_instances": {
+       "title": "N Instances",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "callsign",
+      "airline",
+      "n_instances"
+     ],
+     "title": "SearchService",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "airframes": {
+     "items": {
+      "$ref": "#/$defs/SearchAirframe"
+     },
+     "title": "Airframes",
+     "type": "array"
+    },
+    "airlines": {
+     "items": {
+      "$ref": "#/$defs/SearchAirline"
+     },
+     "title": "Airlines",
+     "type": "array"
+    },
+    "airports": {
+     "items": {
+      "$ref": "#/$defs/SearchAirport"
+     },
+     "title": "Airports",
+     "type": "array"
+    },
+    "services": {
+     "items": {
+      "$ref": "#/$defs/SearchService"
+     },
+     "title": "Services",
+     "type": "array"
+    }
+   },
+   "required": [
+    "airlines",
+    "services",
+    "airframes",
+    "airports"
+   ],
+   "title": "Search",
+   "type": "object"
+  },
+  "Services": {
+   "$defs": {
+    "OdChip": {
+     "additionalProperties": false,
+     "properties": {
+      "d": {
+       "title": "D",
+       "type": "string"
+      },
+      "n": {
+       "title": "N",
+       "type": "integer"
+      },
+      "o": {
+       "title": "O",
+       "type": "string"
+      }
+     },
+     "required": [
+      "o",
+      "d",
+      "n"
+     ],
+     "title": "OdChip",
+     "type": "object"
+    },
+    "ServiceRow": {
+     "additionalProperties": false,
+     "properties": {
+      "callsign": {
+       "title": "Callsign",
+       "type": "string"
+      },
+      "first_day": {
+       "title": "First Day",
+       "type": "string"
+      },
+      "last_day": {
+       "title": "Last Day",
+       "type": "string"
+      },
+      "n_instances": {
+       "title": "N Instances",
+       "type": "integer"
+      },
+      "tiers": {
+       "additionalProperties": {
+        "type": "integer"
+       },
+       "title": "Tiers",
+       "type": "object"
+      },
+      "top_od": {
+       "items": {
+        "$ref": "#/$defs/OdChip"
+       },
+       "title": "Top Od",
+       "type": "array"
+      }
+     },
+     "required": [
+      "callsign",
+      "n_instances",
+      "top_od",
+      "first_day",
+      "last_day",
+      "tiers"
+     ],
+     "title": "ServiceRow",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "limit": {
+     "title": "Limit",
+     "type": "integer"
+    },
+    "offset": {
+     "title": "Offset",
+     "type": "integer"
+    },
+    "services": {
+     "items": {
+      "$ref": "#/$defs/ServiceRow"
+     },
+     "title": "Services",
+     "type": "array"
+    },
+    "total": {
+     "title": "Total",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "total",
+    "limit",
+    "offset",
+    "services"
+   ],
+   "title": "Services",
+   "type": "object"
+  },
+  "Summary": {
+   "$defs": {
+    "Mover": {
+     "additionalProperties": false,
+     "properties": {
+      "delta_pct": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Delta Pct"
+      },
+      "key": {
+       "title": "Key",
+       "type": "string"
+      },
+      "n": {
+       "title": "N",
+       "type": "integer"
+      },
+      "prev_n": {
+       "title": "Prev N",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "key",
+      "n",
+      "prev_n",
+      "delta_pct"
+     ],
+     "title": "Mover",
+     "type": "object"
+    },
+    "SummaryEst": {
+     "additionalProperties": false,
+     "properties": {
+      "available": {
+       "title": "Available",
+       "type": "boolean"
+      },
+      "daily": {
+       "items": {
+        "maxItems": 3,
+        "minItems": 3,
+        "prefixItems": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "number"
+         },
+         {
+          "type": "integer"
+         }
+        ],
+        "type": "array"
+       },
+       "title": "Daily",
+       "type": "array"
+      },
+      "err_p50_km": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Err P50 Km"
+      },
+      "n": {
+       "title": "N",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "available",
+      "err_p50_km",
+      "n",
+      "daily"
+     ],
+     "title": "SummaryEst",
+     "type": "object"
+    },
+    "SummaryFlags": {
+     "additionalProperties": false,
+     "properties": {
+      "available": {
+       "title": "Available",
+       "type": "boolean"
+      },
+      "classes": {
+       "additionalProperties": {
+        "type": "integer"
+       },
+       "title": "Classes",
+       "type": "object"
+      },
+      "flagged": {
+       "title": "Flagged",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "available",
+      "flagged",
+      "classes"
+     ],
+     "title": "SummaryFlags",
+     "type": "object"
+    },
+    "SummaryTiers": {
+     "additionalProperties": false,
+     "properties": {
+      "available": {
+       "title": "Available",
+       "type": "boolean"
+      },
+      "daily": {
+       "items": {
+        "maxItems": 2,
+        "minItems": 2,
+        "prefixItems": [
+         {
+          "type": "string"
+         },
+         {
+          "additionalProperties": {
+           "type": "integer"
+          },
+          "type": "object"
+         }
+        ],
+        "type": "array"
+       },
+       "title": "Daily",
+       "type": "array"
+      },
+      "mix": {
+       "additionalProperties": {
+        "type": "integer"
+       },
+       "title": "Mix",
+       "type": "object"
+      }
+     },
+     "required": [
+      "available",
+      "mix",
+      "daily"
+     ],
+     "title": "SummaryTiers",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "aircraft": {
+     "title": "Aircraft",
+     "type": "integer"
+    },
+    "complete": {
+     "default": true,
+     "title": "Complete",
+     "type": "boolean"
+    },
+    "daily": {
+     "items": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "integer"
+       }
+      ],
+      "type": "array"
+     },
+     "title": "Daily",
+     "type": "array"
+    },
+    "est": {
+     "$ref": "#/$defs/SummaryEst"
+    },
+    "flags": {
+     "$ref": "#/$defs/SummaryFlags"
+    },
+    "flights": {
+     "title": "Flights",
+     "type": "integer"
+    },
+    "movers": {
+     "items": {
+      "$ref": "#/$defs/Mover"
+     },
+     "title": "Movers",
+     "type": "array"
+    },
+    "services": {
+     "title": "Services",
+     "type": "integer"
+    },
+    "tiers": {
+     "$ref": "#/$defs/SummaryTiers"
+    }
+   },
+   "required": [
+    "flights",
+    "aircraft",
+    "services",
+    "daily",
+    "flags",
+    "tiers",
+    "est",
+    "movers"
+   ],
+   "title": "Summary",
+   "type": "object"
+  },
+  "Trends": {
+   "$defs": {
+    "RankRow": {
+     "additionalProperties": false,
+     "properties": {
+      "delta_pct": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Delta Pct"
+      },
+      "distinct_aircraft": {
+       "title": "Distinct Aircraft",
+       "type": "integer"
+      },
+      "key": {
+       "title": "Key",
+       "type": "string"
+      },
+      "n": {
+       "title": "N",
+       "type": "integer"
+      },
+      "prev_n": {
+       "title": "Prev N",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "key",
+      "n",
+      "distinct_aircraft",
+      "prev_n",
+      "delta_pct"
+     ],
+     "title": "RankRow",
+     "type": "object"
+    },
+    "Series": {
+     "additionalProperties": false,
+     "properties": {
+      "key": {
+       "title": "Key",
+       "type": "string"
+      },
+      "points": {
+       "items": {
+        "maxItems": 2,
+        "minItems": 2,
+        "prefixItems": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "integer"
+         }
+        ],
+        "type": "array"
+       },
+       "title": "Points",
+       "type": "array"
+      }
+     },
+     "required": [
+      "key",
+      "points"
+     ],
+     "title": "Series",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "complete": {
+     "default": true,
+     "title": "Complete",
+     "type": "boolean"
+    },
+    "dim": {
+     "enum": [
+      "route",
+      "airline",
+      "airport"
+     ],
+     "title": "Dim",
+     "type": "string"
+    },
+    "grain": {
+     "const": "day",
+     "title": "Grain",
+     "type": "string"
+    },
+    "limit": {
+     "title": "Limit",
+     "type": "integer"
+    },
+    "offset": {
+     "title": "Offset",
+     "type": "integer"
+    },
+    "rank": {
+     "items": {
+      "$ref": "#/$defs/RankRow"
+     },
+     "title": "Rank",
+     "type": "array"
+    },
+    "series": {
+     "items": {
+      "$ref": "#/$defs/Series"
+     },
+     "title": "Series",
+     "type": "array"
+    },
+    "total": {
+     "title": "Total",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "total",
+    "limit",
+    "offset",
+    "dim",
+    "grain",
+    "series",
+    "rank"
+   ],
+   "title": "Trends",
+   "type": "object"
+  }
+ }
+}

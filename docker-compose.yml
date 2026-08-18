@@ -479,7 +479,11 @@ services:
     restart: "no"
 
   livemap:
-    build: ./livemap
+    # release identity: `make livemap-image` passes HEAD so /healthz can name the commit an instance runs
+    build: &livemap-build
+      context: ./livemap
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     image: sancha1090-livemap:latest
     # Server-side cache: one background poll into the MV, fanned out to every browser tab.
     depends_on:
@@ -504,10 +508,7 @@ services:
       # PR-2 estimate-log writer identity (INSERT-only; reads stay on superset_ro above)
       LIVEMAP_CH_WRITER_USER: livemap_writer
       LIVEMAP_CH_WRITER_PASSWORD: ${CH_LIVEMAP_WRITER_PASSWORD:?CH_LIVEMAP_WRITER_PASSWORD must be set in .env}
-    volumes:
-      # static stays baked into the image for releases; the bind-mount serves edits live so
-      # frontend tweaks don't force the rebuild+restart that used to blank trails for 30 min
-      - ./livemap/static:/app/static:ro
+    # static is image-baked like app.py (docker-compose.frontend-dev.yml bind-mounts it for live editing)
     expose:
       - "8000"   # served on loopback via override (127.0.0.1:38100)
     healthcheck:
@@ -523,7 +524,7 @@ services:
     # but NO host port is published anywhere (reachable only in-network, via cloudflared). Behind the `public`
     # profile so the default `docker compose up -d` is unaffected until an operator opts in with --profile public.
     profiles: ["public"]
-    build: ./livemap
+    build: *livemap-build
     image: sancha1090-livemap:latest
     depends_on:
       risingwave:
@@ -544,8 +545,8 @@ services:
       # PR-2 estimate-log writer identity (INSERT-only; reads stay on superset_ro above)
       LIVEMAP_CH_WRITER_USER: livemap_writer
       LIVEMAP_CH_WRITER_PASSWORD: ${CH_LIVEMAP_WRITER_PASSWORD:?CH_LIVEMAP_WRITER_PASSWORD must be set in .env}
-    # NO static bind-mount (unlike the private twin): public serves the image-baked copy only, so a
-    # branch checkout can never publish private-feature assets ahead of an image rebuild + review.
+    # No static bind mount here either: public serves the image-baked copy only, so a branch checkout can
+    # never publish private-feature assets ahead of an image rebuild + review.
     # default keeps RW/CH reachable; edge is the tunnel-only network shared with cloudflared. Listing
     # networks drops the implicit default, so default must be named explicitly here.
     networks: ["default", "edge"]

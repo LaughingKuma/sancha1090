@@ -1,0 +1,6 @@
+# Opt-in live editing only: release mode bakes static into the image so Python and assets ship from one build.
+# Pair with `make livemap-watch`; the compose -f incantation lives in the README.
+services:
+  livemap:
+    volumes:
+      - ./livemap/static:/app/static:ro

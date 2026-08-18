@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pickCandidate, csNorm } from "../../livemap/static/features/workbench/resolve.js";
+import { pickCandidate, csNorm } from "../../livemap/src/features/workbench/resolve.js";
 
 const row = (startTs, callsign) => ({ startTs, callsign });
 

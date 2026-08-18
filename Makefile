@@ -5,11 +5,10 @@ SCHED := docker compose exec -T airflow-scheduler bash -c
 # ruff isn't installed on the host; run the pinned image. Config-free because the public snapshot has no ruff.toml; CI reuses this target.
 RUFF  := docker run --rm -v "$$PWD":/io -w /io ghcr.io/astral-sh/ruff:0.15.15
 RUFF_ARGS := --select F,B,ARG --line-length 110 --target-version py312
-
-.PHONY: help up down restart ps logs test test-js lint parse dbt check
+.PHONY: help up down restart ps logs test test-js typecheck e2e livemap-build livemap-watch livemap-image wb-gate lint parse dbt check
 
 help: ## List targets
-	@grep -hE '^[a-z%-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  \033[36m%-9s\033[0m %s\n", $$1, $$2}'
+	@grep -hE '^[a-z0-9%-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  \033[36m%-13s\033[0m %s\n", $$1, $$2}'
 
 up: ## Start the stack (detached)
 	docker compose up -d
@@ -26,11 +25,29 @@ ps: ## Show service status
 logs: ## Tail logs (scope with S=, e.g. make logs S=risingwave)
 	docker compose logs -f $(S)
 
-test: test-js ## Run pytest in the scheduler container (scope with K=, e.g. make test K=adsb)
+test: test-js livemap-build ## Run pytest in the scheduler container (scope with K=, e.g. make test K=adsb)
 	$(SCHED) "cd /opt/airflow && python -m pytest tests/ -q$(if $(K), -k '$(K)')"
 
 test-js: ## Run the workbench JS harness (host node)
 	node --test "tests/js/**/*.test.mjs"
+
+typecheck: ## Check the workbench wire types + the map facade against src/map/facade.d.ts with tsc
+	npm run typecheck --prefix livemap
+
+e2e: livemap-build ## Playwright fixture-mode e2e (needs node 24 + `npm ci --prefix livemap`, `npx --prefix livemap playwright install chromium`, python with livemap/requirements.txt)
+	cd livemap && npx playwright test
+
+livemap-build: ## Build the workbench bundle into livemap/static/features/workbench (needs `npm ci --prefix livemap`)
+	npm run build --prefix livemap
+
+livemap-watch: ## Rebuild the workbench on change, unminified (pair with docker-compose.frontend-dev.yml)
+	npm run watch --prefix livemap
+
+livemap-image: wb-gate ## Build the livemap image for both instances with GIT_SHA=HEAD (recreate them separately: shipping checklist)
+	GIT_SHA=$$(git rev-parse HEAD) docker compose build livemap livemap-public
+
+wb-gate: livemap-build ## Build-layer public gate: bundle only under static/features/workbench, one ?v= pin, runtime deps within the allowlist
+	node scripts/wb_gate_check.mjs
 
 lint: ## Ruff check (real bugs only: F,B,ARG)
 	$(RUFF) check $(RUFF_ARGS) .
@@ -41,4 +58,4 @@ parse: ## Validate the dbt project (no warehouse needed)
 dbt: ## dbt in the scheduler (ARGS="run --select tag:adsb")
 	$(SCHED) "cd /opt/airflow/dbt/sancha1090 && dbt $(ARGS) --profiles-dir . --target clickhouse --no-use-colors"
 
-check: lint parse test ## lint + parse + test
+check: lint parse test typecheck wb-gate ## lint + parse + test + typecheck + build gate

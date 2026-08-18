@@ -1,15 +1,13 @@
 import asyncio
 import collections
 import contextlib
-import importlib.util
 import json
 import re
 import time
-from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from _livemap_loader import load_livemap_module
 
 
 class _CHErr(RuntimeError):
@@ -99,9 +97,7 @@ def test_boot_seeds_from_cache_counts_as_loaded(tmp_path, monkeypatch):
     cache.write_text(json.dumps({"hex": ["abc123"], "callsign": ["ANA1"]}))
     monkeypatch.setenv("LIVEMAP_LADD_CACHE_PATH", str(cache))
     monkeypatch.setenv("LIVEMAP_PUBLIC_MODE", "1")   # suppression (and its boot seed) is public-only
-    spec = importlib.util.spec_from_file_location("livemap_boot", REPO_ROOT / "livemap" / "app.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = load_livemap_module("app.py", name="livemap_boot")
     # boot-load is a real loaded state (not None): dim filtering is active immediately
     assert mod._ladd_suppress == {"hex": frozenset({"abc123"}), "callsign": frozenset({"ANA1"})}
     assert mod._is_ladd_suppressed("ABC123", None, mv_is_ladd=False, suppress=mod._ladd_suppress) is True
@@ -117,9 +113,7 @@ def test_private_boot_never_seeds_from_cache(tmp_path, monkeypatch):
     cache.write_text(json.dumps({"hex": ["abc123"], "callsign": ["ANA1"]}))
     monkeypatch.setenv("LIVEMAP_LADD_CACHE_PATH", str(cache))
     monkeypatch.delenv("LIVEMAP_PUBLIC_MODE", raising=False)
-    spec = importlib.util.spec_from_file_location("livemap_boot_private", REPO_ROOT / "livemap" / "app.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = load_livemap_module("app.py", name="livemap_boot_private")
     # private suppresses nothing, so it never even reads the last-good disk cache
     assert mod._ladd_suppress is None
 

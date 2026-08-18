@@ -2,7 +2,7 @@ import os
 import time
 
 import pytest
-from conftest import load_livemap_module
+from _livemap_loader import load_livemap_module
 
 lm = load_livemap_module("app.py")
 

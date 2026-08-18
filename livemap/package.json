@@ -1,0 +1,19 @@
+{
+  "name": "livemap",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24",
+    "npm": ">=11.10"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "typescript": "7.0.2",
+    "vite": "8.2.1"
+  },
+  "scripts": {
+    "build": "vite build -c vite.workbench.config.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "watch": "npm run build -- --watch --mode development"
+  }
+}

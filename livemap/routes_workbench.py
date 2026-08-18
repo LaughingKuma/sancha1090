@@ -26,15 +26,19 @@ async def _serve_cached(store, name, key, fetcher, empty) -> JSONResponse:
     return _wb_response(payload)
 
 
-def build_router(store) -> APIRouter:
+def build_router(store, ctx) -> APIRouter:
     router = APIRouter()
     wb = store.wb
+    # response_model documents the envelope in OpenAPI only: every handler still returns a JSONResponse,
+    # which FastAPI passes through unvalidated — the never-500 degradation payloads stay untouched
+    def get(path):
+        return router.get(path, response_model=ctx.wb_models.ENVELOPES[path])
 
-    @router.get("/features")
+    @get("/features")
     async def features() -> JSONResponse:
-        return _wb_response({"features": {"workbench": True}})
+        return _wb_response({"features": {"workbench": True}, "contract": ctx.WB_CONTRACT})
 
-    @router.get("/workbench/airlines")
+    @get("/workbench/airlines")
     async def airlines(q: str = "", limit: int = 50, offset: int = 0) -> JSONResponse:
         limit = wb.clamp(limit, 200)
         offset = max(0, offset)
@@ -42,7 +46,7 @@ def build_router(store) -> APIRouter:
             store, "airlines", (q, limit, offset), store.fetch_airlines,
             {"airlines": [], "total": 0, "limit": limit, "offset": offset})
 
-    @router.get("/workbench/services")
+    @get("/workbench/services")
     async def services(airline: str = "", q: str = "", limit: int = 100, offset: int = 0) -> JSONResponse:
         limit = wb.clamp(limit, 500)
         offset = max(0, offset)
@@ -50,7 +54,7 @@ def build_router(store) -> APIRouter:
             store, "services", (airline, q, limit, offset), store.fetch_services,
             {"services": [], "total": 0, "limit": limit, "offset": offset})
 
-    @router.get("/workbench/instances")
+    @get("/workbench/instances")
     async def instances(callsign: str = "", airline: str = "", hex: str = "", reg: str = "",
                         airport: str = "", od: str = "", type: str = "", military: int = 0,
                         day_from: str = "", day_to: str = "", sort: str = "day_desc",
@@ -65,7 +69,7 @@ def build_router(store) -> APIRouter:
                                  limit, offset), store.fetch_instances,
             {"instances": [], "od_breakdown": [], "total": 0, "limit": limit, "offset": offset})
 
-    @router.get("/workbench/summary")
+    @get("/workbench/summary")
     async def summary(day_from: str = "", day_to: str = "") -> JSONResponse:
         df = wb.parse_day(day_from)
         dt = wb.parse_day(day_to)
@@ -74,7 +78,7 @@ def build_router(store) -> APIRouter:
         return await _serve_cached(store, "summary", (df, dt), store.fetch_summary,
                                    wb.empty_summary() | {"complete": False})
 
-    @router.get("/workbench/trends")
+    @get("/workbench/trends")
     async def trends(dim: str = "route", day_from: str = "", day_to: str = "",
                      _grain: str = Query("", alias="grain"),
                      limit: int = 20, offset: int = 0) -> JSONResponse:
@@ -88,7 +92,7 @@ def build_router(store) -> APIRouter:
             store, "trends", (dim, df, dt, limit, offset), store.fetch_trends,
             wb.empty_trends(dim, limit, offset) | {"complete": False})
 
-    @router.get("/workbench/flags")
+    @get("/workbench/flags")
     async def flags(flag_class: str = Query("", alias="class"), day_from: str = "", day_to: str = "",
                     limit: int = 50, offset: int = 0) -> JSONResponse:
         limit = wb.clamp(limit, 500)
@@ -104,7 +108,7 @@ def build_router(store) -> APIRouter:
             {"available": True, "complete": False, "flags": [], "classes": {},
              "total": 0, "limit": limit, "offset": offset})
 
-    @router.get("/workbench/estimates")
+    @get("/workbench/estimates")
     async def estimates(day_from: str = "", day_to: str = "") -> JSONResponse:
         df = wb.parse_day(day_from)
         dt = wb.parse_day(day_to)
@@ -112,14 +116,14 @@ def build_router(store) -> APIRouter:
         return await _serve_cached(store, "estimates", (df, dt), store.fetch_estimates,
                                    wb.empty_estimates() | {"complete": False})
 
-    @router.get("/workbench/coverage")
+    @get("/workbench/coverage")
     async def coverage(day_from: str = "", day_to: str = "") -> JSONResponse:
         df = wb.parse_day(day_from)
         dt = wb.parse_day(day_to)
         return await _serve_cached(store, "coverage", (df, dt), store.fetch_coverage,
                                    wb.empty_coverage() | {"complete": False})
 
-    @router.get("/workbench/search")
+    @get("/workbench/search")
     async def search(q: str = "", limit: int = 20) -> JSONResponse:
         empty = {"airlines": [], "services": [], "airframes": [], "airports": []}
         if len((q or "").strip()) < 2:

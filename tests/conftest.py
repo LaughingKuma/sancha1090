@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
-from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -12,9 +10,8 @@ from airflow.models import DagBag
 
 from include import adsb_manifest as am
 from include import manifest
+from _livemap_loader import PUBLIC_ENV, REPO_ROOT, load_livemap_module
 
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
 DAGS_FOLDER = REPO_ROOT / "dags"
 
 # Schema-less sqlite mirror of public.adsb_ingestion_manifest (same convention as test_manifest).
@@ -86,14 +83,6 @@ def fake_ch(rows, expect_params=None):
     return _Client()
 
 
-def load_livemap_module(filename):
-    # Spec-load preserves the flat image layout; livemap is not installed as a package.
-    spec = importlib.util.spec_from_file_location(Path(filename).stem, REPO_ROOT / "livemap" / filename)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 @pytest.fixture(scope="session")
 def dagbag() -> DagBag:
     """Parse the project's DAGs once per test session."""
@@ -148,26 +137,8 @@ def _private_default_env():
 
 @pytest.fixture(scope="module")
 def livemap_public_mod():
-    # LADD serve-time suppression is a PUBLIC-instance obligation, and PUBLIC_MODE is read from env at import —
-    # so the public sidecar must be spec-loaded with the env set. os.environ, not monkeypatch: the latter is
-    # function-scoped and cannot back a module-scoped fixture. A nonexistent cache path keeps the boot seed
-    # deterministic (no stray container cache steering the tests).
-    env = {"LIVEMAP_PUBLIC_MODE": "1", "LIVEMAP_LADD_CACHE_PATH": "/nonexistent/ladd_cache.json"}
-    prev = {k: os.environ.get(k) for k in env}
-    os.environ.update(env)
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "livemap_app_public", REPO_ROOT / "livemap" / "app.py"
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    finally:
-        for key, value in prev.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-    return mod
+    # LADD serve-time suppression is a PUBLIC-instance obligation — the public sidecar is loaded with PUBLIC_ENV set
+    return load_livemap_module("app.py", name="livemap_app_public", env=PUBLIC_ENV)
 
 
 @pytest.fixture(scope="module")

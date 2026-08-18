@@ -17,3 +17,10 @@ docker-compose.local.yml
 
 # Real SWIM flight-data fixtures — local-only (LADD / public-showcase); not committed
 tests/fixtures/swim/
+
+# Frontend tooling — installed per checkout, never tracked
+node_modules/
+livemap/test-results/
+
+# Workbench build output (vite.workbench.config.js) — the image bakes it, dev rebuilds it
+livemap/static/features/workbench/

@@ -7,7 +7,7 @@ import {
   fetchFlags,
   fetchEstimates,
   fetchCoverage,
-} from "../../livemap/static/features/workbench/data.js";
+} from "../../livemap/src/features/workbench/data.js";
 
 function mockFetch(payload, ok = true) {
   globalThis.fetch = async () => ({ ok, json: async () => payload });

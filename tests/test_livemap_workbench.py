@@ -52,6 +52,7 @@ def test_public_does_not_serve_workbench_statics(livemap, livemap_public):
 
 @pytest.mark.parametrize("path", [
     "/features/workbench/index.js",
+    "/features/workbench/chunks/x-abc.js",
     "http://testserver//features/workbench/index.js",
     "/features/../features/workbench/index.js",
     "/x/../features/workbench/index.js",
@@ -74,7 +75,7 @@ def test_private_static_class_is_unrestricted(livemap):
 def test_features_contract(livemap):
     r = TestClient(livemap.app).get("/features")
     assert r.status_code == 200
-    assert r.json() == {"features": {"workbench": True}}
+    assert r.json() == {"features": {"workbench": True}, "contract": livemap.WB_CONTRACT}
     assert r.headers["cache-control"] == "no-store"
 
 
@@ -853,8 +854,11 @@ def test_workbench_files_exist_next_to_app():
     assert (livemap_dir / "workbench.py").exists()
     assert (livemap_dir / "routes_workbench.py").exists()
     assert (livemap_dir / "wb_store.py").exists()
-    # the store is image-baked too — a missing COPY would boot a workbench-less private sidecar
-    assert "COPY wb_store.py ./" in (livemap_dir / "Dockerfile").read_text()
+    # the store, models and contract are image-baked too — a missing COPY would boot a workbench-less
+    # private sidecar (or a /features that cannot answer the handshake)
+    copied = {tok for line in (livemap_dir / "Dockerfile").read_text().splitlines() if line.startswith("COPY ")
+              for tok in line.split()[1:-1]}
+    assert {"wb_store.py", "wb_models.py", "wb_contract.json"} <= copied
 
 
 # ---- live-CH query-form execution (both tier variants), same skip/connect semantics as ch_cur ----
