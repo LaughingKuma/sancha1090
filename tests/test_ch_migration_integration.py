@@ -5,7 +5,7 @@ import os
 import pytest
 
 # Executable coverage of the P8a migration MECHANICS against a live ClickHouse (skips when unreachable, so the
-# pure-unit suite still runs without CH; the CI `clickhouse-migration` job runs it for real against a bare CH).
+# pure-unit suite still runs without CH; CI's live-ClickHouse step sets CH_INTEGRATION_REQUIRED=1 so it cannot skip).
 # The static DDL parse lives in test_bronze_dedup; this exercises the actual INSERT…SELECT → OPTIMIZE FINAL
 # dedup, the atomic EXCHANGE + rollback, and that a name-bound MV keeps firing after the swap.
 
@@ -32,7 +32,9 @@ def ch():
             password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
         )
         c.command("CREATE DATABASE IF NOT EXISTS bronze")
-    except Exception as e:  # no CH in this environment -> not an integration run
+    except Exception as e:  # no CH in this environment -> not an integration run, unless the caller says it must be
+        if os.environ.get("CH_INTEGRATION_REQUIRED") == "1":
+            pytest.fail(f"ClickHouse required but not reachable: {e!r}")
         pytest.skip(f"ClickHouse not reachable: {e!r}")
     _drop_all(c)
     try:

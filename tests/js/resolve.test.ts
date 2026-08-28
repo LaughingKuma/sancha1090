@@ -1,6 +1,7 @@
-import { test } from "node:test";
+// @vitest-environment node
+import { test } from "vitest";
 import assert from "node:assert/strict";
-import { pickCandidate, csNorm } from "../../livemap/src/features/workbench/resolve.js";
+import { pickCandidate, csNorm } from "../../livemap/src/features/workbench/resolve";
 
 const row = (startTs, callsign) => ({ startTs, callsign });
 

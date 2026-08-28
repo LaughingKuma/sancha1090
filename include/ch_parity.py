@@ -351,6 +351,94 @@ def run_path_coverage_gate(*, ch_query=None) -> dict:
     return out
 
 
+# Memory-headroom alarm (#188): spill is the dynamic early warning, 0.8 backstops runs where no
+# spill fires first; 0.5 would false-alarm healthy nodes (see the 2026-08-25 note for derivations).
+_MEM_HEADROOM_RATIO = 0.8
+
+# One shared pattern: the canary MUST parse with the exact regex the main query filters by, or a
+# comment-format drift greens the main query while the canary stays fat.
+_MEM_HEADROOM_NODE_RE = r'"node_id": "((?:model|test)\\.sancha1090\\.[^"]+)"'
+
+# Per-row ratio because caps change mid-window; no query_kind filter so dbt test SELECTs are
+# covered too. Details: docs/notes/2026-08-25-memory-headroom-alarm.md.
+_MEM_HEADROOM_SQL = (
+    "SELECT node,"
+    " max(ratio) AS max_ratio,"
+    # one tuple argMax so peak/cap always come from the same row, even when ratios tie
+    " round(argMax(tuple(mem, cap), ratio).1/1e9, 2) AS peak_gb,"
+    " round(argMax(tuple(mem, cap), ratio).2/1e9, 2) AS cap_gb,"
+    " countIf(spill > 0) AS spilled_runs,"
+    " countIf(exception_code = 241) AS oom_kills"
+    " FROM ("
+    " SELECT"
+    f" extract(query, '{_MEM_HEADROOM_NODE_RE}') AS node,"
+    " memory_usage AS mem,"
+    " if(toUInt64OrZero(Settings['max_memory_usage']) = 0, 16000000000,"
+    " toUInt64OrZero(Settings['max_memory_usage'])) AS cap,"
+    " memory_usage / cap AS ratio,"
+    " ProfileEvents['ExternalAggregationWritePart'] + ProfileEvents['ExternalSortWritePart']"
+    " + ProfileEvents['ExternalJoinWritePart'] AS spill,"
+    " exception_code"
+    " FROM system.query_log"
+    # 26h not 24h: daily cadence + retry/late-start slack -- catchup=False never backfills a missed
+    # day, so zero-slack tiling loses one-shot spill events.
+    " WHERE event_time > now() - INTERVAL 26 HOUR"
+    " AND type IN ('QueryFinish', 'ExceptionWhileProcessing', 'ExceptionBeforeStart')"
+    " AND query LIKE '%\"node_id\": %sancha1090.%'"
+    " )"
+    " WHERE node != ''"
+    " GROUP BY node"
+    f" HAVING max_ratio >= {_MEM_HEADROOM_RATIO} OR spilled_runs > 0 OR oom_kills > 0"
+    " ORDER BY max_ratio DESC"
+)
+
+# Fail-closed canary (same filters as the main query): a green gate must be distinguishable from
+# one disarmed by comment-format drift. Live baseline ~43k tagged rows/24h.
+_MEM_HEADROOM_CANARY_SQL = (
+    "SELECT count() AS like_matches,"
+    f" countIf(extract(query, '{_MEM_HEADROOM_NODE_RE}') != '') AS parsed_nodes"
+    " FROM system.query_log"
+    " WHERE event_time > now() - INTERVAL 26 HOUR"
+    " AND type IN ('QueryFinish', 'ExceptionWhileProcessing', 'ExceptionBeforeStart')"
+    " AND query LIKE '%\"node_id\": %sancha1090.%'"
+)
+
+
+def run_memory_headroom_gate(*, ch_query=None) -> dict:
+    # Daily capacity-runway alarm: a node pinned near max_memory_usage, already spilling, or hitting
+    # an OOM kill is one input-growth tick from an unbounded failure -- this fires before that tick.
+    chq = ch_query or _ch_query
+    try:
+        canary = chq(_MEM_HEADROOM_CANARY_SQL)
+        like_matches, parsed_nodes = (int(canary[0][0]), int(canary[0][1])) if canary else (0, 0)
+    except Exception as e:  # fail closed, same stance as the source gate's broken-parts tripwire
+        raise RuntimeError(f"CH memory headroom gate FAILED: canary query errored: {e!r}") from e
+    if parsed_nodes == 0:
+        # Zero parsed nodes is indistinguishable from a real all-clear; like_matches vs
+        # parsed_nodes separates comment-FORMAT drift from nothing tagged running at all.
+        cause = (
+            f"comment format drifted: {like_matches} query_log rows match the LIKE prefilter but the "
+            "node_id extract parses none (alarm disarmed)"
+            if like_matches
+            else "no node-tagged dbt query ran in 26h (dbt down, or the node_id comment/tag is gone)")
+        raise RuntimeError(f"CH memory headroom gate FAILED: canary: {cause}")
+    try:
+        rows = chq(_MEM_HEADROOM_SQL)
+    except Exception as e:  # fail closed, same stance as the source gate's broken-parts tripwire
+        raise RuntimeError(f"CH memory headroom gate FAILED: query_log check errored: {e!r}") from e
+    if not rows:
+        log.info("parity[memory_headroom] all nodes below %.0f%% of max_memory_usage, no spills/OOM in 26h "
+                  "(%d tagged rows)", _MEM_HEADROOM_RATIO * 100, parsed_nodes)
+        return {"all_ok": True, "tagged_rows": parsed_nodes}
+    lines = [f"{node} peak={peak_gb}GB cap={cap_gb}GB ratio={ratio:.2f} spilled_runs={spilled} oom_kills={oom}"
+             for node, ratio, peak_gb, cap_gb, spilled, oom in rows]
+    for line in lines:
+        log.warning("parity[memory_headroom] %s", line)
+    raise RuntimeError(
+        f"CH memory headroom gate FAILED ({len(rows)} node(s) >= {_MEM_HEADROOM_RATIO:.0%} of "
+        f"max_memory_usage, spilling, or OOM-killed): {'; '.join(lines)}")
+
+
 if __name__ == "__main__":
     import json
 

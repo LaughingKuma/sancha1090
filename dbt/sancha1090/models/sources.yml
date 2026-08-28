@@ -91,6 +91,14 @@ sources:
             tests:
               - not_null
 
+  - name: silver_ch
+    description: "MV-owned silver objects created outside dbt by include/ch_incremental_mvs.py (P4 AggregatingMergeTree accumulators + their merge-aware serving views)."
+    database: silver_ch
+    schema: silver_ch
+    tables:
+      - name: swim_latest
+        description: "Merge-aware serving view over silver_ch.swim_latest_acc (#201): latest SWIM amendment per flight_key as argMaxMerge(latest_state) over (msg_timestamp, _dedup_fp); latest_tuple.1..7 is a positional contract owned by the spec in include/ch_incremental_mvs.py. No source tests: they query the relation directly, but the view is operator-created at deploy (init DAG) — a source test would break the deploy-order guard."
+
   - name: dim
     description: "Operator-loaded dimensions created by clickhouse-init (not dbt-managed): reference lists the marts read."
     database: dim

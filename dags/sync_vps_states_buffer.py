@@ -20,6 +20,8 @@ from include.dag_defaults import default_args
 )
 def sync_vps_states_buffer():
 
+    # Replayed snapshots load under their original snapshot_date; the trailing-window callsign backfill
+    # (int_adsb_callsign_from_opensky) never revisits those days — run its repair vars over the replayed range after.
     @task(outlets=[raw_states_landed])
     def sync_r2_to_garage() -> dict:
         import os

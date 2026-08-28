@@ -35,16 +35,18 @@ _DEFAULT_BATCH_FILES = 1000
 _ADSB_BATCH_FILES = 24
 
 
-def ch_client():
+def ch_client(*, send_receive_timeout: int | None = None):
     # Lazy import so this module is importable (and unit-testable) without clickhouse-connect.
     import clickhouse_connect
 
+    kwargs = {"send_receive_timeout": send_receive_timeout} if send_receive_timeout else {}
     return clickhouse_connect.get_client(
         host=os.environ.get("CLICKHOUSE_HOST", "clickhouse"),
         port=int(os.environ.get("CLICKHOUSE_PORT", "8123")),
         username=os.environ.get("CLICKHOUSE_USER", "default"),
         password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
         database=_CH_DB,
+        **kwargs,
     )
 
 
@@ -334,6 +336,9 @@ def run_backfill(reset: bool = True) -> dict:
     return {"adsb": adsb, "states": backfill_states(), "flights": backfill_flights()}
 
 
+_OPTIMIZE_TIMEOUT_S = 1800
+
+
 def optimize_states_final(table: str = "opensky_states") -> dict:
     # Force the ReplacingMergeTree dedup merge so a crash-replay surplus can't accumulate physically — CH merges
     # are async and a part "may stay unmerged indefinitely" (CH docs), and the exact content-fp gate reads
@@ -345,7 +350,9 @@ def optimize_states_final(table: str = "opensky_states") -> dict:
     #     OPTIMIZE does no dedup and would only churn parts.
     # RAISES on a real failure so the daily maintain_bronze_dedup DAG reds if dedup stalls.
     table = _safe_identifier(table)
-    client = ch_client()
+    # OPTIMIZE FINAL rewrites swim_flightdata's live-month partition (~13.5 GiB, ~330-370 s at max_threads=6 since
+    # fbe8c13) — past the driver's 300 s default, which reds the task while the merge completes server-side anyway.
+    client = ch_client(send_receive_timeout=_OPTIMIZE_TIMEOUT_S)
     try:
         rows = client.query(
             f"SELECT engine FROM system.tables WHERE database = '{_CH_DB}' AND name = '{table}'"

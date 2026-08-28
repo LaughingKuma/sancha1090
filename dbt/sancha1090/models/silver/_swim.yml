@@ -1,8 +1,14 @@
 version: 2
 
 models:
+  - name: int_swim_latest
+    description: "Latest SWIM amendment per flight_key (argMax over (msg_timestamp, _dedup_fp)) with bare FAA LIDs normalized to ICAO and the callsign→hex match window. Physical so int_swim_flight's four references read a ~4 M-row table instead of re-aggregating bronze.swim_flightdata per CTE reference (#187)."
+    columns:
+      - name: flight_key
+        description: "coalesce(gufi, flight_ref, acid|computer_id|filed-departure-date) — one row each by construction; unique is the iata_lookup fan-out tripwire"
+        tests: [not_null, unique]
   - name: int_swim_flight
-    description: "SWIM latest-amendment flight per flight_key, with density-scored callsign→icao24 (NULL when unresolved/ambiguous) and bare FAA LID origin/dest normalized to ICAO via dim_airports.iata. Diagnostic kinds + hex_score/hex_ambiguous carried for int_swim_diagnostics."
+    description: "SWIM latest-amendment flight per flight_key (from int_swim_latest), with density-scored callsign→icao24 (NULL when unresolved/ambiguous) and bare FAA LID origin/dest normalized to ICAO via dim_airports.iata. Diagnostic kinds + hex_score/hex_ambiguous carried for int_swim_diagnostics."
     columns:
       - name: flight_key
         description: "coalesce(gufi, flight_ref, acid|computer_id|filed-departure-date) — one row each"

@@ -1,0 +1,10 @@
+<clickhouse>
+    <profiles>
+        <default>
+            <!-- One query must not consume the server budget, and matching the CPU quota
+                 avoids oversubscribing 28 host threads inside a 6-CPU cgroup. -->
+            <max_memory_usage>16000000000</max_memory_usage>
+            <max_threads>6</max_threads>
+        </default>
+    </profiles>
+</clickhouse>

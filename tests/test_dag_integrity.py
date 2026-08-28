@@ -25,17 +25,20 @@ EXPECTED_DAGS = {
         "task_ids": {"list_remote_bundles", "select_new", "validate_and_record", "summarize_emit_asset"},
     },
     "transform_marts": {
-        # Asset-triggered: schedule is a list of Asset objects, not a cron string.
-        "schedule_is_asset_triggered": True,
+        "schedule": "2-59/10 * * * *",
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {"dbt_run_ch", "dbt_test_ch", "ensure_ch_mvs", "push_flight_routes"},
-        # dbt_run_ch builds; dbt_test_ch + ensure_ch_mvs are all_success leaves, so a run OR test failure
-        # propagates (upstream_failed) and reds the run — nothing masks a dbt failure. push_flight_routes is
-        # gated on dbt_test_ch (SP2 moved it here: route source is now the reconciled mart, built by this DAG).
+        # dbt_test_ch + push_flight_routes are all_success, so a run OR test failure propagates and reds the
+        # run; push_flight_routes is gated on dbt_test_ch (SP2: its route source is this DAG's mart).
         "downstream_task_ids": {
             "dbt_run_ch": {"dbt_test_ch", "ensure_ch_mvs"},
             "dbt_test_ch": {"push_flight_routes"},
+        },
+        # ensure_ch_mvs heals the MV objects even when dbt_run_ch reds (a missing object is often the cause);
+        # it never raises, and dbt_run_ch's own failure is what reds the run, so all_done masks nothing.
+        "trigger_rules": {
+            "ensure_ch_mvs": "all_done",
         },
     },
     "transform_adsb_silver": {
@@ -140,7 +143,12 @@ EXPECTED_DAGS = {
         "schedule": "30 18 * * *",
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"optimize"},
+        # optimize and memory_headroom are independent (#188): an OPTIMIZE red must never hide the alarm.
+        "task_ids": {"optimize", "memory_headroom"},
+        "downstream_task_ids": {
+            "optimize": set(),
+            "memory_headroom": set(),
+        },
         # Bounded-growth guarantee must run on a clean deploy without a manual unpause.
         "is_paused_upon_creation": False,
     },

@@ -150,8 +150,26 @@ GROUP BY airline_name, airline_country, h
 """.strip()
 
 
+# SWIM latest-amendment identity — the SINGLE source of this expression (dbt's int_swim_latest reads the
+# -Merge serving view instead of re-deriving it; tests/test_swim_latest_sql.py pins that there's no copy).
+_SWIM_FLIGHT_KEY = "coalesce(gufi, flight_ref, concat(assumeNotNull(acid), '|', ifNull(computer_id,''), '|', toString(toDate(filed_departure_time))))"
+# argMax over (msg_timestamp, _dedup_fp) is idempotent under duplicate re-insertion, so the MV needs no dedup
+# (same safety class as the uniqExact accs); the 7-column value tuple order IS a contract — dbt reads .1..7.
+_SWIM_LATEST_SELECT = f"""
+SELECT
+    {_SWIM_FLIGHT_KEY} AS flight_key,
+    argMaxState(tuple(dep_point, dep_point_kind, arr_point, arr_point_kind,
+                      filed_departure_time, filed_arrival_time, acid),
+                tuple(msg_timestamp, _dedup_fp)) AS latest_state
+FROM bronze.swim_flightdata
+WHERE acid IS NOT NULL AND trimBoth(acid) <> ''
+GROUP BY flight_key
+""".strip()
+
+
 def _spec():
     # Each spec: target DDL + MV DDL + one-time seed INSERTs + the merge-aware read (parity / P5 view).
+    # Optional keys: "db" (default gold_ch) and "view" (serving-view base name, default drop_old[0]).
     obs_tuple = "AggregateFunction(uniqExact, Tuple(Nullable(String), Nullable(DateTime64(6, 'UTC'))))"
     uniq_str = "AggregateFunction(uniqExact, Nullable(String))"
     # ADS-B obs grain is now (group, hour) (v6.3 re-grain) so uniqExact is affordable AND exact: each
@@ -380,16 +398,71 @@ ORDER BY distinct_aircraft DESC
 """.strip(),
     }
 
+    # 5) SWIM latest amendment (#201) — supersedes a dbt full-scan, not a dbt table, so it has nothing to drop
+    # and names its view directly; flight_key stays Nullable or '' would defeat _swim.yml's not_null tripwire.
+    swim_state = ("AggregateFunction(argMax, Tuple(Nullable(String), Nullable(String), Nullable(String), "
+                  "Nullable(String), Nullable(DateTime64(6, 'UTC')), Nullable(DateTime64(6, 'UTC')), "
+                  "Nullable(String)), Tuple(Nullable(DateTime64(6, 'UTC')), UInt64))")
+    specs["swim_latest_acc"] = {
+        "db": "silver_ch",
+        "view": "swim_latest",
+        "target": f"""
+CREATE TABLE IF NOT EXISTS silver_ch.swim_latest_acc
+(
+    flight_key   Nullable(String),
+    latest_state {swim_state}
+)
+ENGINE = AggregatingMergeTree
+ORDER BY flight_key
+SETTINGS allow_nullable_key = 1, fsync_after_insert = 1, fsync_part_directory = 1
+""".strip(),
+        "mv": f"""
+CREATE MATERIALIZED VIEW IF NOT EXISTS silver_ch.swim_latest_acc_mv
+TO silver_ch.swim_latest_acc AS
+{_SWIM_LATEST_SELECT}
+""".strip(),
+        # Caps mirror the dbt model's (#200): ensure() can run this seed unsupervised on a fresh bootstrap, so
+        # the 80M-row aggregation must fail at a bound rather than eat the server budget or hang the tick.
+        "seed": [f"""
+INSERT INTO silver_ch.swim_latest_acc
+{_SWIM_LATEST_SELECT} SETTINGS max_memory_usage = 12000000000, max_execution_time = 900
+""".strip()],
+        "read": """
+SELECT
+    flight_key,
+    argMaxMerge(latest_state) AS latest_tuple
+FROM silver_ch.swim_latest_acc
+GROUP BY flight_key
+""".strip(),
+    }
+
     return specs
 
 
 SPECS = _spec()
 
-# P5 Superset cutover: expose each _acc's merge-aware read as a named gold_ch view, keyed by the original
-# mart name (drop_old[0]). P4 deferred this ("expose reads only through named views in P5"): consumers
-# (Superset datasets, SQL Lab) then read a plain table name and never touch the opaque *_state columns. The
-# body IS the read contract, so a consumer reading through the view gets the merge-aware aggregate.
-SERVING_VIEWS = {spec["drop_old"][0]: spec["read"] for spec in SPECS.values() if spec.get("drop_old")}
+def _db(spec: dict) -> str:
+    return spec.get("db", "gold_ch")
+
+
+def _serving_views(specs: dict) -> dict:
+    # spec name -> (db, view base name, read SQL). Legacy specs carry neither key, so they keep mapping to
+    # ("gold_ch", drop_old[0], read) — the Superset-facing names must not move when a new db-scoped spec lands.
+    out = {}
+    for name, spec in specs.items():
+        base = spec.get("view") or (spec["drop_old"][0] if spec.get("drop_old") else None)
+        if not base:
+            # Fail loud at import (any test run catches it) — a nameless spec would silently serve nothing,
+            # leaving consumers to read the opaque _acc state directly and count low.
+            raise ValueError(f"ch_incremental_mvs: spec {name!r} has no serving-view name — "
+                             "give it a 'view' key or a non-empty 'drop_old'")
+        out[name] = (_db(spec), base, spec["read"])
+    return out
+
+
+# P5 Superset cutover: the view body IS the merge-aware read contract, so consumers (Superset, SQL Lab, dbt
+# sources) read a plain table name and never touch the opaque *_state columns (which would count low).
+SERVING_VIEWS = _serving_views(SPECS)
 
 
 # Explicit per-target seed-completion ledger: a target's name appears here ONLY after all of its seed
@@ -400,19 +473,56 @@ SERVING_VIEWS = {spec["drop_old"][0]: spec["read"] for spec in SPECS.values() if
 _MARKER = "gold_ch.ch_mv_seeded"
 
 
-def _seed_once(client, name: str, spec: dict, *, force: bool) -> tuple[int, bool]:
-    # Marker-gated one-time seed from existing bronze: an MV sees only future INSERTs, so the rows already in
-    # bronze when it is created must be seeded explicitly. Retry-safe ordering — invalidate the marker BEFORE
-    # truncating and re-mark only AFTER every seed succeeds, so a partial seed leaves the marker absent and the
-    # next run re-seeds. force=True re-seeds an already-marked target. Returns (rows_seeded, did_seed).
-    done = client.query(f"SELECT count() FROM {_MARKER} WHERE name = '{name}'").result_rows[0][0]
-    if done and not force:
-        return 0, False
+def validate_names(raw, known) -> list[str]:
+    # Scoping input must fail loudly, never degrade to "apply everything": an unscoped apply() DROP/CREATEs
+    # every MV while the live insert lanes keep writing, and rows landing in that gap are lost forever.
+    hint = f"; known: {sorted(known)}"
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"ch_incremental_mvs: 'names' must be a non-empty list of spec names, got {raw!r}{hint}")
+    if not all(isinstance(n, str) for n in raw):
+        raise ValueError(f"ch_incremental_mvs: 'names' must contain only spec-name strings, got {raw!r}{hint}")
+    if len(set(raw)) != len(raw):
+        raise ValueError(f"ch_incremental_mvs: 'names' has duplicates: {raw!r}{hint}")
+    unknown = [n for n in raw if n not in known]
+    if unknown:
+        raise ValueError(f"ch_incremental_mvs: unknown spec name(s) {unknown!r}{hint}")
+    return list(raw)
+
+
+def _marker_present(client, name: str) -> bool:
+    # The marker stays in gold_ch and is keyed by spec name alone (unambiguous across dbs).
+    return bool(client.query(f"SELECT count() FROM {_MARKER} WHERE name = '{name}'").result_rows[0][0])
+
+
+def _table_exists(client, db: str, name: str) -> bool:
+    # Must be asked BEFORE the target's CREATE TABLE: it is the only marker-coherence signal a live MV can't
+    # race — a row count can't, since one insert between CREATE and count() makes a stale marker look coherent.
+    return bool(client.query(
+        f"SELECT count() FROM system.tables WHERE database = '{db}' AND name = '{name}'"
+    ).result_rows[0][0])
+
+
+def _seed_once(client, name: str, spec: dict, *, force: bool, pre_existed: bool) -> tuple[int, bool]:
+    # Marker-gated one-time seed from existing bronze (an MV sees only future INSERTs); retry-safe — marker out
+    # first, re-marked only after every seed lands. force=True re-seeds a marked target. (rows_seeded, did_seed).
+    db = _db(spec)
+    if _marker_present(client, name) and not force:
+        if pre_existed:
+            return 0, False
+        # Marker certifying a target that did not exist a moment ago (the documented rollback mistake: objects
+        # dropped, marker left) — honoring it would serve an empty acc and skip its whole history forever.
+        log.warning("ch_incremental_mvs %s: seed marker present but %s.%s was just created — marker is stale, "
+                    "re-seeding", name, db, name)
     client.command(f"DELETE FROM {_MARKER} WHERE name = '{name}'")
-    client.command(f"TRUNCATE TABLE gold_ch.{name}")
-    for sql in spec["seed"]:
+    # Fail closed on the object itself: a seed that dies after the TRUNCATE must leave NO serving view, so
+    # downstream errors loudly instead of reading a truncated acc as legitimately empty. Callers re-create it.
+    view_base = spec.get("view") or (spec["drop_old"][0] if spec.get("drop_old") else None)
+    if view_base:
+        client.command(f"DROP VIEW IF EXISTS {db}.{view_base}")
+    client.command(f"TRUNCATE TABLE {db}.{name}")
+    for sql in spec.get("seed", ()):
         client.command(sql)
-    seeded = client.query(f"SELECT count() FROM gold_ch.{name}").result_rows[0][0]
+    seeded = client.query(f"SELECT count() FROM {db}.{name}").result_rows[0][0]
     client.command(f"INSERT INTO {_MARKER} (name) VALUES ('{name}')")
     return int(seeded), True
 
@@ -425,48 +535,51 @@ def apply(*, reseed: bool = False, names=None) -> dict:
     # leaving the OpenSky MVs untouched so there's no MV-recreate miss-window for the live states lane).
     from include.clickhouse import ch_client
 
-    specs = SPECS if names is None else {n: SPECS[n] for n in names}
+    specs = SPECS if names is None else {n: SPECS[n] for n in validate_names(names, set(SPECS))}
     out: dict = {}
     client = ch_client()
     try:
+        # gold_ch first (it holds the marker), then each selected spec's own db — a fresh bootstrap has neither.
+        client.command("CREATE DATABASE IF NOT EXISTS gold_ch")
         client.command(f"CREATE TABLE IF NOT EXISTS {_MARKER} (name String) ENGINE = MergeTree ORDER BY name")
         for name, spec in specs.items():
+            db = _db(spec)
+            client.command(f"CREATE DATABASE IF NOT EXISTS {db}")
             for old in spec.get("drop_old", ()):
                 # drop_old removes the superseded dbt TABLE once; after P5 the base name is a serving VIEW
                 # (recreated below), so skip it when it's already a view — CREATE OR REPLACE VIEW then swaps
                 # atomically with no missing-view window for a live Superset reader during an init re-run.
                 is_view = client.query(
                     f"SELECT engine LIKE '%View%' FROM system.tables "
-                    f"WHERE database = 'gold_ch' AND name = '{old}'"
+                    f"WHERE database = '{db}' AND name = '{old}'"
                 ).result_rows
                 if is_view and is_view[0][0]:
                     continue
-                client.command(f"DROP TABLE IF EXISTS gold_ch.{old}")
+                client.command(f"DROP TABLE IF EXISTS {db}.{old}")
+            pre_existed = _table_exists(client, db, name)
             client.command(spec["target"])
-            client.command(f"DROP VIEW IF EXISTS gold_ch.{name}_mv")
+            client.command(f"DROP VIEW IF EXISTS {db}.{name}_mv")
             client.command(spec["mv"])
-            seeded, did_seed = _seed_once(client, name, spec, force=reseed)
+            seeded, did_seed = _seed_once(client, name, spec, force=reseed, pre_existed=pre_existed)
             out[name] = {"seeded_rows": seeded, "skipped_seed": not did_seed}
             log.info("ch_incremental_mvs %s: seeded_rows=%s skipped_seed=%s", name, seeded, not did_seed)
         # P5 serving views: each _acc's drop_old has already removed the old dbt table above, so CREATE OR
-        # REPLACE VIEW gets a clean name. The view body is the merge-aware read contract (no opaque state).
-        # Recreate only the processed specs' serving views so a scoped (names=) run can't touch other views.
-        views = {spec["drop_old"][0]: spec["read"] for spec in specs.values() if spec.get("drop_old")}
-        for base, read_sql in views.items():
-            client.command(f"CREATE OR REPLACE VIEW gold_ch.{base} AS {read_sql}")
-            log.info("ch_incremental_mvs serving view gold_ch.%s (re)created", base)
-        out["serving_views"] = sorted(views)
+        # REPLACE VIEW gets a clean name; scoped to the processed specs so a names= run can't touch other views.
+        # Load-bearing ordering: a _seed_once exception propagates out of the loop above and skips this block
+        # entirely, so apply() also fails closed — it never publishes a view over a half-seeded acc.
+        views = _serving_views(specs)
+        for db, base, read_sql in views.values():
+            client.command(f"CREATE OR REPLACE VIEW {db}.{base} AS {read_sql}")
+            log.info("ch_incremental_mvs serving view %s.%s (re)created", db, base)
+        out["serving_views"] = sorted(f"{db}.{base}" for db, base, _ in views.values())
     finally:
         client.close()
     return out
 
 
 def ensure() -> dict:
-    # Self-heal/bootstrap so a fresh deploy needs no manual init before Superset reads CH: idempotently create
-    # the _acc targets + MVs (IF NOT EXISTS), one-time-seed each from existing bronze (marker-gated, so the rows
-    # ingested before the MV existed aren't lost and an already-seeded target is left untouched), then (re)create
-    # the serving views. The MV is NOT dropped/recreated here (apply()/the init DAG own body redeploys), so there
-    # is no per-tick MV-recreate miss-window. Best-effort: never raises, so it can be a non-blocking transform step.
+    # Self-heal/bootstrap so a fresh deploy needs no manual init: create the _acc targets + MVs, marker-gated seed
+    # from bronze, publish each certified spec's view. Never raises — it runs all_done, so a red tick still heals.
     from include.clickhouse import ch_client
 
     out: dict = {}
@@ -476,21 +589,41 @@ def ensure() -> dict:
         log.exception("ch_incremental_mvs.ensure: client connect failed (non-fatal)")
         return {"ok": False}
     try:
+        # gold_ch first (it holds the marker), then each spec's own db below — ensure() owns the fresh-bootstrap
+        # promise, and a blank warehouse has neither database.
+        client.command("CREATE DATABASE IF NOT EXISTS gold_ch")
         client.command(f"CREATE TABLE IF NOT EXISTS {_MARKER} (name String) ENGINE = MergeTree ORDER BY name")
+        certified: set[str] = set()
         for name, spec in SPECS.items():
             try:
+                db = _db(spec)
+                client.command(f"CREATE DATABASE IF NOT EXISTS {db}")
+                pre_existed = _table_exists(client, db, name)
                 client.command(spec["target"])   # CREATE TABLE IF NOT EXISTS
-                client.command(spec["mv"])        # CREATE MATERIALIZED VIEW IF NOT EXISTS
-                seeded, did_seed = _seed_once(client, name, spec, force=False)
+                # IF NOT EXISTS, never DROP+CREATE: apply()/the init DAG own body redeploys, so no per-tick
+                # MV-recreate miss-window on the live insert lanes.
+                client.command(spec["mv"])
+                seeded, did_seed = _seed_once(client, name, spec, force=False, pre_existed=pre_existed)
                 out[name] = {"seeded_rows": seeded, "skipped_seed": not did_seed}
+                if _marker_present(client, name):
+                    certified.add(name)
+                else:
+                    log.error("ch_incremental_mvs.ensure %s: seed marker absent after a clean block — "
+                              "withholding its serving view", name)
             except Exception:
                 log.exception("ch_incremental_mvs.ensure %s failed (non-fatal)", name)
                 out[name] = {"error": True}
-        for base, read_sql in SERVING_VIEWS.items():
+        # Fail closed: only an acc this run certified as fully seeded gets its view (re)published — a view over
+        # an empty/partial acc reads as legitimately-empty and lets dbt build vacuously-green marts off it.
+        for name, (db, base, read_sql) in SERVING_VIEWS.items():
+            if name not in certified:
+                log.warning("ch_incremental_mvs.ensure: %s not certified this run — leaving %s.%s as is",
+                            name, db, base)
+                continue
             try:
-                client.command(f"CREATE OR REPLACE VIEW gold_ch.{base} AS {read_sql}")
+                client.command(f"CREATE OR REPLACE VIEW {db}.{base} AS {read_sql}")
             except Exception:
-                log.exception("ch_incremental_mvs.ensure view gold_ch.%s failed (non-fatal)", base)
+                log.exception("ch_incremental_mvs.ensure view %s.%s failed (non-fatal)", db, base)
     except Exception:
         # The per-spec/per-view blocks are guarded; this catches the rest (marker DDL, a missing gold_ch, a
         # permission/post-connect error) so the best-effort task never raises regardless of where it fails.
@@ -513,4 +646,16 @@ if __name__ == "__main__":
     if "--ensure" in sys.argv:
         print(json.dumps(ensure(), default=str, indent=2))
     else:
-        print(json.dumps(apply(reseed="--reseed" in sys.argv), default=str, indent=2))
+        # Same contract as the init DAG: apply/--reseed must name its scope. An accidental unscoped run
+        # DROP/CREATEs every MV under the live insert lanes and rows in that gap are lost forever.
+        arg = next((a for a in sys.argv[1:] if a.startswith("--names=")), None)
+        if arg and "--all" in sys.argv:
+            raise SystemExit("pass either --all or --names=<csv>, not both")
+        if arg:
+            cli_names = validate_names([n.strip() for n in arg.split("=", 1)[1].split(",") if n.strip()],
+                                       set(SPECS))
+        elif "--all" in sys.argv:
+            cli_names = None
+        else:
+            raise SystemExit(f"apply requires --all or --names=<csv>; known: {sorted(SPECS)}")
+        print(json.dumps(apply(reseed="--reseed" in sys.argv, names=cli_names), default=str, indent=2))

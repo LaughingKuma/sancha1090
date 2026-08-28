@@ -8,12 +8,22 @@
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
+    "happy-dom": "20.11.2",
+    "oxlint": "1.78.0",
     "typescript": "7.0.2",
-    "vite": "8.2.1"
+    "vite": "8.2.1",
+    "vitest": "4.1.10"
   },
   "scripts": {
     "build": "vite build -c vite.workbench.config.js",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.facade.json",
+    "test:unit": "vitest run",
+    "lint": "oxlint --config .oxlintrc.json --format=default src",
+    "size": "npm run build -- --mode size",
     "watch": "npm run build -- --watch --mode development"
+  },
+  "dependencies": {
+    "@preact/signals": "2.11.0",
+    "preact": "10.29.8"
   }
 }

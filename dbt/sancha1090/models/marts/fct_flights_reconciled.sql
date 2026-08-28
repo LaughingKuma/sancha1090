@@ -1,9 +1,11 @@
-{{ config(materialized='table', tags=['reconcile']) }}
+{{ config(
+    materialized='table',
+    tags=['reconcile'],
+    query_settings={'max_memory_usage': 12000000000},
+) }}
 
--- Deploy-order guard: dim.dim_ladd is created by clickhouse-init at the operator's deploy, but transform_marts
--- rebuilds this model from committed code every ~4 min — so gate the LADD join on the table actually existing.
--- schema/identifier are pinned to the dim_ladd entry in sources.yml (the ladd_src CTE's source() owns the ref
--- edge); get_relation is execute-only so parse never touches the warehouse (ladd_rel defaults to none there).
+-- Deploy-order guard: dim.dim_ladd arrives via clickhouse-init but this model rebuilds on the 10-min cron, so
+-- gate the LADD join on the table existing (sources.yml dim_ladd owns the ref edge; get_relation is execute-only).
 {%- set ladd_rel = optional_relation('dim', 'dim_ladd') %}
 
 -- Cross-source consensus flight mart: per flight, plurality per endpoint, authority + scheduled-service
@@ -102,14 +104,24 @@ gate as (
     from {{ ref('int_flight_attach') }} group by flight_id
 ),
 box_observed as (
-    -- the Japan box actually saw this flight (an in-box bronze fix in-window); reads bronze directly —
-    -- cheap at this grain and independent of staging. Box is the japan_box_* vars (same as stg_states).
-    -- EXISTS-semantics: dups fine.
+    -- The Japan box saw this flight (in-box bronze fix in-window; japan_box_* vars, EXISTS-semantics so dups fine).
+    -- Day-keyed like int_flight_attached_votes: icao24 alone paired every spine row with every same-hex fix ever (#191).
     select distinct sp.flight_id as flight_id
-    from {{ ref('int_flight_spine') }} sp
-    join {{ source('bronze', 'opensky_states') }} s on s.icao24 = sp.icao24
+    from (
+        select flight_id, icao24, flight_start, flight_end,
+               arrayJoin(range(
+                   toUInt32(least(toRelativeDayNum(flight_start), toRelativeDayNum(flight_end))),
+                   toUInt32(greatest(toRelativeDayNum(flight_start), toRelativeDayNum(flight_end))) + 1
+               )) as overlap_day
+        from {{ ref('int_flight_spine') }}
+        where flight_start is not null and flight_end is not null
+    ) sp
+    join (
+        select icao24, snapshot_time, toUInt32(toRelativeDayNum(snapshot_time)) as overlap_day
+        from {{ source('bronze', 'opensky_states') }} s
+        where {{ in_japan_box('s.latitude', 's.longitude') }}
+    ) s on s.icao24 = sp.icao24 and s.overlap_day = sp.overlap_day
     where s.snapshot_time between sp.flight_start and sp.flight_end
-      and {{ in_japan_box('s.latitude', 's.longitude') }}
 ),
 curated as (
     -- Windowless human override; latest valid_from wins if windows overlap.

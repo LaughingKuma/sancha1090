@@ -390,6 +390,11 @@ services:
 
   clickhouse:
     image: clickhouse/clickhouse-server:26.5.1   # spike-validated tag (s3() Garage path-style first try)
+    # Keep analytical work from starving the desktop or forcing host swap; ClickHouse's
+    # lower native ceiling returns MEMORY_LIMIT_EXCEEDED before this cgroup boundary.
+    cpus: 6.0
+    mem_limit: 28g
+    memswap_limit: 28g
     environment:
       # Reuse the existing Garage S3 creds — no new secret. The named collection reads the two
       # key vars via from_env (clickhouse/config.d/named_collection_garage.xml) so they never

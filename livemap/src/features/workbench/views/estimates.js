@@ -1,5 +1,5 @@
 import { esc, panel, rangeParams } from "../shell.js";
-import { fetchEstimates } from "../data.js";
+import { fetchEstimates } from "../data";
 import { line, SERIES_HUES } from "../chart.js";
 
 const MIX_DIMS = [

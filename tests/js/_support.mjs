@@ -17,20 +17,25 @@ export function stubFetch() {
   return calls;
 }
 
-// a recording map facade whose showFlightPath answers only when a test resolves it
+// a recording map facade whose showFlightPath answers only when a test resolves (or rejects) it
 export function spyFacade() {
   const calls = [];
   const answers = [];
+  const rejects = [];
   return {
     calls,
     answers,
+    rejects,
     clearPath: () => calls.push("clearPath"),
     dimLive: (x) => calls.push(`dimLive:${x}`),
     guardMapClicks: (on) => calls.push(`guard:${on}`),
     clearSelection: () => calls.push("clearSelection"),
     showFlightPath: (fid, opts = {}) => {
       calls.push(`show:${fid}:${opts.fit}`);
-      return new Promise((resolve) => answers.push(resolve));
+      return new Promise((resolve, reject) => {
+        answers.push(resolve);
+        rejects.push(reject);
+      });
     },
   };
 }

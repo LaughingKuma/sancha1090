@@ -4,7 +4,8 @@ USER node
 WORKDIR /home/node/app
 COPY --chown=node:node package.json package-lock.json .npmrc ./
 RUN npm ci --ignore-scripts
-COPY --chown=node:node vite.workbench.config.js wb_contract.json ./
+# tsconfig.json rides along: Vite's JSX transform reads jsx/jsxImportSource from it
+COPY --chown=node:node vite.workbench.config.js tsconfig.json wb_contract.json ./
 COPY --chown=node:node src ./src
 # baked into build.json so /healthz can name the commit the bundle came from
 ARG GIT_SHA=unknown

@@ -123,30 +123,31 @@ erDiagram
 
 ## Refresh model
 
-Two Airflow DAGs, each asset-triggered on its feed's bronze table, partition the states-core
-dbt graph by tag. `dim_*` seeds and rooftop models carry `tag:adsb`; the states core is
-otherwise untagged. (The flights and adsb.lol history lanes, not documented here, carry
-`tag:flights` / `tag:adsblol`.)
+Two Airflow DAGs partition the states-core dbt graph by tag: `transform_marts` runs on a
+10-minute cron reading all its bronze inputs, and `transform_adsb_silver` remains
+asset-triggered on its feed's bronze table. `dim_*` seeds and rooftop models carry `tag:adsb`;
+the states core is otherwise untagged. (The flights and adsb.lol history lanes, not documented
+here, carry `tag:flights` / `tag:adsblol`.)
 
-| Object | Built by | Trigger asset | dbt selection |
+| Object | Built by | Trigger / cadence | dbt selection |
 |--------|----------|---------------|---------------|
 | `bronze.opensky_states` | `ingest_states` → `tableize_states` | — (produces `bronze_states_table`) | — |
 | `bronze.adsb_states` | edge push → `ingest_adsb` → `tableize_adsb` | — (produces `adsb_bronze_table`) | — |
-| `silver.stg_states` | `transform_marts` | `bronze_states_table` (OpenSky context) | `--exclude tag:adsb tag:flights` |
-| `silver.fact_state_snapshots` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
-| `gold.anomalies` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
-| `gold.agg_country_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
-| `gold.agg_hourly_traffic` | `ensure_ch_mvs` (in `transform_marts`) | continuous MV + `bronze_states_table` re-ensure | — (self-maintaining `*_acc` MV, `include/ch_incremental_mvs.py`) |
-| `gold.agg_airline_traffic` | `ensure_ch_mvs` (in `transform_marts`) | continuous MV + `bronze_states_table` re-ensure | — (self-maintaining `*_acc` MV, `include/ch_incremental_mvs.py`) |
-| `gold.fct_flight_legs` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
-| `gold.agg_route_traffic` | `transform_marts` | `bronze_states_table` | `--exclude tag:adsb tag:flights` |
+| `silver.stg_states` | `transform_marts` | 10-min cron (was `bronze_states_table`, OpenSky context) | `--exclude tag:adsb tag:flights` |
+| `silver.fact_state_snapshots` | `transform_marts` | 10-min cron (was `bronze_states_table`) | `--exclude tag:adsb tag:flights` |
+| `gold.anomalies` | `transform_marts` | 10-min cron (was `bronze_states_table`) | `--exclude tag:adsb tag:flights` |
+| `gold.agg_country_traffic` | `transform_marts` | 10-min cron (was `bronze_states_table`) | `--exclude tag:adsb tag:flights` |
+| `gold.agg_hourly_traffic` | `ensure_ch_mvs` (in `transform_marts`) | continuous MV + 10-min cron re-ensure (was `bronze_states_table`) | — (self-maintaining `*_acc` MV, `include/ch_incremental_mvs.py`) |
+| `gold.agg_airline_traffic` | `ensure_ch_mvs` (in `transform_marts`) | continuous MV + 10-min cron re-ensure (was `bronze_states_table`) | — (self-maintaining `*_acc` MV, `include/ch_incremental_mvs.py`) |
+| `gold.fct_flight_legs` | `transform_marts` | 10-min cron (was `bronze_states_table`) | `--exclude tag:adsb tag:flights` |
+| `gold.agg_route_traffic` | `transform_marts` | 10-min cron (was `bronze_states_table`) | `--exclude tag:adsb tag:flights` |
 | `silver.dim_aircraft` | `transform_adsb_silver` | `adsb_bronze_table` (rooftop) | `--select tag:adsb` |
 | `silver.fct_adsb_state` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
 | `silver.int_adsb_callsign_from_opensky` | `transform_adsb_silver` | `adsb_bronze_table` | `--select tag:adsb` |
 | `silver.dim_airlines` / `dim_hex_country` / `dim_route_overrides` (seeds) | `clickhouse-marts-init` / `scripts/ch_setup_marts.sh` (`dbt seed`) | deploy/bootstrap | `--select tag:adsb dim_route_overrides --exclude dim_airports` |
 | `silver.dim_airports` (seed) | `clickhouse-marts-init` / `scripts/ch_setup_marts.sh` (`dbt seed`) | deploy/bootstrap | `--full-refresh --select dim_airports` |
-| `gold.agg_country_traffic_adsb` | `ensure_ch_mvs` (in `transform_marts`) | continuous MV + `bronze_states_table` re-ensure | — (self-maintaining `*_acc` MV, `include/ch_incremental_mvs.py`) |
-| `gold.agg_airline_traffic_adsb` | `ensure_ch_mvs` (in `transform_marts`) | continuous MV + `bronze_states_table` re-ensure | — (self-maintaining `*_acc` MV, `include/ch_incremental_mvs.py`) |
+| `gold.agg_country_traffic_adsb` | `ensure_ch_mvs` (in `transform_marts`) | continuous MV + 10-min cron re-ensure (was `bronze_states_table`) | — (self-maintaining `*_acc` MV, `include/ch_incremental_mvs.py`) |
+| `gold.agg_airline_traffic_adsb` | `ensure_ch_mvs` (in `transform_marts`) | continuous MV + 10-min cron re-ensure (was `bronze_states_table`) | — (self-maintaining `*_acc` MV, `include/ch_incremental_mvs.py`) |
 
 `dim_airports` is split because it is the schema-changed 9-column seed; the other seeds are
 schema-stable and take a plain `dbt seed`.
@@ -154,7 +155,7 @@ schema-stable and take a plain `dbt seed`.
 The four `agg_*` rows above are **not dbt models** — they are served by the self-maintaining
 ClickHouse `*_acc` `AggregatingMergeTree` MVs in `include/ch_incremental_mvs.py`, which fire
 continuously on each bronze insert; the `ensure_ch_mvs` task in `transform_marts` only idempotently
-(re)creates the MV + serving view on the `bronze_states_table` tick.
+(re)creates the MV + serving view on its 10-min cron tick.
 
 > **Bootstrap note.** `fct_flight_legs` is untagged (so it refreshes on the OpenSky context feed) but
 > reads `tag:adsb` relations (the dim seeds, `dim_aircraft`, `fct_adsb_state`). On a fresh
@@ -396,12 +397,29 @@ shared across both feeds.
   fail CRC more at the range edge), so ~4% of frames land blank; this recovers ~92% of them
   (hex-minute grain). It does **not** invent callsigns — only fills from the same airframe at the
   same instant in the context feed.
+- **Build:** incremental by UTC day (`day_key` = `capture_date`, `insert_overwrite`). Each run
+  replaces only the trailing `callsign_backfill_rebuild_days` (3) daily partitions off the rooftop
+  watermark, reading OpenSky `callsign_backfill_window_s` past both ends of the window so a frame
+  just after midnight still sees the previous day's snapshots. A day is settled once its neighbour
+  has landed. Older days are rebuilt by hand with
+  `--vars '{callsign_backfill_rebuild_days: N, callsign_backfill_rebuild_to: "YYYY-MM-DD"}'`
+  (~1.4 GB per 60 days under the standing 2 GB `max_memory_usage`); a malformed date or `N < 1`
+  fails at compile. Both sources can land rows for days older than the window (VPS/R2 OpenSky
+  replays via `sync_vps_states_buffer`, ADS-B backlog or `pre_cutover` loads); those days keep
+  whatever backfill they had until the repair vars are run over the replayed range — the same
+  operator obligation as reseeding an `_acc` MV after a bronze mutation.
+  `--full-refresh` always recomputes all history (12 GB cap; schema changes only)
+  and is refused together with the repair vars — to rebuild history in slices, drop the table first,
+  then run slice by slice. A nominated day that now yields zero rows keeps its old partition (there
+  is nothing to REPLACE it with); remove it by hand with
+  `ALTER TABLE silver_ch.int_adsb_callsign_from_opensky DROP PARTITION 'YYYY-MM-DD'`.
 
 | Column | Type | Meaning |
 |--------|------|---------|
 | `hex` | `varchar` | ICAO 24-bit address (lowercase). Join key into `fct_adsb_state`. |
 | `capture_ts` | `double` | Rooftop frame capture time, epoch seconds. Join key. |
 | `filled_callsign` | `varchar` | Nearest OpenSky callsign for that airframe within the window. |
+| `day_key` | `date` | `bronze.adsb_states.capture_date` of the frame (UTC day); the daily partition key each run replaces for the trailing window. |
 
 ### `silver.dim_aircraft` — airframe dimension
 
@@ -677,12 +695,12 @@ an independent input the reconciler reads.
 
 ```text
 silver.int_swim_opinion (rank 1) ───────────┐
-gold.fact_flights (rank 3) ──────────────────┤
-silver.int_flight_chains_adsblol (rank 4) ───┼──▶ int_flight_opinions ──▶ int_flight_spine ──▶ int_flight_attach ──▶ gold.fct_flights_reconciled
-silver.int_flight_legs_opensky (rank 5) ─────┘                                                                    ▲         ▲    ▲
-                                                        silver.dim_vrs_routes (rank 2, votes at attach, SP4) ─────┘         │    │
-                                                        silver.dim_route_overrides (curated override) ─────────────────────┘    │
-                                                                      dim.dim_ladd (is_ladd suppression flag, SP3b) ────────────┘
+gold.fact_flights (rank 3) ──────────────────┤             ┌─ opinions also join attached_votes directly ─┐
+silver.int_flight_chains_adsblol (rank 4) ───┼──▶ int_flight_opinions ──▶ int_flight_spine ──▶ int_flight_attached_votes ──▶ int_flight_attach ──▶ gold.fct_flights_reconciled
+silver.int_flight_legs_opensky (rank 5) ─────┘                                                                                                        ▲         ▲    ▲
+                                                        silver.dim_vrs_routes (rank 2, votes at attach, SP4) ─────────────────────────────────────────┘         │    │
+                                                        silver.dim_route_overrides (curated override) ─────────────────────────────────────────────────────────┘    │
+                                                                      dim.dim_ladd (is_ladd suppression flag, SP3b) ────────────────────────────────────────────────┘
 ```
 
 **SP2** rebuilt the O/D aggregates on `fct_flights_reconciled` (all `tag:reconcile`, built by
@@ -701,7 +719,7 @@ map — `swim`=1, `opensky_flights`=2, `adsblol`=3, `opensky_states`=4, later re
 the new `vrs_routes` voter — is pinned by the
 `assert_flight_opinions_rank_map` singular test). `transform_swim`, the dedicated DAG SP3a built
 for this lane, was retired the same release: `transform_marts` already rebuilds `tag:swim` on its
-regular `bronze_states_table` tick, so a separate trigger was redundant (`bronze_swim_table`
+own 10-min cron tick, so a separate trigger was redundant (`bronze_swim_table`
 stays a consumerless asset — see [Refresh model](#refresh-model)). `dim.dim_ladd` is unrelated to
 the vote: it flags `is_ladd = 1` on any resolved flight whose airframe (hex or normalized
 callsign) matches an open, or window-overlapping closed, LADD interval — see
@@ -746,11 +764,21 @@ callsign) matches an open, or window-overlapping closed, LADD interval — see
 | `ingested_at` | `timestamp(6) with time zone` | When the row was flushed to Parquet. Volatile — excluded from `_dedup_fp`. |
 | `raw_xml` | `varchar` | The verbatim `fltdMessage` XML element. Ground truth for any field not promoted to a typed column. |
 
-### `silver.int_swim_flight` — SWIM latest-amendment flight + hex resolution
+### `silver.int_swim_latest` — latest SWIM amendment per flight
 
 - **Grain:** one row per `flight_key` — `coalesce(gufi, flight_ref, acid|computer_id|filed-departure-date)`. Unique, not-null.
 - **Source:** `bronze.swim_flightdata`, collapsed to the latest amendment per flight
-  (`argMax(..., tuple(msg_timestamp, _dedup_fp))`), then matched to an airframe by **density** of
+  (`argMax(..., tuple(msg_timestamp, _dedup_fp))`), with bare FAA LIDs normalized to ICAO via
+  `dim_airports.iata` and the callsign→hex match window (`win_end` capped off departure when no
+  ETA was filed).
+- **Notes:** physical seam (#187): ClickHouse substitutes CTEs per reference, so as a CTE inside
+  `int_swim_flight` this full-history GROUP BY ran ~5× per transform tick; downstream now reads a
+  ~4 M-row table once per reference.
+
+### `silver.int_swim_flight` — SWIM latest-amendment flight + hex resolution
+
+- **Grain:** one row per `flight_key` — `coalesce(gufi, flight_ref, acid|computer_id|filed-departure-date)`. Unique, not-null.
+- **Source:** `int_swim_latest` (the latest amendment per flight, LIDs normalized), matched to an airframe by **density** of
   observed callsign-matched snapshots from both states feeds (`bronze.opensky_states` +
   `bronze.adsb_states`) inside the filed window, padded by the callsign-backfill window.
 - **Notes:** SWIM carries no Mode-S hex of its own, so `icao24` is inferred, not read — the
@@ -939,16 +967,19 @@ are exempt by construction (canary-pinned in the test suite).
 | `anchor_source` | `varchar` | Which source anchored this flight. |
 | `anchor_rank` | `UInt8` | The anchor's source authority rank. |
 
-### `silver.int_flight_attach` — best-overlap opinion attach
+### `silver.int_flight_attached_votes` / `silver.int_flight_attach` — best-overlap opinion attach
 
 - **Grain:** one row per `(flight_id, source)` — one vote per source per flight.
-- **Source:** every `int_flight_opinions` row overlapping an `int_flight_spine` window
+- **Source:** `int_flight_attached_votes` takes every `int_flight_opinions` row overlapping an
+  `int_flight_spine` window
   (callsign-guarded: opinion and anchor callsigns must match or either be NULL), collapsed to its
   single best-overlap anchor, then to one vote per `(flight_id, source)` when a fragmented source
   (e.g. adsb.lol's unchained short segments) independently max-overlaps the same anchor more than
-  once.
+  once. `int_flight_attach` reads that physical result for both its output and VRS corroboration,
+  then appends the eligible windowless VRS votes.
 - **Notes:** this is what stops a spanning record from merging two flights into one vote, and what
-  stops a fragmented source from casting more than one vote per flight.
+  stops a fragmented source from casting more than one vote per flight. The physical seam prevents
+  ClickHouse from re-evaluating the candidate reduction for the VRS branch.
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -961,7 +992,7 @@ are exempt by construction (canary-pinned in the test suite).
 
 - **Grain:** one row per `flight_id`, scoped to flights relevant to the Japan box: kept iff
   anchored by `opensky_flights`, or the flight's `(icao24, flight window)` contains at least one
-  `fact_state_snapshots` fix (a direct interval semi-join, inline in the model) — otherwise
+  in-box `bronze.opensky_states` fix (a day-keyed interval semi-join, inline in the model) — otherwise
   adsb.lol's worldwide chains would inflate this Japan mart ~3x past the unfiltered spine.
 - **Source:** per-endpoint plurality vote across `silver.int_flight_attach`'s per-source votes;
   an exact tie prefers a scheduled-service airport for airline-shaped callsigns before falling

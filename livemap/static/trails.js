@@ -1,6 +1,6 @@
-import { S, serverNow } from "./state.js?v=6.45";
-import { MIL, MAX_DR_S } from "./constants.js?v=6.45";
-import { parseAlt, altTint } from "./altitude.js?v=6.45";
+import { S, serverNow } from "./state.js?v=6.46";
+import { MIL, MAX_DR_S } from "./constants.js?v=6.46";
+import { parseAlt, altTint } from "./altitude.js?v=6.46";
 
 // Last ~90 s of real fixes per hex, accumulated client-side from the poll — zero backend.
 const TRAIL_S = 90;

@@ -1,55 +1,19 @@
-{{ config(materialized='table', tags=['swim']) }}
+{{ config(
+    materialized='table',
+    tags=['swim'],
+    query_settings={'max_memory_usage': 4000000000},
+) }}
 
 -- SWIM has no Mode-S hex: resolve icao24 by DENSITY of observed callsign-matched snapshots in the filed window,
--- suppressing ambiguous top-two to NULL; latest amendment per flight = argMax over the endpoint tuple (atomic).
-with latest as (
-    select
-        coalesce(gufi, flight_ref, concat(assumeNotNull(acid), '|', ifNull(computer_id,''), '|',
-                 toString(toDate(filed_departure_time)))) as flight_key,
-        argMax(tuple(dep_point, dep_point_kind, arr_point, arr_point_kind,
-                     filed_departure_time, filed_arrival_time, acid),
-               tuple(msg_timestamp, _dedup_fp)) as latest_tuple  -- version = @sourceTimeStamp (spike-confirmed)
-    from {{ source('bronze', 'swim_flightdata') }}
-    where acid is not null and trimBoth(acid) <> ''
-    group by flight_key
-),
-keyed as (  -- LID join keys derived once (NULL unless exactly 3 chars) instead of re-deriving per join/select
-    select flight_key, latest_tuple,
-        if(length(ifNull(latest_tuple.1, '')) = 3, latest_tuple.1, null) as origin_lid,
-        if(length(ifNull(latest_tuple.3, '')) = 3, latest_tuple.3, null) as dest_lid
-    from latest
-),
-iata_lookup as (  -- dedupe + non-empty guard are mandatory: raw iata has many '' rows and dup iata values,
-    -- so an unguarded join would match ''='' or fan out a flight across duplicate iata rows.
-    select iata, any(icao) as icao
-    from {{ ref('dim_airports') }}
-    where iata != ''
-    group by iata
-),
-flat as (
-    select flight_key,
-        -- TFMS sometimes files a bare FAA LID (CVG) instead of ICAO; resolve 3-letter codes via
-        -- dim_airports.iata (never K-prefix: ANC->PANC), NULL-keyed join so others pass untouched.
-        coalesce(ol.icao, latest_tuple.1) as origin_icao,
-        latest_tuple.2 as dep_point_kind,
-        coalesce(dl.icao, latest_tuple.3) as dest_icao,
-        latest_tuple.4 as arr_point_kind,
-        latest_tuple.5 as win_start,
-        -- kept flight-plan-class messages carry igtd but NO eta, so cap the match window off departure.
-        coalesce(latest_tuple.6, latest_tuple.5 + toIntervalHour({{ var('swim_max_flight_hours') }})) as win_end,
-        upper(trimBoth(latest_tuple.7)) as callsign
-    from keyed
-    left join iata_lookup ol on ol.iata = origin_lid
-    left join iata_lookup dl on dl.iata = dest_lid
-),
+-- suppressing ambiguous top-two to NULL; latest-amendment rows come from the physical int_swim_latest (#187).
 -- Prune the (unboundedly growing) state-table scan to only what could match a swim flight: the overall
 -- time span of the swim windows (PK/partition index skips pre-swim history) and the swim callsign set.
-bounds as (
+with bounds as (
     select min(win_start) - toIntervalSecond({{ var('callsign_backfill_window_s') }}) as lo,
            max(win_end)   + toIntervalSecond({{ var('callsign_backfill_window_s') }}) as hi
-    from flat
+    from {{ ref('int_swim_latest') }}
 ),
-swim_callsigns as (select distinct callsign from flat),
+swim_callsigns as (select distinct callsign from {{ ref('int_swim_latest') }}),
 obs as (  -- observed hex sightings by trim+UPPER-normalized callsign (both hex lanes), per the design
     -- lane tags each arm so scored can dedup RMT un-merged duplicates by (lane, epoch) instead of raw count.
     select 'os' as lane, upper(trimBoth(callsign)) as cs, icao24 as hex,
@@ -68,7 +32,7 @@ obs as (  -- observed hex sightings by trim+UPPER-normalized callsign (both hex 
 ),
 scored as (  -- density = distinct (lane, epoch) sightings, dedup-immune to RMT un-merged duplicates
     select f.flight_key, o.hex, uniqExact(o.lane, o.epoch) as score
-    from flat f
+    from {{ ref('int_swim_latest') }} f
     join obs o
       on o.cs = f.callsign
      and o.epoch between toUnixTimestamp(f.win_start) - {{ var('callsign_backfill_window_s') }}
@@ -96,5 +60,5 @@ resolved as (
 select f.flight_key, r.icao24, f.win_start, f.win_end, f.callsign,
        f.origin_icao, f.dest_icao, f.dep_point_kind, f.arr_point_kind,
        ifNull(r.hex_score, 0) as hex_score, ifNull(r.hex_ambiguous, 0) as hex_ambiguous
-from flat f
+from {{ ref('int_swim_latest') }} f
 left join resolved r using (flight_key)

@@ -9,7 +9,7 @@ const featuresDir = join(livemap, "src/features");
 const mapSrcDir = join(livemap, "src/map");
 const staticDir = join(livemap, "static");
 
-const CODE = /\.(?:js|ts|d\.ts)$/;
+const CODE = /\.(?:js|ts|tsx|d\.ts)$/;
 const walk = (dir) =>
   readdirSync(dir, { recursive: true, withFileTypes: true })
     .filter((d) => d.isFile() && CODE.test(d.name))

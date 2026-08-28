@@ -1,4 +1,5 @@
-import { test } from "node:test";
+// @vitest-environment node
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
   fetchInstances,
@@ -7,7 +8,7 @@ import {
   fetchFlags,
   fetchEstimates,
   fetchCoverage,
-} from "../../livemap/src/features/workbench/data.js";
+} from "../../livemap/src/features/workbench/data";
 
 function mockFetch(payload, ok = true) {
   globalThis.fetch = async () => ({ ok, json: async () => payload });

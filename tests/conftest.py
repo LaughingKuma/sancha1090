@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+from types import SimpleNamespace
 
 import pytest
 import sqlalchemy as sa
@@ -81,6 +83,66 @@ def fake_ch(rows, expect_params=None):
             pass
 
     return _Client()
+
+
+def flat_sql(text: str, *, squash: bool = False) -> str:
+    # One whitespace normalizer for SQL pins: default collapses runs to a single space (a line-wrapped copy
+    # can't hide); squash also strips whitespace and lowercases, so reformatting can't hide a drift-copy.
+    if squash:
+        return re.sub(r"\s+", "", text).lower()
+    return re.sub(r"\s+", " ", text)
+
+
+def _spec_name(sql: str) -> str:
+    # Both the marker lookup and the system.tables existence probe end in `name = '<spec>'`.
+    return sql.split("name = '")[1].split("'")[0]
+
+
+class RecordingCH:
+    # Recording CH stand-in for the ch_incremental_mvs appliers (they only .command / .query / .close); the
+    # marker table is emulated for real (its INSERT/DELETE mutate `seeded`) — the view gate reads it back.
+    def __init__(self, seeded=(), fail=False, target_rows=1, responses=None, existing=(), fail_on=None):
+        # seeded/existing = spec names the marker / system.tables report as present; target_rows = a target's
+        # count(); responses = {sql substring: result_rows} hook, first match wins; fail_on = command to raise on.
+        self.commands: list[str] = []
+        self.queries: list[str] = []
+        self.calls: list[str] = []   # commands + queries interleaved, for ordering assertions
+        self.seeded = set(seeded)
+        self.existing = set(existing)
+        self.fail = fail
+        self.fail_on = fail_on
+        self.target_rows = target_rows
+        self.responses = dict(responses or {})
+        self.closed = False
+
+    def query(self, sql, **_kw):
+        self.queries.append(sql)
+        self.calls.append(sql)
+        for pat, rows in self.responses.items():
+            if pat in sql:
+                return SimpleNamespace(result_rows=rows)
+        if "ch_mv_seeded WHERE name" in sql:
+            return SimpleNamespace(result_rows=[[1 if _spec_name(sql) in self.seeded else 0]])
+        if "count() FROM system.tables" in sql:
+            return SimpleNamespace(result_rows=[[1 if _spec_name(sql) in self.existing else 0]])
+        if "system.tables" in sql:
+            return SimpleNamespace(result_rows=[])
+        if sql.startswith("SELECT count() FROM"):
+            return SimpleNamespace(result_rows=[[self.target_rows]])
+        return SimpleNamespace(result_rows=[[0]])
+
+    def command(self, sql, **_kw):
+        if self.fail or (self.fail_on and self.fail_on in sql):
+            raise RuntimeError("CH down")
+        self.commands.append(sql)
+        self.calls.append(sql)
+        if "ch_mv_seeded" in sql and sql.startswith("DELETE FROM"):
+            self.seeded.discard(_spec_name(sql))
+        elif "ch_mv_seeded" in sql and sql.startswith("INSERT INTO"):
+            self.seeded.add(sql.split("VALUES ('")[1].split("'")[0])
+
+    def close(self):
+        self.closed = True
 
 
 @pytest.fixture(scope="session")

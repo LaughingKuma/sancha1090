@@ -9,7 +9,7 @@ from include.dag_defaults import default_args
 
 @dag(
     dag_id="maintain_bronze_dedup",
-    description="Daily OPTIMIZE FINAL on the ReplacingMergeTree bronze tables (opensky_states + adsb_states + swim_flightdata) so a replay surplus can't accumulate un-merged",
+    description="Daily OPTIMIZE FINAL on the ReplacingMergeTree bronze tables (opensky_states + adsb_states + swim_flightdata) so a replay surplus can't accumulate un-merged, plus the daily CH memory-headroom alarm -- pausing this DAG for an OPTIMIZE incident also silences that alarm",
     start_date=pendulum.datetime(2026, 6, 22, tz="UTC"),
     schedule="30 18 * * *",  # ~03:30 JST, off-peak (Airflow schedules are UTC)
     catchup=False,
@@ -29,7 +29,16 @@ def maintain_bronze_dedup():
 
         return {t: optimize_states_final(t) for t in ("opensky_states", "adsb_states", "swim_flightdata")}
 
+    @task
+    def memory_headroom() -> dict:
+        # No edge to optimize(): independent tasks, so an OPTIMIZE red can't hide the alarm (#188) --
+        # same isolation rationale as path_coverage vs value_gate in ch_serving_parity.
+        from include.ch_parity import run_memory_headroom_gate
+
+        return run_memory_headroom_gate()
+
     optimize()
+    memory_headroom()
 
 
 maintain_bronze_dedup()

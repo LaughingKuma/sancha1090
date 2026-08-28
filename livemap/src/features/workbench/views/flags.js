@@ -1,7 +1,5 @@
-import {
-  W, esc, panel, navigate, rangeParams, renderPager, focusInstance, jstDayOf, PAGE_LIMIT,
-} from "../shell.js";
-import { fetchFlags } from "../data.js";
+import { W, esc, panel, navigate, rangeParams, renderFlagRows, renderPager, PAGE_LIMIT } from "../shell.js";
+import { fetchFlags } from "../data";
 
 const CLASSES = [
   "tiebreak_endpoint", "single_source", "one_sided_intl", "feasibility_snap", "diversion",
@@ -29,34 +27,6 @@ function chips(host, classes) {
     if (btn) navigate({ flagClass: btn.dataset.cls || null, page: 1 });
   });
   host.appendChild(bar);
-}
-
-const flagRowHTML = (r, i) => {
-  const day = r.day || jstDayOf(r.startTs);
-  const on = !!r.key && r.key === W.inst; // a re-render (pager, chip) must keep the focused row lit
-  return (
-    `<button type="button" class="wb-row wb-stack wb-inst${on ? " wb-active" : ""}" ` +
-    `aria-pressed="${on}" data-idx="${i}">` +
-    `<span class="wb-row-main"><span class="wb-date">${esc(day.slice(5) || "—")}</span>` +
-    `<span class="wb-name">${esc(r.callsign || r.hex || "—")}</span>` +
-    `<span class="wb-flagcls">${esc(label(r.flagClass))}</span>` +
-    `<span class="wb-n">${esc(`${r.o || "?"} → ${r.d || "?"}`)}</span></span>` +
-    `<span class="wb-row-sub"><span class="wb-detail">${esc(r.detail || "—")}</span></span></button>`
-  );
-};
-
-export function renderFlagRows(host, list) {
-  if (!list.length) {
-    host.insertAdjacentHTML("beforeend", '<div class="wb-empty">no flagged instances</div>');
-    return;
-  }
-  const wrap = document.createElement("div");
-  wrap.innerHTML = list.map(flagRowHTML).join("");
-  wrap.addEventListener("click", (e) => {
-    const btn = e.target.closest(".wb-inst");
-    if (btn) focusInstance(list[Number(btn.dataset.idx)], btn);
-  });
-  host.appendChild(wrap);
 }
 
 export async function render(host) {

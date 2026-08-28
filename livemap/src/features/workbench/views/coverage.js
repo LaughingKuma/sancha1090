@@ -1,5 +1,5 @@
 import { esc, panel, rangeParams } from "../shell.js";
-import { fetchCoverage } from "../data.js";
+import { fetchCoverage } from "../data";
 import { line, bars, stackedBars, HUE } from "../chart.js";
 
 const TIER_KEYS = ["settled", "estimated", "provisional", "none", "unknown"];

@@ -1,6 +1,7 @@
-import { test } from "node:test";
+// @vitest-environment node
+import { test } from "vitest";
 import assert from "node:assert/strict";
-import { readUrl, writeUrl } from "../../livemap/src/features/workbench/url.js";
+import { readUrl, writeUrl } from "../../livemap/src/features/workbench/url";
 
 // node has no DOM globals — stub the minimum readUrl/writeUrl touch, fresh per test.
 function setLoc(search = "", pathname = "/app", hash = "") {
@@ -102,6 +103,17 @@ test("VIEWS accepts the slice-3 views, and still rejects an unknown one", () => 
   setLoc("?wb=not_a_view");
   setHistory(null);
   assert.equal(readUrl().view, "overview");
+});
+
+test("wb_d naming an inherited object property falls back to the default range", () => {
+  for (const r of ["constructor", "__proto__", "toString"]) {
+    setLoc(`?wb_d=${r}`);
+    setHistory(null);
+    assert.equal(readUrl().range, "30d", `wb_d=${r}`);
+  }
+  setLoc("?wb_d=7d");
+  setHistory(null);
+  assert.equal(readUrl().range, "7d");
 });
 
 test("wb_class: valid class round-trips, invalid class reads as null", () => {

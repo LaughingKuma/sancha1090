@@ -5,7 +5,7 @@
 -- depends_on: {{ ref('dim_airports') }}
 
 -- Deploy-order guard: dim.dim_vrs_routes is created by clickhouse-init at the operator's deploy, but
--- transform_marts rebuilds from committed code every ~4 min -- emit empty until the table exists.
+-- transform_marts rebuilds from committed code on its 10-min cron -- emit empty until the table exists.
 {%- set vrs_rel = optional_relation('dim', 'dim_vrs_routes') %}
 
 {%- if vrs_rel is not none %}

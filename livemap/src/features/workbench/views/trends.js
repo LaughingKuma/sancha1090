@@ -1,7 +1,7 @@
 import {
-  W, esc, panel, navigate, rangeParams, renderRows, renderPager, openAirline, openAirport,
+  W, panel, doorway, navigate, rangeParams, renderRows, renderPager, openAirline, openAirport,
 } from "../shell.js";
-import { fetchTrends } from "../data.js";
+import { fetchTrends } from "../data";
 import { line, SERIES_HUES } from "../chart.js";
 
 const DIMS = ["route", "airline", "airport"];
@@ -44,19 +44,20 @@ async function chart(host, series) {
   }
 }
 
-const rankHTML = (r, i) =>
-  `<button type="button" class="wb-row wb-stack wb-rank" data-idx="${i}">` +
-  `<span class="wb-row-main"><span class="wb-name">${esc(r.key || "—")}</span>` +
-  `<span class="wb-n">${esc(r.n.toLocaleString())}</span></span>` +
-  `<span class="wb-row-sub"><span>${esc(`${r.distinctAircraft.toLocaleString()} aircraft`)}</span>` +
-  `<span class="wb-delta">${esc(deltaText(r.deltaPct))}</span></span></button>`;
+const rankRow = (r) => ({
+  key: r.key,
+  name: r.key || "—",
+  n: r.n.toLocaleString(),
+  sub: `${r.distinctAircraft.toLocaleString()} aircraft`,
+  delta: deltaText(r.deltaPct),
+  cls: "wb-rank",
+});
 
 function pick(r) {
   if (W.dim === "airline") return openAirline(r.key);
   if (W.dim === "airport") return openAirport(r.key);
-  // the rank row counts the whole window, so every leftover log scope has to go with it
-  navigate({ view: "log", od: r.key, airline: null, service: null, hex: null, apt: null,
-             type: null, mil: false, page: 1 });
+  // the rank row counts the whole window, so the doorway carries the route and nothing else
+  doorway("log", { od: r.key });
 }
 
 export async function render(host) {
@@ -74,6 +75,6 @@ export async function render(host) {
   chartHost.className = "wb-chart";
   el.appendChild(chartHost);
   chart(chartHost, p.series);
-  renderRows(el, p.rank, rankHTML, pick, "no trends in range");
+  renderRows(el, p.rank.map(rankRow), (i) => pick(p.rank[i]), "no trends in range");
   renderPager(el, { rows: p.rank, total: p.total, limit: p.limit, offset: p.offset });
 }

@@ -1,4 +1,4 @@
-import { AMBER } from "./constants.js?v=6.45";
+import { AMBER } from "./constants.js?v=6.46";
 
 // Altitude lives inside the amber palette: deep orange on the deck → pale amber at cruise.
 const ALT_RAMP = [

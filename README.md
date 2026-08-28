@@ -95,8 +95,11 @@ the SWIM Cloud Distribution Service's TFMData feed of filed flight plans. An alw
 rolling Parquet to the same Garage zone (`bronze/swim_raw/`). The write has to land durably
 before the message is acknowledged, so a dropped connection cannot silently lose data. A
 5-minute `tableize_swim` DAG (skipping ticks with nothing new to load) drains it into
-`bronze.swim_flightdata`, and `transform_marts` builds two models on top: `int_swim_flight`,
-the latest amendment per flight plus a density-scored callsign→icao24 match against the
+`bronze.swim_flightdata`, and `transform_marts` builds four models on top: `int_swim_latest`,
+the latest amendment per flight (read from an `AggregatingMergeTree` `argMax` view that keeps
+one state row per flight, so the ten-minute rebuild never re-scans the whole feed);
+`int_swim_diagnostics`, match-rate visibility;
+`int_swim_flight`, a density-scored callsign→icao24 match against the
 states feeds, since SWIM carries no Mode-S hex of its own; and `int_swim_opinion`, an
 origin/destination read scoped to US-touching flights, including the foreign endpoint on
 international legs that the antenna and OpenSky's Japan box never see (the San Francisco
@@ -120,10 +123,11 @@ apply the current open set on top of it, so a newly listed airframe is dropped t
 waiting for a rebuild. Either way the mart flags rather than deletes, so the row stays in the
 warehouse; the private LAN instance suppresses nothing, since LADD is a public-display
 obligation rather than a data-access restriction. A listing change reaches the live surfaces
-on the next weekly pull plus a ~15-minute refresh, and the mart's `is_ladd` only on the next
-`transform_marts` build — neither is instant. This is the pipeline's own read of a public FAA
-system-wide information feed and a public FAA privacy list. The FAA neither publishes nor
-endorses it.
+on the next weekly pull plus a ~15-minute refresh, and the mart's `is_ladd` only on
+`transform_marts`'s next available run — normally scheduled every 10 minutes, though a
+long build can queue the next run — neither is instant. This is the
+pipeline's own read of a public FAA system-wide information feed and a public FAA privacy
+list. The FAA neither publishes nor endorses it.
 
 ## Architecture evolution
 
@@ -158,7 +162,11 @@ fingerprints, so a crash-replay cannot double-count). An hourly served-value gat
 what Superset shows straight from bronze and refuses to let discrepancies age out unseen.
 Storage was re-grained: the verbatim raw-JSON column was eliminated in favor of flags baked
 at load, per-column ZSTD/T64 codecs went in, and the exact per-hour aggregate states got a
-90-day TTL. A NAS cold archive keeps a verified copy-only mirror of the raw landing zone.
+90-day TTL. A daily memory-headroom alarm reads `system.query_log` over a trailing 26h
+and reds if any dbt model or test reaches at least 80% of its `max_memory_usage` cap, spills
+(aggregation, sort, or join) to disk, or hits an OOM kill, so a growing node gets flagged
+before it needs an emergency memory-thermal fix. A NAS cold
+archive keeps a verified copy-only mirror of the raw landing zone.
 Every lane got source-keyed names plus fail-loud ingest boundary guards, so no source can
 silently blend into another.
 
@@ -232,8 +240,8 @@ To rebuild ClickHouse bronze from the Garage landing zone (truncate + reload, wi
 tableize DAGs paused and in-flight runs drained so live ticks can't double-insert), run
 `scripts/ch_backfill_bronze.sh`.
 
-Trigger `ingest_states` in Airflow to start populating. `tableize_states` and
-`transform_marts` cascade automatically via asset events.
+Trigger `ingest_states` in Airflow to start populating. `tableize_states` cascades
+automatically via asset events; `transform_marts` rebuilds on its own 10-minute cron.
 
 ### Live hot path (v4)
 
@@ -334,7 +342,12 @@ The workbench frontend lives in `livemap/src/features/workbench/` and is bundled
 (`make livemap-build`, after `npm ci --prefix livemap`) into `livemap/static/features/workbench/`
 — build output, not tracked. It is a feature island behind a typed map facade: the map hands it a
 `MapFacade` at `init(mapApi, features)` and nothing else, so the bundle is self-contained and imports
-no map module. The facade (`livemap/static/facade.js`, contract in `livemap/src/map/facade.d.ts`) owns
+no map module. The island is Preact + `@preact/signals` (its only two runtime dependencies, ~21 KB
+gzipped for the whole entry): the URL is mirrored into one `wb` signal, navigation writes history
+imperatively where the state changes, and every doorway — each number that opens the view explaining
+it — goes through one typed table of the scope keys each view reads, so a headline computed over the
+whole window can never open a filtered list. The remaining vanilla views render inside the
+Preact-owned host through a temporary adapter that is deleted as each view is ported. The facade (`livemap/static/facade.js`, contract in `livemap/src/map/facade.d.ts`) owns
 the drawn-path pipeline both the workbench and the spotlight drive — one `/path` fetch, one sequence
 claim, one winner — along with the live-fleet dim and the map's click guard. The livemap image builds it in a pinned node stage, so both
 instances serve image-baked assets and neither bind-mounts `livemap/static`; frontend changes
@@ -489,6 +502,11 @@ task set), ingest discovery and the fail-loud boundary guards, manifest bookkeep
 dedup contracts, parity-gate logic, ADS-B schema drift, and the OpenSky credit budget.
 `tests/test_credit_budget.py` computes the daily credit cost from the live region config and
 the ingest schedule, then asserts it stays under the 8,000/day active-feeder quota.
+
+The frontend has two harnesses of its own: `make test-js` runs the node:test seam suites (map facade,
+import direction) plus Vitest over the island (pure URL/coercion modules, the store's focus and
+deep-link branches, the doorway table's golden tests, the components and the view adapter), and
+`make lint-js` holds the hooks rules with oxlint.
 
 The workbench rail also has a browser oracle: `make e2e` builds the workbench bundle, then runs Playwright (Chromium) against the
 livemap app in fixture mode (`tests/e2e/serve_fixture.py` — the workbench store answers from

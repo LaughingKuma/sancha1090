@@ -1,0 +1,5 @@
+<clickhouse>
+    <!-- Leave 4+ GiB below the container boundary so tracked allocations fail cleanly
+         before Docker has to OOM-kill the server. -->
+    <max_server_memory_usage>24000000000</max_server_memory_usage>
+</clickhouse>

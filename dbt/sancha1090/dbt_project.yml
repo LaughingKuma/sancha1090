@@ -69,6 +69,7 @@ vars:
   legs_cruise_alt_m: 3000 # below this an endpoint is a takeoff/landing; above it = overflight -> NULL endpoint
   legs_turnaround_min: 30 # a callsign flip across a gap this long = out/back rotation -> split the leg
   callsign_backfill_window_s: 600 # max gap to a same-airframe OpenSky snapshot when backfilling a blank ADS-B callsign
+  callsign_backfill_rebuild_days: 3  # int_adsb_callsign_from_opensky: trailing UTC days REPLACEd per run off the rooftop watermark; a day settles once its neighbour has landed (+/- window), the third day is slack for a late rooftop push
   snap_iata_pref_km: 10   # an IATA-bearing airport this close beats a marginally-nearer no-IATA field (PALH vs PANC)
   chain_speed_min_kmh: 300   # implied boundary groundspeed below this = the aircraft stopped (landing)
   chain_speed_max_kmh: 1100  # above this = not the same continuous flight
@@ -86,6 +87,7 @@ vars:
   path_window_pad_min: 10  # fct_flight_path: pad each reconciled window this many min per side (mart windows are observation clips)
   path_settlement_lag_days: 1  # latest trace_day minus this lag: the 14:30 UTC OpenSky anchor waves land AFTER a start day first builds BY DESIGN -- fct_flight_path's contiguous orphan batch owns the stale-partition cleanup
   path_build_chunk_days: 5  # daily partitions per run: bounds catch-up memory and is also the rolling repair window when the source watermark advances
+  path_summary_chunk_days: 10  # fct_flight_path_summary: parent days re-summarised per run, newest first; the parent replaces at most path_build_chunk_days per run, so this binds only while a dropped table drains (0.45 GB per 10 days)
   # Observation box, mirrors include/regions.py 'japan' (kept in sync by hand). Single source of
   # truth for the stg_states geo-filter, the mart's box_observed guard, and the Finding-2
   # schedule-vote scope gate: a vrs/swim O/D with no in-box endpoint is observable only as a

@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
@@ -29,17 +30,36 @@ const islandOnly = () => ({
   },
 });
 
-export default defineConfig(({ mode }) => ({
-  base: "/features/workbench/",
-  define: { __WB_CONTRACT__: JSON.stringify(contract) },
-  plugins: [buildJson(), islandOnly()],
-  build: {
-    outDir: "static/features/workbench",
-    minify: mode !== "development",
-    rollupOptions: {
-      input: "src/features/workbench/index.js",
-      preserveEntrySignatures: "strict", // app-mode default drops the entry's exports; the map calls init()
-      output: { entryFileNames: "index.js", assetFileNames: "index[extname]" },
-    },
+// size mode: the entry alone, uPlot left external, nothing written — the plan's "≤ 30 KB gz excluding uPlot"
+const ENTRY_GZ_LIMIT = 30 * 1024;
+const sizeGate = () => ({
+  name: "size-gate",
+  generateBundle(_opts, bundle) {
+    for (const c of Object.values(bundle)) {
+      if (c.type !== "chunk" || !c.isEntry) continue;
+      const gz = gzipSync(c.code).length;
+      console.log(`entry ${c.fileName}: ${gz} bytes gz (uplot external, limit ${ENTRY_GZ_LIMIT})`);
+      if (gz > ENTRY_GZ_LIMIT) this.error(`entry exceeds the ${ENTRY_GZ_LIMIT} B gz budget`);
+    }
   },
-}));
+});
+
+export default defineConfig(({ mode }) => {
+  const size = mode === "size";
+  return {
+    base: "/features/workbench/",
+    define: { __WB_CONTRACT__: JSON.stringify(contract) },
+    plugins: size ? [islandOnly(), sizeGate()] : [buildJson(), islandOnly()],
+    build: {
+      outDir: "static/features/workbench",
+      write: !size,
+      minify: mode !== "development",
+      rollupOptions: {
+        input: "src/features/workbench/index.tsx",
+        external: size ? ["uplot"] : [],
+        preserveEntrySignatures: "strict", // app-mode default drops the entry's exports; the map calls init()
+        output: { entryFileNames: "index.js", assetFileNames: "index[extname]" },
+      },
+    },
+  };
+});
