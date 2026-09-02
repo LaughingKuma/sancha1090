@@ -4,8 +4,7 @@ import logging
 
 log = logging.getLogger(__name__)
 
-# P4 cheap aggregates as self-maintaining AggregatingMergeTree MVs; shadow state until P5 (full design:
-# opensky-docs/relevant/2026-06-20-ch-migration-p4-parity-results.md). Three invariants the code depends on:
+# Cheap aggregates as self-maintaining AggregatingMergeTree MVs. Three invariants the code depends on:
 # each spec's "read" is the merge-aware read contract; raw *_state columns are opaque (uniqExactMerge/sum + GROUP BY only).
 # MVs attach to append-only bronze, never the dbt-REPLACE'd silver (an MV can't survive a drop+recreate).
 # Context-lane obs = uniqExact((icao24,snapshot_time)): dedup-immune (an MV can't dedup across blocks),
@@ -184,6 +183,13 @@ def _spec():
 
     # 1) Hourly traffic — accumulate-forever (replaces agg_hourly_traffic{,_adsblol,_opensky_settled}).
     specs["agg_hourly_traffic_acc"] = {
+        "description": "gold_ch.agg_hourly_traffic: one row per UTC hour over the OpenSky context feed inside "
+                       "the Japan box, accumulated forever; hours before the OpenSky lane's first hour are "
+                       "seeded once from bronze.adsblol_states (region = 'japan'), so the pre-pipeline history "
+                       "is adsb.lol's. Observation counts are uniqExact over (icao24, snapshot_time) tuples, "
+                       "not count(), so a replayed bronze file cannot inflate them; avg_airborne_speed_kmh is "
+                       "a deduped mean: one velocity per (icao24, snapshot_time) held in a maxMap, summed, "
+                       "then divided by the deduped count.",
         "drop_old": ["agg_hourly_traffic", "agg_hourly_traffic_history", "agg_hourly_traffic_live_archive",
                      "agg_hourly_traffic_adsblol", "agg_hourly_traffic_opensky_settled"],
         "target": f"""
@@ -266,6 +272,10 @@ WHERE {_GEO}
 GROUP BY snapshot_hour, airline_name, airline_country
 """.strip()
     specs["agg_airline_traffic_acc"] = {
+        "description": "gold_ch.agg_airline_traffic: one row per (UTC hour, airline) over the OpenSky context "
+                       "feed, accumulated forever. The airline join is an INNER join through dim_airlines behind "
+                       "the ^[A-Z]{3}[0-9] callsign guard, so unmatched and GA-shaped callsigns are excluded "
+                       "outright — this mart counts airline traffic, never all traffic.",
         "drop_old": ["agg_airline_traffic"],
         "target": f"""
 CREATE TABLE IF NOT EXISTS gold_ch.agg_airline_traffic_acc
@@ -302,6 +312,12 @@ ORDER BY snapshot_hour, distinct_aircraft DESC
 
     # 3) Airline traffic (rooftop ADS-B) — two-sided OpenSky callsign backfill (see _ADSB_AIRLINE_*_BODY).
     specs["agg_airline_traffic_adsb_acc"] = {
+        "description": "gold_ch.agg_airline_traffic_adsb: one row per airline over the rooftop feed (stored "
+                       "hourly; the read collapses hours over a rolling 90 days). Same INNER dim_airlines "
+                       "join and callsign guard as the OpenSky sibling, so non-airline traffic is excluded. "
+                       "backfilled_observations is the "
+                       "subset of observations whose callsign came from the OpenSky backfill rather than the "
+                       "rooftop transmission — subtract it for a rooftop-only count.",
         "drop_old": ["agg_airline_traffic_adsb"],
         "target": f"""
 CREATE TABLE IF NOT EXISTS gold_ch.agg_airline_traffic_adsb_acc
@@ -357,6 +373,10 @@ WHERE reg_country_n IS NOT NULL
 GROUP BY snapshot_hour, reg_country
 """.strip()
     specs["agg_country_traffic_adsb_acc"] = {
+        "description": "gold_ch.agg_country_traffic_adsb: one row per registration country over the rooftop "
+                       "feed, served over a rolling 90 days (the read collapses the stored hourly grain). "
+                       "Country comes from the hex range dictionary, so airframes with an unmapped hex are "
+                       "dropped; military_observations is the db_flags bit-0 subset of observations.",
         "drop_old": ["agg_country_traffic_adsb"],
         "target": f"""
 CREATE TABLE IF NOT EXISTS gold_ch.agg_country_traffic_adsb_acc
@@ -404,6 +424,11 @@ ORDER BY distinct_aircraft DESC
                   "Nullable(String), Nullable(DateTime64(6, 'UTC')), Nullable(DateTime64(6, 'UTC')), "
                   "Nullable(String)), Tuple(Nullable(DateTime64(6, 'UTC')), UInt64))")
     specs["swim_latest_acc"] = {
+        "description": "silver_ch.swim_latest: one row per SWIM flight_key, carrying the latest amendment as "
+                       "latest_tuple (dep_point, dep_point_kind, arr_point, arr_point_kind, "
+                       "filed_departure_time, filed_arrival_time, acid) — a positional contract dbt reads as "
+                       ".1..7. Messages with no acid are excluded: acid is the callsign the filed plan is "
+                       "matched to an airframe by, so such a row could never attach to a flight.",
         "db": "silver_ch",
         "view": "swim_latest",
         "target": f"""
@@ -421,8 +446,8 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS silver_ch.swim_latest_acc_mv
 TO silver_ch.swim_latest_acc AS
 {_SWIM_LATEST_SELECT}
 """.strip(),
-        # Caps mirror the dbt model's (#200): ensure() can run this seed unsupervised on a fresh bootstrap, so
-        # the 80M-row aggregation must fail at a bound rather than eat the server budget or hang the tick.
+        # The seed's own bound, not the dbt model's 7 GB (#208): bootstrap aggregates the full 80M-row bronze
+        # history in one INSERT (the model reads the ~4M-key -Merge view), so it must fail at a cap, not hang.
         "seed": [f"""
 INSERT INTO silver_ch.swim_latest_acc
 {_SWIM_LATEST_SELECT} SETTINGS max_memory_usage = 12000000000, max_execution_time = 900

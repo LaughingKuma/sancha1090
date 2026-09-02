@@ -172,7 +172,7 @@ _EST_DEDUP = (
     "AND toDate(computed_at, 'Asia/Tokyo') BETWEEN {day_from:Date} AND {day_to:Date} "
     "ORDER BY computed_at, estimate_id LIMIT 1 BY input_fingerprint, seg_idx"
 )
-# The standing drift read (README): unique scored inputs, per-point errors pooled — full-recompute
+# The standing drift read (docs/datalake.md): unique scored inputs, per-point errors pooled — full-recompute
 # rows repeat an input, and a median of per-segment medians measurably hides drift.
 _EST_POOL_ARR = "arraySort(groupArrayArray(errs_km)) AS pool"
 

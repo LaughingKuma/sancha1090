@@ -11,6 +11,8 @@ from include.dag_defaults import default_args
     description="Build dbt-clickhouse silver + gold marts from the ClickHouse bronze tables",
     # Cron floor: the marts rebuild full history per run and no SLA needs 4-min freshness (ch_parity.py:
     # 2h/3d; live is RisingWave); :02 avoids :00 where the */15 parity gate clusters.
+    # Drop to a 5-min floor only if a re-measure with scripts/ch_transform_cost.sh shows a tick under
+    # ~540 CPU-s and under 90 s wall -- above it the 5-min floor breaks the <30% duty target.
     schedule="2-59/10 * * * *",
     catchup=False,
     # Prevents concurrent execution, not queuing -- a sustained >10-min run still builds a queue of scheduled runs.

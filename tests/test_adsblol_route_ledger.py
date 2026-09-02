@@ -17,96 +17,23 @@ def test_unseen_pairs_pass_through():
     assert ledger.filter_unattempted(pairs, eng) == pairs
 
 
-def test_landed_never_refetches():
+def test_landed_never_reextracts():
     eng = _engine()
     ledger.record_attempts([("a61c53", "2026-06-25", "landed")], eng)
     assert ledger.filter_unattempted([("a61c53", "2026-06-25")], eng) == []
 
 
-def test_missing_retries_once_after_cooldown_then_permanent():
+def test_missing_and_error_are_reproposed():
+    # A tar is streamed once per trace day, so absence is final only for that stream: a later
+    # re-land (a different variant, a repair trigger) must still see these pairs.
     eng = _engine()
-    ledger.record_attempts([("a61c53", "2026-06-25", "missing")], eng)
-    # Fresh miss: inside the cooldown, not retried.
-    assert ledger.filter_unattempted([("a61c53", "2026-06-25")], eng) == []
-    # Age the attempt past the cooldown by rewriting attempted_at.
-    with eng.begin() as conn:
-        conn.execute(sa.text(
-            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
-    assert ledger.filter_unattempted([("a61c53", "2026-06-25")], eng) == [("a61c53", "2026-06-25")]
-    # Second miss -> attempts=2 == max_attempts -> permanent skip even when aged.
-    ledger.record_attempts([("a61c53", "2026-06-25", "missing")], eng)
-    with eng.begin() as conn:
-        conn.execute(sa.text(
-            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
-    assert ledger.filter_unattempted([("a61c53", "2026-06-25")], eng) == []
+    ledger.record_attempts([("a61c53", "2026-06-25", "missing"),
+                            ("ffff01", "2026-06-25", "error")], eng)
+    pairs = [("a61c53", "2026-06-25"), ("ffff01", "2026-06-25")]
+    assert ledger.filter_unattempted(pairs, eng) == pairs
 
 
-def test_error_retries_after_short_cooldown_without_attempt_cap():
-    eng = _engine()
-    pair = ("a61c53", "2026-06-25")
-    for _ in range(3):
-        ledger.record_attempts([(*pair, "error")], eng)
-    # Fresh errors wait long enough for Airflow's retry delay, avoiding an immediate hot loop.
-    assert ledger.filter_unattempted([pair], eng) == []
-    with eng.begin() as conn:
-        conn.execute(sa.text(
-            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
-    assert ledger.filter_unattempted([pair], eng) == [pair]
-
-
-def test_due_error_pairs_returns_only_aged_errors_in_stable_order():
-    eng = _engine()
-    ledger.record_attempts([
-        ("bbbbbb", "2026-06-24", "error"),
-        ("aaaaaa", "2026-06-24", "error"),
-        ("cccccc", "2026-06-24", "missing"),
-        ("dddddd", "2026-06-24", "landed"),
-    ], eng)
-    assert ledger.due_error_pairs(eng) == []
-    with eng.begin() as conn:
-        conn.execute(sa.text(
-            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
-    assert ledger.due_error_pairs(eng) == [
-        ("aaaaaa", "2026-06-24"),
-        ("bbbbbb", "2026-06-24"),
-    ]
-    assert ledger.due_error_pairs(eng, limit=1) == [("aaaaaa", "2026-06-24")]
-    assert ledger.due_error_pairs(eng, limit=0) == []
-
-
-def test_due_missing_pairs_returns_only_aged_missing_under_cap_in_stable_order():
-    eng = _engine()
-    ledger.record_attempts([
-        ("bbbbbb", "2026-06-24", "missing"),
-        ("aaaaaa", "2026-06-24", "missing"),
-        ("cccccc", "2026-06-24", "error"),
-        ("dddddd", "2026-06-24", "landed"),
-    ], eng)
-    # Fresh misses: inside the 7-day aging window, not due yet.
-    assert ledger.due_missing_pairs(eng) == []
-    with eng.begin() as conn:
-        conn.execute(sa.text(
-            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
-    # Aged missing pairs are due; error/landed outcomes are excluded regardless of age.
-    assert ledger.due_missing_pairs(eng) == [
-        ("aaaaaa", "2026-06-24"),
-        ("bbbbbb", "2026-06-24"),
-    ]
-    assert ledger.due_missing_pairs(eng, limit=1) == [("aaaaaa", "2026-06-24")]
-    assert ledger.due_missing_pairs(eng, limit=0) == []
-
-
-def test_due_missing_pairs_excludes_attempts_at_cap():
-    eng = _engine()
-    ledger.record_attempts([("aaaaaa", "2026-06-24", "missing")], eng)
-    ledger.record_attempts([("aaaaaa", "2026-06-24", "missing")], eng)  # attempts=2 == max_attempts
-    with eng.begin() as conn:
-        conn.execute(sa.text(
-            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
-    assert ledger.due_missing_pairs(eng) == []
-
-
-def test_delete_attempts_reenables_refetch():
+def test_delete_attempts_reenables_reextract():
     eng = _engine()
     ledger.record_attempts([("a61c53", "2026-06-25", "landed"),
                             ("ffff01", "2026-06-25", "landed"),
@@ -133,3 +60,28 @@ def test_record_attempts_upserts_and_counts():
         row = conn.execute(sa.text(
             "SELECT outcome, attempts FROM adsblol_route_attempts")).one()
     assert row.outcome == "landed" and row.attempts == 2
+
+
+def test_release_landing_reads_back_the_recorded_row():
+    eng = _engine()
+    assert ledger.release_landing("2026-08-20", eng) is None
+    ledger.record_release_landing(
+        "2026-08-20", repo="globe_history_2026", tag="v2026.08.20-planes-readsb-prod-0",
+        parts=3, members=61234, targets=3557, landed=3400, missing=150, errors=7, engine=eng)
+    row = ledger.release_landing("2026-08-20", eng)
+    assert row["repo"] == "globe_history_2026"
+    assert row["tag"] == "v2026.08.20-planes-readsb-prod-0"
+    assert (row["parts"], row["members"], row["targets"]) == (3, 61234, 3557)
+    assert (row["landed"], row["missing"], row["errors"]) == (3400, 150, 7)
+    assert row["landed_at"]
+
+
+def test_record_release_landing_upserts_one_row_per_day():
+    eng = _engine()
+    for landed in (10, 20):
+        ledger.record_release_landing(
+            "2026-08-20", repo="globe_history_2026", tag="v2026.08.20-planes-readsb-staging-0",
+            parts=1, members=5, targets=6, landed=landed, missing=0, errors=0, engine=eng)
+    with eng.begin() as conn:
+        rows = conn.execute(sa.text("SELECT landed FROM adsblol_release_landings")).all()
+    assert [r.landed for r in rows] == [20]

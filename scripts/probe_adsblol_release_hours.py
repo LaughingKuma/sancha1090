@@ -4,7 +4,6 @@ import argparse
 import json
 import sys
 import time
-import urllib.request
 from collections import Counter
 from datetime import date, datetime, timezone
 
@@ -13,44 +12,22 @@ from datetime import date, datetime, timezone
 sys.path.insert(0, "/opt/airflow")
 
 from include import adsblol_backfill as ab
-from include.adsblol_routes import FETCH_SPACING_S
+from include.adsblol_release import KIND_SUFFIXES, find_release, open_release
 from include.clickhouse import ch_client
-from scripts.backfill_adsblol_states import USER_AGENT, _head_ok
 
 # Empty hours in the global sample of EVERY published variant = the gap is upstream and no re-fetch can
 # fill it; hours present in any variant but absent from bronze = our miss, land them from that variant.
-KINDS = ("prod-0", "prod-0tmp", "staging-0")
+KINDS = KIND_SUFFIXES
 # A variant whose sample holds under this share of its own busiest hour counts as empty for that hour.
 EMPTY_HOUR_RATIO = 0.01
 
 
-def _paced_head_ok(url: str) -> bool:
-    time.sleep(FETCH_SPACING_S)
-    return _head_ok(url)
-
-
 def _open(day: date, kind: str) -> ab.ChainedReader | None:
-    tag = f"v{day.year}.{day.month:02d}.{day.day:02d}-planes-readsb-{kind}"
-    repo = f"globe_history_{day.year}"
-    parts = [""] if _paced_head_ok(ab.part_url(repo, tag)) else []
-    if not parts:
-        for i in range(40):
-            suffix = chr(ord("a") + i // 26) + chr(ord("a") + i % 26)
-            if not _paced_head_ok(ab.part_url(repo, tag, suffix)):
-                break
-            parts.append(suffix)
-    if not parts:
+    ref = find_release(day, kinds=(kind,))
+    if ref is None:
         return None
-    print(f"{day} {repo}/{tag}: {len(parts)} part(s)", flush=True)
-
-    def opener(part: str):
-        def _o():
-            time.sleep(FETCH_SPACING_S)
-            req = urllib.request.Request(ab.part_url(repo, tag, part), headers={"User-Agent": USER_AGENT})
-            return urllib.request.urlopen(req, timeout=120)
-        return _o
-
-    return ab.ChainedReader([opener(p) for p in parts])
+    print(f"{day} {ref.repo}/{ref.tag}: {len(ref.parts)} part(s)", flush=True)
+    return open_release(ref)
 
 
 def _bronze_hexes(day: date) -> set[str]:

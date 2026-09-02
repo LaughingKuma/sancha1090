@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # Pins the workbench wire schemas: `--write` regenerates tests/fixtures/workbench/schema_snapshot.json but
-# refuses a schema change under an unchanged contract — an envelope change must bump livemap/wb_contract.json.
+# refuses a schema change under an unchanged contract. Rule: an envelope change bumps livemap/wb_contract.json
+# first, then `--write` regenerates the snapshot, then src/features/workbench/wire.d.ts follows. The refusal
+# only guards this regenerate path; the /features-to-bundle handshake is what enforces it at runtime.
 import json
 import sys
 from pathlib import Path

@@ -684,6 +684,8 @@ def _refresh_ladd_suppress(current):
 
 
 async def _poller() -> None:
+    # These names are REASSIGNED, so the module stays their owner: an importer that binds them at
+    # import time keeps the object from that instant and never sees a later tick.
     global _snapshot, _outline, _routes, _ladd_suppress
     n = 0
     while True:

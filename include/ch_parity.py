@@ -260,9 +260,10 @@ def run_source_gate(*, ch_query=None, serving_query=None) -> dict:
 
 
 # Trajectory-coverage alarm (rung 1; re-derived rung 3): day_key is a midnight epoch and the head advances
-# after the 03:00 UTC trace load -- lag-1 worst case (1 settlement + 1 cadence + 1 self)d + ~3h build + one
-# tolerated 24h publish slip -> 4.5d. A stall reds here; share owns value regressions AND is the only alarm
-# for an interior missed trace day (freshness stays green when max(trace_day) advances past a hole).
+# after the 04:00 UTC release landing (the sensor waits up to 17 h for a late release) -- lag-1 worst case
+# (1 settlement + 1 cadence + 1 self)d + ~3h build + one tolerated 24h publish slip = ~4.1d, kept at 4.5d
+# for slack. A stall reds here; share owns value regressions AND is the only alarm for an interior missed
+# trace day (freshness stays green when max(trace_day) advances past a hole).
 _PATH_FRESHNESS_LAG_TOL_S = int(4.5 * 86400)
 # Healthy days measure 84-96% of reconciled flights with >=1 adsblol fix; the starved cliff was ~60%.
 # 75 splits the bands with ~9pt margin each side. Low-flight days are skipped-but-reported, never silent.
@@ -352,7 +353,7 @@ def run_path_coverage_gate(*, ch_query=None) -> dict:
 
 
 # Memory-headroom alarm (#188): spill is the dynamic early warning, 0.8 backstops runs where no
-# spill fires first; 0.5 would false-alarm healthy nodes (see the 2026-08-25 note for derivations).
+# spill fires first; 0.5 would false-alarm healthy nodes (docs/notes/runbooks.md#memory-headroom-alarm).
 _MEM_HEADROOM_RATIO = 0.8
 
 # One shared pattern: the canary MUST parse with the exact regex the main query filters by, or a
@@ -360,7 +361,7 @@ _MEM_HEADROOM_RATIO = 0.8
 _MEM_HEADROOM_NODE_RE = r'"node_id": "((?:model|test)\\.sancha1090\\.[^"]+)"'
 
 # Per-row ratio because caps change mid-window; no query_kind filter so dbt test SELECTs are
-# covered too. Details: docs/notes/2026-08-25-memory-headroom-alarm.md.
+# covered too. Details: docs/notes/runbooks.md#memory-headroom-alarm.
 _MEM_HEADROOM_SQL = (
     "SELECT node,"
     " max(ratio) AS max_ratio,"

@@ -1,7 +1,7 @@
 {{ config(
     materialized='table',
     tags=['swim'],
-    query_settings={'max_memory_usage': 12000000000},
+    query_settings={'max_memory_usage': 7000000000},
 ) }}
 
 -- Physical seam: ClickHouse substitutes CTEs per reference, so as a CTE inside int_swim_flight this

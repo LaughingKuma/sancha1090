@@ -42,7 +42,8 @@
 -- nearest is necessarily one of them. (A single preceding-only ASOF under-fills by 18%, so both sides
 -- are required for parity.) snapshot_time is DateTime64(6) -> micro-epoch seconds to match to_unixtime.
 -- Incremental by UTC day (#193): a full-history rebuild carries every callsign-bearing OpenSky row as the ASOF build
--- side (~6 GB, +0.04 GB/day). Only the trailing window rebuilds; replayed bronze older than it needs the repair vars (docs/datalake.md).
+-- side (~6 GB, +0.04 GB/day). Only the trailing window rebuilds; replayed bronze older than it needs the repair vars
+-- (docs/notes/runbooks.md#callsign-backfill-repair).
 with
 {%- if windowed %}
 build_days as (

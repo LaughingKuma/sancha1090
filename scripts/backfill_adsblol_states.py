@@ -3,9 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
-import urllib.error
-import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterator, Optional
 
@@ -18,11 +15,9 @@ import sqlalchemy as sa
 
 from include import adsblol_backfill as ab
 from include import manifest
+from include.adsblol_release import find_release, open_release, quality_gate
 from include.db import analytics_engine
 from include.s3_helpers import get_bucket, write_parquet
-
-USER_AGENT = "sancha1090-backfill"
-CORRUPT_RATIO_CEILING = 0.01
 
 RAW_STATES_SCHEMA = {
     "icao24": pl.Utf8,
@@ -48,12 +43,8 @@ RAW_STATES_SCHEMA = {
 
 
 def _quality_gate(members: int, corrupt: int, min_traces: int) -> None:
-    # Tolerate isolated corrupt traces, but a desynced tar stream corrupts everything
-    # after the bad spot — never commit a quietly-partial day. min_traces is a knob:
-    # some upstream days are legitimately partial (e.g. 2026-05-05's 236 MB tar) and
-    # need a deliberate lower floor to land.
-    if members < min_traces or corrupt > members * CORRUPT_RATIO_CEILING:
-        raise RuntimeError(f"day failed quality gate: {members} traces, {corrupt} corrupt")
+    # This wave decompresses every member, so extracted == members.
+    quality_gate(members, corrupt, members, min_traces)
 
 
 def _day_range(start: date, end: date) -> Iterator[date]:
@@ -97,52 +88,12 @@ def _manifest_status(uri: str, engine: Optional[sa.Engine] = None) -> str:
     return "ch_loaded" if row.done else "pending"
 
 
-def _head_ok(url: str) -> bool:
-    # Only a definitive 404 means "part doesn't exist" — treating a transient
-    # 403/429/5xx as missing would silently truncate the tar part chain into a
-    # partial (and committable) day.
-    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": USER_AGENT})
-    last_exc: Optional[Exception] = None
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=30):
-                return True
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                return False
-            last_exc = exc
-        except urllib.error.URLError as exc:
-            last_exc = exc
-        time.sleep(2**attempt)
-    raise RuntimeError(f"HEAD {url} kept failing: {last_exc}")
-
-
 def _open_release(day: date) -> Optional[ab.ChainedReader]:
-    for repo, tag in ab.release_candidates(day):
-        # Sub-2GB days ship as one unsplit .tar; larger days split into aa/ab/...
-        if _head_ok(ab.part_url(repo, tag)):
-            parts = [""]
-        else:
-            parts = []
-            for i in range(40):
-                suffix = chr(ord("a") + i // 26) + chr(ord("a") + i % 26)
-                if not _head_ok(ab.part_url(repo, tag, suffix)):
-                    break
-                parts.append(suffix)
-        if not parts:
-            continue
-        print(f"{day}: using {repo}/{tag} ({len(parts)} part(s))")
-
-        def opener(part: str, repo: str = repo, tag: str = tag):
-            def _open():
-                req = urllib.request.Request(
-                    ab.part_url(repo, tag, part), headers={"User-Agent": USER_AGENT}
-                )
-                return urllib.request.urlopen(req, timeout=120)
-            return _open
-
-        return ab.ChainedReader([opener(p) for p in parts])
-    return None
+    ref = find_release(day)
+    if ref is None:
+        return None
+    print(f"{day}: using {ref.repo}/{ref.tag} ({len(ref.parts)} part(s))")
+    return open_release(ref)
 
 
 def _day_rows(day: date, reader: ab.ChainedReader, min_traces: int) -> pl.DataFrame:
@@ -211,24 +162,22 @@ def run(start: date, end: date, min_traces: int, stop_after_missing: int, dry_ru
 
         try:
             df = _day_rows(day, reader, min_traces)
+            if dry_run:
+                print(f"{day}: DRY RUN — {df.height} rows, would write to {uri}")
+                continue
+            write_parquet(df, key)
+            epochs = df.get_column("snapshot_time")
+            manifest.record_load(
+                uri,
+                int(epochs.min()) if df.height else None,
+                int(epochs.max()) if df.height else None,
+                df.height,
+                engine=engine,
+            )
         except Exception as exc:  # noqa: BLE001 — one bad day must not abort the wave; reruns retry it
             failures.append(f"{day} ({exc})")
             print(f"{day}: FAILED — {exc}")
             continue
-
-        if dry_run:
-            print(f"{day}: DRY RUN — {df.height} rows, would write to {uri}")
-            continue
-
-        write_parquet(df, key)
-        epochs = df.get_column("snapshot_time")
-        manifest.record_load(
-            uri,
-            int(epochs.min()) if df.height else None,
-            int(epochs.max()) if df.height else None,
-            df.height,
-            engine=engine,
-        )
 
     if failures:
         print(f"{len(failures)} day(s) failed:")

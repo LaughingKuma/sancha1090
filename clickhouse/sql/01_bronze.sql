@@ -271,8 +271,8 @@ ORDER BY (msg_timestamp, acid, _dedup_fp)
 PRIMARY KEY (msg_timestamp, acid)
 SETTINGS allow_nullable_key = 1, fsync_after_insert = 1, fsync_part_directory = 1;
 
--- Append-only serving exhaust (design §7): geometry stays out of silver/gold so guesses never
--- masquerade as conformed flight geometry; gold agg_est_* carry serving telemetry only (rev 10.3).
+-- Append-only serving exhaust: geometry stays out of silver/gold so guesses never
+-- masquerade as conformed flight geometry; gold agg_est_* carry serving telemetry only.
 -- One kind='request' header row per estimate + one row per emitted segment.
 CREATE TABLE IF NOT EXISTS bronze.path_estimates (
   estimate_id        UUID,

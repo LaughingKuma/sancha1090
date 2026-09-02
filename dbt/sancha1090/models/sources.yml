@@ -7,18 +7,20 @@ sources:
     schema: bronze
     tables:
       - name: opensky_states
-        description: "Aircraft state vectors loaded from the Garage Parquet landing zone"
+        description: "Aircraft state vectors loaded from the Garage Parquet landing zone. Three timestamps, never interchangeable: snapshot_time is when OpenSky observed the state (the only one to filter or group on), ingested_at the scheduled tick the fetch ran for, committed_at when the loader inserted the row (excluded from the dedup fingerprint so a replay collapses). spi is Nullable(Bool) here, Nullable(Int64) in adsb_states."
         columns:
           - name: icao24
             tests:
               - not_null
           - name: snapshot_time
+            description: "Observation time (UTC). snapshot_date is MATERIALIZED from it and drives the partition."
             tests:
               - not_null
       - name: adsb_states
-        description: "Byte-faithful readsb ADS-B state vectors; db_flags is the dbFlags integer baked at load (v6.3 dropped the verbatim _raw_json blob from CH — it lives in the source Garage/NAS Parquet)"
+        description: "Byte-faithful readsb ADS-B state vectors; db_flags is the dbFlags integer baked at load (the verbatim _raw_json blob is not in CH — it lives in the source Garage/NAS Parquet). Column names and types mirror readsb, so: `desc` is a ClickHouse reserved word and must be backticked in every query; alt_baro is a String because readsb emits the literal 'ground' alongside numeric altitudes; spi is Int64 here, Bool in opensky_states. capture_ts is a Float64 epoch second, and capture_date is MATERIALIZED from it for the partition key."
         columns:
           - name: hex
+            description: "Lowercase Mode-S address; joins to the OpenSky feed as hex = lower(icao24)."
             tests:
               - not_null
       - name: opensky_flights
@@ -75,14 +77,22 @@ sources:
             tests:
               - not_null
       - name: swim_flightdata
-        description: "FAA SWIM TFMData filed flight plans (SP3a landing lane); one row per fltdMessage."
+        description: "FAA SWIM TFMData filed flight plans; one row per fltdMessage, parsed by include/swim_parser.py."
         columns:
           - name: msg_timestamp
             description: "@sourceTimeStamp — the amendment version; on every message, used for argMax + ORDER BY."
             tests:
               - not_null
+          - name: dep_point_kind
+            description: "How the filed departure point was expressed: 'airport' (dep_point holds the ICAO code), 'latlon', 'fixradial', 'fix', or 'unknown'. Only 'airport' yields a usable endpoint; the others leave dep_point NULL with the filed text in dep_point_raw. arr_point_kind is the same domain for the arrival end."
+          - name: computer_id
+            description: "FAA computer ID as 'facility/number' (e.g. ZOB/123). Either half can be missing: the parser joins only the parts present, so a partial pair is 'ZOB' or '123', never 'ZOB/None'. NULL when neither is filed."
+          - name: gufi
+            description: "Globally unique flight identifier when the message carries one; first choice for the flight identity key."
+          - name: acid
+            description: "Filed aircraft ID (the callsign). Messages without one are dropped from silver_ch.swim_latest: the filed plan is only matched to an airframe through this callsign, so a row without acid can never attach to a flight."
       - name: path_estimates
-        description: "Livemap estimate-serving exhaust (estimated-path design §7): one request row (seg_idx=0) plus one row per served segment, INSERT-only via livemap_writer. Analytics substrate only — estimate rows never enter the flight marts (standing invariant)."
+        description: "Livemap estimate-serving exhaust: one request row (seg_idx=0) plus one row per served segment, INSERT-only via livemap_writer. Analytics substrate only — estimate rows never enter the flight marts (standing invariant)."
         columns:
           - name: estimate_id
             tests:

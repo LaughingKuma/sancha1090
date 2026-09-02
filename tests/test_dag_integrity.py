@@ -161,17 +161,17 @@ EXPECTED_DAGS = {
         "is_paused_upon_creation": False,
     },
     "ingest_adsblol_routes": {
-        "schedule": "0 3 * * *",
+        "schedule": "0 4 * * *",
         "catchup": False,
         "max_active_runs": 1,
-        "task_ids": {"cohort_fetch_and_land", "fetch_and_land", "load_to_clickhouse"},
-        # The two fetch tasks run one at a time so their worker pools never stack.
+        "task_ids": {"wait_for_release", "land_releases", "load_to_clickhouse"},
+        # all_done on the sweep so a sensor timeout never stops older published days from landing.
         "downstream_task_ids": {
-            "cohort_fetch_and_land": {"fetch_and_land", "load_to_clickhouse"},
-            "fetch_and_land": {"load_to_clickhouse"},
+            "wait_for_release": {"land_releases"},
+            "land_releases": {"load_to_clickhouse"},
         },
         "trigger_rules": {
-            "fetch_and_land": "all_done",
+            "land_releases": "all_done",
             "load_to_clickhouse": "all_done",
         },
     },

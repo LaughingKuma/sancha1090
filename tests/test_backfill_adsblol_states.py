@@ -113,3 +113,36 @@ def test_run_returns_failure_exit_code_even_when_floor_hit_after_an_earlier_fail
 
     rc = bas.run(date(2026, 5, 1), date(2026, 5, 5), min_traces=10_000, stop_after_missing=1, dry_run=False)
     assert rc == 1
+
+
+def test_run_continues_to_next_day_after_a_write_failure(monkeypatch, capsys):
+    import polars as pl
+
+    monkeypatch.setattr(bas, "analytics_engine", lambda: None)
+    monkeypatch.setattr(bas, "get_bucket", lambda: "bucket")
+    monkeypatch.setattr(bas, "_manifest_status", lambda *_a, **_kw: "missing")
+    opened = []
+    monkeypatch.setattr(bas, "_open_release", lambda day: opened.append(day) or "READER")
+    monkeypatch.setattr(bas, "_day_rows", lambda *_a, **_kw: pl.DataFrame(
+        {"snapshot_time": [1, 2]}, schema={"snapshot_time": pl.Int64}))
+    recorded = []
+    monkeypatch.setattr(bas.manifest, "record_load", lambda uri, *_a, **_kw: recorded.append(uri))
+
+    calls = {"n": 0}
+
+    def fake_write_parquet(_df, key):
+        calls["n"] += 1
+        if calls["n"] == 1:  # first write of the wave — a transient failure on day 1
+            raise RuntimeError("write boom")
+        return f"s3://bucket/{key}"
+
+    monkeypatch.setattr(bas, "write_parquet", fake_write_parquet)
+
+    rc = bas.run(date(2026, 6, 25), date(2026, 6, 26), min_traces=1, stop_after_missing=3,
+                 dry_run=False)
+    assert rc == 1
+    assert opened == [date(2026, 6, 25), date(2026, 6, 26)]  # day 2 still attempted
+    # The failed day leaves NO manifest record; the wave's summary names it.
+    assert recorded == [("s3://bucket/bronze/adsblol_states_raw/dt=2026-06-26/"
+                         "source=adsblol/part-000.parquet")]
+    assert "2026-06-25 (write boom)" in capsys.readouterr().out

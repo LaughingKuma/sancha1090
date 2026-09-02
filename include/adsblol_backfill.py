@@ -34,14 +34,14 @@ GITHUB_RELEASE_URL = "https://github.com/adsblol/{repo}/releases/download/{tag}/
 
 
 def release_candidates(day: date) -> list[tuple[str, str]]:
-    # Year-boundary days are published in the adjacent year's repo, and some days
-    # carry -0tmp or staging tags (e.g. 2025-06-01, 2026-05-06) — probe in order.
+    # Some days carry -0tmp or staging tags (e.g. 2025-06-01, 2026-05-06) — probe in order. Only a
+    # December day can land in the next year's repo; probing it otherwise is 6 wasted HEADs per poke.
     tags = [
         f"v{day.year}.{day.month:02d}.{day.day:02d}-planes-readsb-prod-0",
         f"v{day.year}.{day.month:02d}.{day.day:02d}-planes-readsb-prod-0tmp",
         f"v{day.year}.{day.month:02d}.{day.day:02d}-planes-readsb-staging-0",
     ]
-    repos = [f"globe_history_{day.year}", f"globe_history_{day.year + 1}"]
+    repos = [f"globe_history_{day.year}"] + ([f"globe_history_{day.year + 1}"] if day.month == 12 else [])
     return [(repo, tag) for tag in tags for repo in repos]
 
 
@@ -89,11 +89,16 @@ class ChainedReader:
         self._idx = len(self._openers)
 
 
-def iter_trace_members(stream: Any) -> Iterator[tuple[str, Optional[bytes]]]:
+def iter_trace_members(stream: Any,
+                       keep: Optional[Callable[[str], bool]] = None) -> Iterator[tuple[str, Optional[bytes]]]:
     try:
         with tarfile.open(fileobj=stream, mode="r|") as tar:
             for member in tar:
                 if not member.isfile() or "trace_full_" not in member.name:
+                    continue
+                # Deciding before extractfile is what skips the gunzip of ~55k of a day's
+                # ~60k members when the caller only wants its own target hexes.
+                if keep is not None and not keep(member.name):
                     continue
                 fobj = tar.extractfile(member)
                 if fobj is None:

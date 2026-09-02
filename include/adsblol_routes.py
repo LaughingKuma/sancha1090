@@ -1,26 +1,15 @@
 from __future__ import annotations
 
-import gzip
-import json
 import logging
 import math
 import os
 import re
-import threading
-import time
-import zlib
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, timedelta
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 import polars as pl
-import requests
 
-from include import manifest
-from include import adsblol_route_ledger as ledger
 from include.adsblol_backfill import _num, _trace_preamble
-from include.s3_helpers import write_parquet
 
 log = logging.getLogger(__name__)
 
@@ -43,46 +32,6 @@ SLOW_GAP_SPEED_KMH = 100
 # Mirrors dbt legs_cruise_alt_m (3000 m, the snap/overflight ceiling): a real landing descends
 # through it, so cruise-level coverage voids (both fixes high) must not split.
 SLOW_GAP_CEIL_FT = 9843.0
-
-TRACE_URL = "https://globe.adsb.lol/globe_history/{y}/{m:02d}/{d:02d}/traces/{shard}/trace_full_{hexid}.json"
-USER_AGENT = "sancha1090-routes"
-
-
-_SESSION: Optional[requests.Session] = None
-
-
-def _default_session() -> requests.Session:
-    # Lazily-built shared session for standalone fetch_trace calls; run_daily passes its own.
-    global _SESSION
-    if _SESSION is None:
-        _SESSION = requests.Session()
-    return _SESSION
-
-
-def fetch_trace(day: date, hexid: str, *, session: Optional[requests.Session] = None,
-                timeout: int = 30) -> Optional[dict[str, Any]]:
-    url = TRACE_URL.format(y=day.year, m=day.month, d=day.day, shard=hexid[-2:], hexid=hexid)
-    sess = session or _default_session()
-    last: Optional[Exception] = None
-    for attempt in range(3):
-        try:
-            resp = sess.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
-            # 404 = the aircraft has no trace that day — a fact, not an error.
-            if resp.status_code == 404:
-                return None
-            resp.raise_for_status()
-            data = resp.content
-            # adsb.lol serves gzip CONTENT under the bare .json name (requests only auto-decodes
-            # Content-Encoding), so decompress the body bytes ourselves on the magic byte.
-            if data[:2] == b"\x1f\x8b":
-                data = gzip.decompress(data)
-            return json.loads(data)
-        except (requests.RequestException, json.JSONDecodeError,
-                gzip.BadGzipFile, zlib.error, EOFError) as exc:
-            last = exc
-        time.sleep(2 ** attempt)
-    raise RuntimeError(f"trace fetch kept failing for {url}: {last}")
-
 
 RAW_SEGMENTS_SCHEMA = {
     "icao24": pl.Utf8,
@@ -291,205 +240,64 @@ def paths_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
     return _frame(rows, RAW_PATHS_SCHEMA)
 
 
-# ~4 req/s: polite pacing against globe.adsb.lol's static hosting.
-FETCH_SPACING_S = 0.25
-
-
-def route_targets(day: date, *, client=None) -> list[str]:
-    from include.clickhouse import ch_client
-
-    gold = os.environ.get("CH_GOLD_SCHEMA", "gold_ch")
-    c = client or ch_client()
-    try:
-        # Overlap on either endpoint: a flight landing on 'day' but departing 'day-1' must be
-        # targeted on the 'day' run so run_daily's (day, day-1) fetch grabs its arrival trace.
-        # Every reconciled flight qualifies (rung 1): endpoint-NULL-only targeting starved
-        # fct_flight_path once SWIM resolved O/D pre-departure; the attempt ledger self-limits.
-        rows = c.query(
-            f"SELECT DISTINCT lower(icao24) FROM {gold}.fct_flights_reconciled "
-            f"WHERE (toDate(start_time) = %(day)s OR toDate(end_time) = %(day)s) "
-            f"AND icao24 IS NOT NULL",
-            parameters={"day": day.isoformat()},
-        ).result_rows
-    finally:
-        if client is None:
-            c.close()
-    return sorted({r[0] for r in rows if r[0]})
-
-
 _HEX_RE = re.compile(r"^[0-9a-f]{6}$")
 
 
-def rooftop_cohort(day: date, *, client=None) -> list[str]:
+def _hexes(sql: str, params: dict, *, client=None) -> list[str]:
     from include.clickhouse import ch_client
 
     c = client or ch_client()
     try:
-        # Bronze has zero non-ICAO hexes today; the SQL match() + this module's own regex
-        # re-check are both belts so a producer schema change can't leak junk fetch targets.
-        rows = c.query(
-            "SELECT DISTINCT lower(hex) FROM bronze.adsb_states "
-            "WHERE capture_date = %(day)s AND hex IS NOT NULL "
-            "AND match(lower(hex), '^[0-9a-f]{6}$')",
-            parameters={"day": day.isoformat()},
-        ).result_rows
+        rows = c.query(sql, parameters=params).result_rows
     finally:
         if client is None:
             c.close()
+    # Bronze has zero non-ICAO hexes today; the SQL match() and this regex re-check are both belts
+    # so a producer schema change can't leak junk fetch targets.
     return sorted({r[0] for r in rows if r[0] and _HEX_RE.match(r[0])})
 
 
-def _fetch_pair(fetch, session, hexid: str, iso_day: str, spacing_s: float):
-    # One pair's whole unit of work (fetch + politeness sleep + segmentation), returning its rows
-    # and attempt outcome so the caller aggregates on a single thread — workers never touch shared
-    # state. spacing_s is paid inside every branch so the effective rate is ~workers/spacing.
-    d = date.fromisoformat(iso_day)
-    try:
-        doc = fetch(d, hexid, session=session)
-    except RuntimeError as exc:
-        log.warning("trace fetch failed for (%s, %s): %s", hexid, iso_day, exc)
-        # One persistently-failing pair must not discard the rest of the run's fetches.
-        time.sleep(spacing_s)
-        return [], [], (hexid, iso_day, "error")
-    if doc is None:
-        time.sleep(spacing_s)
-        return [], [], (hexid, iso_day, "missing")
-    try:
-        segs = trace_segments(doc, d)
-        paths = trace_paths(doc, d, segs)
-    except Exception:
-        log.warning("trace segmentation failed for (%s, %s)", hexid, iso_day, exc_info=True)
-        # A malformed-but-parseable doc (unexpected shape) must not kill the whole batch either —
-        # same isolation as a fetch error, so the ledger's error-retry cooldown owns the pair.
-        time.sleep(spacing_s)
-        return [], [], (hexid, iso_day, "error")
-    time.sleep(spacing_s)
-    return segs, paths, (hexid, iso_day, "landed")
-
-
-def _run_serial(pairs, fetch, spacing_s, progress, total):
-    rows: list[dict[str, Any]] = []
-    path_rows: list[dict[str, Any]] = []
-    attempts: list[tuple[str, str, str]] = []
-    # One session per run reuses the TLS connection across every fetch (the bulk of per-pair cost).
-    session = requests.Session()
-    done = 0
-    try:
-        for hexid, iso_day in pairs:
-            segs, paths, attempt = _fetch_pair(fetch, session, hexid, iso_day, spacing_s)
-            rows.extend(segs)
-            path_rows.extend(paths)
-            attempts.append(attempt)
-            done += 1
-            if progress is not None:
-                progress(done, total)
-    finally:
-        session.close()
-    return rows, path_rows, attempts
-
-
-def _run_concurrent(pairs, fetch, spacing_s, workers, progress, total):
-    rows: list[dict[str, Any]] = []
-    path_rows: list[dict[str, Any]] = []
-    attempts: list[tuple[str, str, str]] = []
-    # Sessions aren't thread-safe, so each worker thread lazily builds and reuses its own (still
-    # keep-alive within the thread); all are tracked for close at the end.
-    tls = threading.local()
-    sessions: list[requests.Session] = []
-    sessions_lock = threading.Lock()
-
-    def worker(pair):
-        sess = getattr(tls, "session", None)
-        if sess is None:
-            sess = requests.Session()
-            tls.session = sess
-            with sessions_lock:
-                sessions.append(sess)
-        return _fetch_pair(fetch, sess, pair[0], pair[1], spacing_s)
-
-    done = 0
-    try:
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            # Aggregate on the main thread as futures complete — the only writer of the shared lists.
-            for fut in as_completed([ex.submit(worker, p) for p in pairs]):
-                segs, paths, attempt = fut.result()
-                rows.extend(segs)
-                path_rows.extend(paths)
-                attempts.append(attempt)
-                done += 1
-                if progress is not None:
-                    progress(done, total)
-    finally:
-        for s in sessions:
-            s.close()
-    return rows, path_rows, attempts
-
-
-def run_daily(
-    day: date,
-    targets: Optional[list[str]] = None,
-    *,
-    engine=None,
-    fetch=None,
-    spacing_s: float = FETCH_SPACING_S,
-    progress=None,
-    workers: int = 1,
-    include_error_retries: bool = False,
-    include_missing_retries: bool = False,
-    raise_on_errors: bool = False,
-) -> dict:
-    fetch = fetch or fetch_trace
-    # None keeps the scheduled route_targets(day) selection; a list is the backfill's re-segment
-    # target set, still flowing through filter_unattempted + record_attempts below.
-    hexes = targets if targets is not None else route_targets(day)
-    # Scheduled path also fetches D-1 (midnight-spanning departures live in the prior day's trace); explicit
-    # targets fetch their own day only — pure double-fetch for backfill re-segments, but for the cohort lane an
-    # accepted cross-midnight gap: a hex heard on only one UTC day never gets the other day's trace.
-    days = (day,) if targets is not None else (day, day - timedelta(days=1))
-    pairs = [(h, d.isoformat()) for h in hexes for d in days]
-    retry_pairs = (
-        (ledger.due_error_pairs(engine) if include_error_retries else [])
-        + (ledger.due_missing_pairs(engine) if include_missing_retries else [])
+def route_targets(day: date, *, client=None) -> list[str]:
+    gold = os.environ.get("CH_GOLD_SCHEMA", "gold_ch")
+    # Overlap on either endpoint: a flight landing on 'day' but departing 'day-1' must be
+    # targeted on the 'day' run — the release lane extracts D's tar for D and D+1 targets.
+    # Every reconciled flight qualifies (rung 1): endpoint-NULL-only targeting starved
+    # fct_flight_path once SWIM resolved O/D pre-departure; the attempt ledger self-limits.
+    return _hexes(
+        f"SELECT DISTINCT lower(icao24) FROM {gold}.fct_flights_reconciled "
+        f"WHERE (toDate(start_time) = %(day)s OR toDate(end_time) = %(day)s) "
+        f"AND icao24 IS NOT NULL",
+        {"day": day.isoformat()},
+        client=client,
     )
-    pairs = list(dict.fromkeys([*pairs, *retry_pairs]))
-    pairs = ledger.filter_unattempted(pairs, engine)
 
-    total = len(pairs)
-    # workers=1 = the scheduled DAG's byte-identical serial loop; >1 = the backfill's concurrent lane.
-    if workers > 1:
-        rows, path_rows, attempts = _run_concurrent(pairs, fetch, spacing_s, workers, progress, total)
-    else:
-        rows, path_rows, attempts = _run_serial(pairs, fetch, spacing_s, progress, total)
 
-    df = segments_frame(rows)
-    pdf = paths_frame(path_rows)
-    # Outcome tally lets the backfill print a per-day landed/missing/errors line.
-    result = {"targets": len(hexes), "retry_pairs": len(retry_pairs), "fetched": len(pairs),
-              "rows": df.height, "path_rows": pdf.height, "uri": None,
-              "landed": sum(1 for _, _, o in attempts if o == "landed"),
-              "missing": sum(1 for _, _, o in attempts if o == "missing"),
-              "errors": sum(1 for _, _, o in attempts if o == "error"),
-              # Landed hexes only: the backfill deletes their superseded bronze rows (a re-walk that
-              # drops a landing's leading ground cluster gets a new seg_start the RMT won't replace).
-              "landed_hexes": sorted({h for h, _, o in attempts if o == "landed"})}
-    # One stamp per run: a same-day rerun lands additively (record_load keeps ch_loaded_at on a
-    # same-key rewrite, so overwriting part-000 never re-drained); the RMT dedups overlaps.
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-    if df.height:
-        key = f"bronze/adsblol_flight_segments/dt={day.isoformat()}/part-{stamp}.parquet"
-        uri = write_parquet(df, key)
-        starts = df.get_column("seg_start")
-        manifest.record_load(uri, int(starts.min()), int(starts.max()), df.height, engine=engine)
-        result["uri"] = uri
-    if pdf.height:
-        pkey = f"bronze/adsblol_flight_paths/dt={day.isoformat()}/part-{stamp}.parquet"
-        puri = write_parquet(pdf, pkey)
-        ts = pdf.get_column("ts")
-        manifest.record_load(puri, int(ts.min()), int(ts.max()), pdf.height, engine=engine)
-    ledger.record_attempts(attempts, engine)
-    if raise_on_errors and result["errors"]:
-        raise RuntimeError(
-            f"{result['errors']} adsb.lol trace pair(s) failed; successful pairs were landed and "
-            "failed pairs remain eligible for retry"
-        )
-    return result
+def rooftop_cohort(day: date, *, client=None) -> list[str]:
+    return _hexes(
+        "SELECT DISTINCT lower(hex) FROM bronze.adsb_states "
+        "WHERE capture_date = %(day)s AND hex IS NOT NULL "
+        "AND match(lower(hex), '^[0-9a-f]{6}$')",
+        {"day": day.isoformat()},
+        client=client,
+    )
+
+
+def release_targets(day: date, *, client=None) -> list[str]:
+    gold = os.environ.get("CH_GOLD_SCHEMA", "gold_ch")
+    # Every flight reconciled on D was in our own states on D, and a D+1 flight starting before
+    # midnight lives in D's trace; measured 08-20: 2,439 reconciled hexes in 3,557 state hexes, 0 residual.
+    return _hexes(
+        "SELECT DISTINCT h FROM ("
+        "SELECT lower(hex) AS h FROM bronze.adsb_states "
+        "WHERE capture_date IN (%(d0)s, %(d1)s) AND hex IS NOT NULL "
+        "UNION ALL "
+        "SELECT lower(icao24) FROM bronze.opensky_states "
+        "WHERE toDate(snapshot_time) IN (%(d0)s, %(d1)s) AND icao24 IS NOT NULL "
+        "UNION ALL "
+        f"SELECT lower(icao24) FROM {gold}.fct_flights_reconciled "
+        "WHERE (toDate(start_time) IN (%(d0)s, %(d1)s) OR toDate(end_time) IN (%(d0)s, %(d1)s)) "
+        "AND icao24 IS NOT NULL"
+        ") WHERE match(h, '^[0-9a-f]{6}$')",
+        {"d0": day.isoformat(), "d1": (day + timedelta(days=1)).isoformat()},
+        client=client,
+    )

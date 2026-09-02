@@ -15,7 +15,7 @@ def test_box_observed_join_is_bounded_by_a_day_key():
     # icao24 alone paired every spine row with every same-hex fix in history (2.6B pairs, 227 CPU-s/tick; #191).
     cte = _box_observed_cte()
 
-    assert cte.count("arrayJoin(range(") == 1
+    assert cte.count("overlap_days(") == 1
     assert "s.icao24 = sp.icao24 and s.overlap_day = sp.overlap_day" in cte
     assert "s.snapshot_time between sp.flight_start and sp.flight_end" in cte
 

@@ -36,7 +36,7 @@ running() {
     || { echo "ERROR: list-runs failed for $1 — refusing to reset blind" >&2; return 1; }
   grep -c "$1" <<<"$out" || true  # grep no-match rc=1 IS the drained case; only the CLI may fail us
 }
-# 10 min ≈ 3x the longest loader run ever recorded (207 s; docs/notes/2026-08-10-ch-backfill-drain-gate.md)
+# 10 min ≈ 3x the longest loader run ever recorded (207 s; docs/notes/runbooks.md#ch-backfill-drain-gate)
 for d in "${DAGS[@]}"; do
   for _ in $(seq 1 120); do
     n="$(running "$d")" || exit 1

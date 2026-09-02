@@ -14,12 +14,19 @@ def test_windowed_votes_are_materialized_before_vrs_scoring():
     assert "ref('int_flight_opinions')" not in final
 
 
+def _cte(text: str, name: str) -> str:
+    # Scope assertions to one CTE so an edit elsewhere can't satisfy them by accident.
+    start = text.index(f"{name} as (")
+    return text[start:text.index("\n),", start)]
+
+
 def test_attachment_join_is_bounded_by_an_overlap_day_key():
     # The day key is the actual fix: it cut the pre-predicate same-hex join from 484M to 7.7M pairs.
     attached = ATTACHED.read_text()
 
-    assert attached.count("arrayJoin(range(") == 2
-    assert "sp.overlap_day = o.overlap_day" in attached
+    assert "overlap_days(" in _cte(attached, "opinions_by_day")
+    assert "overlap_days(" in _cte(attached, "spine_by_day")
+    assert "sp.icao24 = o.icao24 and sp.overlap_day = o.overlap_day" in attached
 
 
 def test_attachment_stages_keep_query_memory_backstops():

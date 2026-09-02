@@ -244,6 +244,8 @@ def _gap_bin(duration_s):
         return "gap_15_60m"
     if duration_s <= 10800:
         return "gap_60_180m"
+    # gap_180m_plus has no calibration of its own and serves a floor; reopen this bin only when all
+    # four hold: implied GS >= 300 kt, bridge >= 1,000 nm, >= 18 segments per arm, airframe-disjoint arms.
     return "gap_180m_plus"
 
 

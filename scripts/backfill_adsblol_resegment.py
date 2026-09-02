@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-# Re-fetch trace-days the segmenter's new slow-gap arm would now split (turnaround-sized silence,
+# Re-extract trace-days the segmenter's new slow-gap arm would now split (turnaround-sized silence,
 # below the cruise ceiling, implied cross-gap speed too slow to have stayed airborne).
+# Also the shared re-land wave engine (run/cli/sweep_stale): backfill_adsblol_class1.py drives it with
+# its own selector, so this script outlives its own wave's convergence.
 import argparse
 from collections import defaultdict
 from datetime import date, datetime, timezone
 
 from include import adsblol_route_ledger as ledger
-from include.adsblol_routes import SLOW_GAP_CEIL_FT, SLOW_GAP_S, SLOW_GAP_SPEED_KMH, run_daily
+from include.adsblol_release import land_release_day, member_progress
+from include.adsblol_routes import SLOW_GAP_CEIL_FT, SLOW_GAP_S, SLOW_GAP_SPEED_KMH
 from include.clickhouse import (
     ch_client,
     load_adsblol_paths_pending_to_ch,
@@ -40,6 +43,11 @@ ORDER BY trace_day, icao24
 """
 
 
+def _day_iso(value) -> str:
+    # CH returns trace_day as a Date; the ledger stores it as ISO TEXT.
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
 def affected_pairs(client=None) -> list[tuple[str, str]]:
     from include.clickhouse import ch_client
 
@@ -49,19 +57,8 @@ def affected_pairs(client=None) -> list[tuple[str, str]]:
     finally:
         if client is None:
             c.close()
-    # Lower icao24 to match route_targets / ledger keys; trace_day comes back as a CH Date.
-    return [(str(r[0]).lower(),
-             r[1].isoformat() if hasattr(r[1], "isoformat") else str(r[1]))
-            for r in rows]
-
-
-def _progress(day):
-    # Block-buffered docker-exec stdout stays silent for a whole day otherwise; heartbeat
-    # every 100 fetches (and the final pair) so a long run visibly advances.
-    def cb(done, total):
-        if done % 100 == 0 or done == total:
-            print(f"    {day}: {done}/{total} fetched", flush=True)
-    return cb
+    # Lower icao24 to match route_targets / ledger keys.
+    return [(str(r[0]).lower(), _day_iso(r[1])) for r in rows]
 
 
 _SUPERSEDED_TABLES = ("bronze.adsblol_flight_segments", "bronze.adsblol_flight_paths")
@@ -88,8 +85,7 @@ def sweep_stale(client=None, *, execute: bool = False):
             rows = c.query(_STALE_HEXDAYS_SQL.format(table=table)).result_rows
             by_day_mx: dict[tuple[str, object], list[str]] = defaultdict(list)
             for r in rows:
-                day = r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0])
-                by_day_mx[(day, r[2])].append(r[1])
+                by_day_mx[(_day_iso(r[0]), r[2])].append(r[1])
             for (day, mx), hexes in sorted(by_day_mx.items(), key=lambda kv: kv[0][0]):
                 found_any = True
                 hexes = sorted(hexes)
@@ -140,18 +136,23 @@ def _clear_superseded(client, day: str, hexes: list[str], run_start: str):
     return cleared
 
 
-def run(*, execute: bool = False, sleep: float = 0.2, days_limit=None, workers: int = 5,
-        accept_missing: bool = False) -> int:
+def run(*, execute: bool = False, days_limit=None, accept_missing: bool = False,
+        affected=None) -> int:
     # One stamp before any work: the delete lower-bounds on it so freshly re-segmented rows survive.
-    run_start = datetime.now(timezone.utc).isoformat()
-    # Repair leftovers from an interrupted run first; report-only under --days so a pilot
-    # run never deletes beyond its window (explicit --sweep-stale stays global by intent).
-    sweep_execute = execute and days_limit is None
-    sweep_stale(execute=sweep_execute)
-    if execute and not sweep_execute:
-        print("stale sweep: report-only under --days; run --sweep-stale to clear.", flush=True)
+    # Naive-UTC format: CH 26.5 refuses the offset ISO form ('...T...+00:00') for DateTime64 binds.
+    run_start = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+    # Repair leftovers from an interrupted run first — BEFORE selecting: `affected` is a callable, not a
+    # list, because re-keyed leftovers survive FINAL and fake candidates if selection runs un-swept.
+    # Report-only under --days so a pilot never deletes beyond its window; a dry run skips the two big
+    # scans entirely (its selection sees the same un-swept bronze either way).
+    if execute:
+        sweep_execute = days_limit is None
+        sweep_stale(execute=sweep_execute)
+        if not sweep_execute:
+            print("stale sweep: report-only under --days; run --sweep-stale to clear.", flush=True)
     by_day: dict[str, list[str]] = defaultdict(list)
-    for icao24, day in affected_pairs():
+    # `or` fallback reads the module global late so a monkeypatched affected_pairs still wins.
+    for icao24, day in (affected or affected_pairs)():
         by_day[day].append(icao24)
     days = sorted(by_day)
     if days_limit is not None:
@@ -163,22 +164,28 @@ def run(*, execute: bool = False, sleep: float = 0.2, days_limit=None, workers: 
     if not execute:
         for d in days:
             print(f"  {d}: {len(by_day[d])} pairs", flush=True)
-        print("dry-run: nothing deleted or fetched. Re-run with --execute to apply.", flush=True)
+        print("dry-run: nothing deleted or extracted. Re-run with --execute to apply.", flush=True)
         return 0
 
     error_count = 0
     missing_count = 0
+    failures: list[str] = []
     landed_by_day: dict[str, list[str]] = {}
     for d in days:
         hexes = sorted(set(by_day[d]))
-        # Clear only this day's ledger rows; run_daily's D-1 pairs stay 'landed' and are skipped.
-        cleared = ledger.delete_attempts([(h, d) for h in hexes])
-        res = run_daily(date.fromisoformat(d), targets=hexes, spacing_s=sleep,
-                        progress=_progress(d), workers=workers)
+        try:
+            # Clear only this day's ledger rows so the tar re-extracts exactly these hexes.
+            cleared = ledger.delete_attempts([(h, d) for h in hexes])
+            res = land_release_day(date.fromisoformat(d), targets=set(hexes),
+                                   progress=member_progress(d, "    "))
+        except Exception as exc:  # noqa: BLE001 — one bad day must not abort the wave
+            failures.append(f"{d} ({exc})")
+            print(f"  {d}: FAILED — {exc}", flush=True)
+            continue
         error_count += res["errors"]
         missing_count += res["missing"]
         landed_by_day[d] = res["landed_hexes"]
-        print(f"  {d}: pairs={len(hexes)} cleared={cleared} workers={workers} "
+        print(f"  {d}: pairs={len(hexes)} cleared={cleared} "
               f"fetched={res['fetched']} landed={res['landed']} missing={res['missing']} "
               f"errors={res['errors']} seg_rows={res['rows']} path_rows={res['path_rows']}", flush=True)
 
@@ -205,14 +212,17 @@ def run(*, execute: bool = False, sleep: float = 0.2, days_limit=None, workers: 
         finally:
             client.close()
 
+    if failures:
+        print(f"{len(failures)} day(s) failed: {'; '.join(failures)}", flush=True)
     # Missing traces leave their old rows in place (deletes are landed-only); surface it and, unless
-    # explicitly accepted, fail the run so a rerun re-lands them once adsb.lol publishes the trace.
+    # explicitly accepted, fail the run so the operator decides whether another variant is worth it.
     if missing_count:
-        note = " (accepted via --accept-missing)" if accept_missing else " (rerun or pass --accept-missing)"
-        print(f"missing: {missing_count} trace(s) not found; old rows retained for those pairs{note}.",
-              flush=True)
+        note = " (accepted via --accept-missing)" if accept_missing else " (pass --accept-missing)"
+        print(f"missing: {missing_count} trace(s) not in the release; old rows retained for those "
+              f"pairs. Absence in the release is final — a rerun re-proposes them only if another "
+              f"variant is landed{note}.", flush=True)
 
-    return 1 if error_count or (missing_count and not accept_missing) or not drain_ok else 0
+    return 1 if error_count or failures or (missing_count and not accept_missing) or not drain_ok else 0
 
 
 def _nonneg_int(value: str) -> int:
@@ -222,27 +232,17 @@ def _nonneg_int(value: str) -> int:
     return n
 
 
-def _workers_int(value: str) -> int:
-    n = int(value)
-    if not 1 <= n <= 8:
-        raise argparse.ArgumentTypeError(f"--workers must be 1..8 (got {n})")
-    return n
-
-
-def _parse_args(argv=None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Re-fetch adsb.lol trace-days the old segmenter fused at a missed landing.")
+def _parse_args(argv=None, *,
+                description="Re-extract adsb.lol trace-days the old segmenter fused at a missed landing.",
+                execute_help="Delete ledger rows and re-extract. Without it this is a dry run.",
+                ) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=description)
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--execute", action="store_true",
-                   help="Delete ledger rows and refetch. Without it this is a dry run.")
+    g.add_argument("--execute", action="store_true", help=execute_help)
     g.add_argument("--dry-run", action="store_true",
                    help="Default: print per-day pair counts and exit, mutating nothing.")
-    p.add_argument("--sleep", type=float, default=0.2,
-                   help="Politeness delay (s) between trace fetches (default 0.2).")
     p.add_argument("--days", type=_nonneg_int, default=None,
                    help="Limit to the first N affected days (pilot run).")
-    p.add_argument("--workers", type=_workers_int, default=5,
-                   help="Concurrent fetch workers, 1..8 (default 5; 1 = serial).")
     p.add_argument("--accept-missing", action="store_true",
                    help="Don't fail the run on missing traces (old rows still retained for them).")
     p.add_argument("--sweep-stale", action="store_true",
@@ -251,13 +251,18 @@ def _parse_args(argv=None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv=None) -> int:
-    args = _parse_args(argv)
+def cli(argv=None, *, affected=None, **parser_kw) -> int:
+    # One wave CLI for every selector script; class1 passes its own selector + help strings.
+    args = _parse_args(argv, **parser_kw)
     if args.sweep_stale:
         sweep_stale(execute=args.execute)
         return 0
-    return run(execute=args.execute, sleep=args.sleep, days_limit=args.days, workers=args.workers,
-               accept_missing=args.accept_missing)
+    return run(execute=args.execute, days_limit=args.days,
+               accept_missing=args.accept_missing, affected=affected)
+
+
+def main(argv=None) -> int:
+    return cli(argv)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ from include.dag_defaults import default_args
     start_date=pendulum.datetime(2026, 5, 1, tz="UTC"),
     # :10, not :05 — the edge's hourly push lands :01-:05; :05 pickup lost a 5s race once (2026-07-21).
     # A backlog push after an edge outage loads days older than the callsign backfill's trailing window; run
-    # int_adsb_callsign_from_opensky's repair vars over those days after (see docs/datalake.md).
+    # int_adsb_callsign_from_opensky's repair vars over those days after (docs/notes/runbooks.md#callsign-backfill-repair).
     schedule="10 * * * *",
     catchup=False,
     max_active_runs=1,

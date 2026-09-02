@@ -49,5 +49,6 @@ def test_flight_key_expression_has_exactly_one_home():
 
 def test_swim_stages_keep_query_memory_backstops():
     # Caps bound each INSERT (dbt reds the model at the cap); host protection is the 24 GB server budget + cgroup.
-    assert "'max_memory_usage': 12000000000" in LATEST.read_text()
+    # 7e9 puts the headroom alarm line (0.8x) at 5.6 GB, above the measured 4.97 GB peak (#208).
+    assert "'max_memory_usage': 7000000000" in LATEST.read_text()
     assert "'max_memory_usage': 4000000000" in FLIGHT.read_text()

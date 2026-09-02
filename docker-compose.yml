@@ -258,9 +258,12 @@ services:
   redpanda:
     image: redpandadata/redpanda:v26.1.9
     # v4 ADS-B live hot path: single-node Kafka broker, tuned tiny (~1 GiB). Two Kafka
-    # listeners — internal (redpanda:9092) for in-stack consumers (RisingWave, v4.1) and
+    # listeners — internal (redpanda:9092) for in-stack consumers and
     # external (19092) advertised on the LAN so the antenna edge bridge can publish.
     # Minutes of retention only (set per-topic); the cold path owns durability.
+    # Verify: `docker compose exec redpanda rpk cluster info` (brokers healthy) and
+    # `docker compose exec redpanda rpk topic list` (adsb.live present); from the edge host,
+    # `nc -vz <main-pc-ip> 19092` proves the advertised external listener is actually reachable.
     command:
       - redpanda
       - start
@@ -322,8 +325,11 @@ services:
 
   risingwave:
     image: risingwavelabs/risingwave:v2.8.4
-    # v4.1 live hot path consumer: enriched MVs over adsb.live, read by Superset on PG-wire.
+    # Live hot path consumer: enriched MVs over adsb.live, read by Superset on PG-wire.
     # single_node embeds meta + state on one volume — no MinIO/extra-Postgres sidecars.
+    # Verify: `docker compose exec postgres-airflow psql -h risingwave -p 4566 -U root -d dev
+    # -c 'SELECT version();'`, or from the host `psql -h 127.0.0.1 -p 34566 -U root -d dev`
+    # (loopback port from docker-compose.override.yml).
     command:
       - single_node
       - --store-directory=/var/lib/risingwave
@@ -471,7 +477,8 @@ services:
     # First-boot CH marts bootstrap (idempotent, same steps as scripts/ch_setup_marts.sh minus the optional
     # heavy adsblol backfill): seed the dims (silver_ch + dim.dim_hex_country) -> reload the range_hashed dict
     # -> load bronze.aircraft_db, so the first transform_* tick has its seed/registry/dict deps. The optional
-    # adsb.lol history backfill (folds into the agg_hourly_traffic MV) stays a manual step — see the README.
+    # adsb.lol history backfill (folds into the agg_hourly_traffic MV) stays a manual step:
+    # `scripts/ch_setup_marts.sh` runs this same setup plus that history load.
     # dim_airports seed is split off with a scoped --full-refresh: a recreate over an existing CH volume
     # still holding the old 7-column table fails NO_SUCH_COLUMN_IN_TABLE on a plain seed.
     entrypoint: ["/bin/bash", "-c"]

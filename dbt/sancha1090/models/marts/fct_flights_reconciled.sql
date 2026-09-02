@@ -109,10 +109,7 @@ box_observed as (
     select distinct sp.flight_id as flight_id
     from (
         select flight_id, icao24, flight_start, flight_end,
-               arrayJoin(range(
-                   toUInt32(least(toRelativeDayNum(flight_start), toRelativeDayNum(flight_end))),
-                   toUInt32(greatest(toRelativeDayNum(flight_start), toRelativeDayNum(flight_end))) + 1
-               )) as overlap_day
+               {{ overlap_days('flight_start', 'flight_end') }} as overlap_day
         from {{ ref('int_flight_spine') }}
         where flight_start is not null and flight_end is not null
     ) sp

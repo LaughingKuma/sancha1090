@@ -177,6 +177,8 @@ def test_release_candidates_order_and_repos():
     # prod before tmp before staging, so the canonical artifact wins when present.
     assert tags.index("v2025.12.31-planes-readsb-prod-0") < tags.index("v2025.12.31-planes-readsb-prod-0tmp")
     assert tags.index("v2025.12.31-planes-readsb-prod-0tmp") < tags.index("v2025.12.31-planes-readsb-staging-0")
+    # Only a December day can land in the next year's repo; a mid-year day never probes it.
+    assert {r for r, _ in ab.release_candidates(date(2025, 6, 1))} == {"globe_history_2025"}
 
 
 def test_chained_reader_tar_roundtrip():
@@ -207,3 +209,26 @@ def test_japan_bbox_matches_regions():
 
     region = REGIONS[0]
     assert ab.JAPAN_BBOX == (region["lamin"], region["lomin"], region["lamax"], region["lomax"])
+
+
+def test_iter_trace_members_keep_skips_before_gunzip():
+    good = gzip.compress(json.dumps(_doc([_point(0)])).encode())
+    bad = b"\x1f\x8bnot-actually-gzip"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, payload in (("./traces/23/trace_full_abc123.json", good),
+                              ("./traces/99/trace_full_ffff99.json", bad)):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+    raw = buf.getvalue()
+
+    seen: list[str] = []
+    kept = list(ab.iter_trace_members(io.BytesIO(raw),
+                                      keep=lambda n: seen.append(n) or ("abc123" in n)))
+    assert [n for n, _ in kept] == ["./traces/23/trace_full_abc123.json"]
+    assert json.loads(kept[0][1])["icao"] == "abc123"
+    # keep saw both file members, but the corrupt one was never decompressed...
+    assert len(seen) == 2
+    # ...whereas without keep it decompresses and yields (name, None).
+    assert [d for _, d in ab.iter_trace_members(io.BytesIO(raw))][1] is None

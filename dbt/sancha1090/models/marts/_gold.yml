@@ -2,7 +2,7 @@ version: 2
 
 models:
   - name: fct_flight_legs
-    description: "Inferred flight legs from the OpenSky context feed: sessionized + altitude-gated airport snap (route_inferred is approximate, v5.2 reconciles)"
+    description: "Inferred flight legs from the OpenSky context feed: sessionized + altitude-gated airport snap. route_inferred is an approximate single-lane snap; fct_flights_reconciled is the canonical origin/destination answer."
     columns:
       - name: icao24
         tests:

@@ -164,8 +164,8 @@ def test_ensure_never_raises(monkeypatch):
 
 
 def test_swim_seed_carries_the_memory_and_time_caps():
-    # ensure() can run this seed unsupervised on a fresh bootstrap; the 80M-row aggregation must stop at the
-    # same 12 GB cap the dbt model carries rather than eat the server budget or hang the tick.
+    # ensure() can run this seed unsupervised on a fresh bootstrap; the full-history 80M-row aggregation
+    # keeps its own 12 GB bound, independent of the model's 7 GB (#208), so it stops instead of hanging the tick.
     seed = flat_sql(mv.SPECS["swim_latest_acc"]["seed"][0])
     assert "SETTINGS max_memory_usage = 12000000000, max_execution_time = 900" in seed
 

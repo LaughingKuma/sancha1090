@@ -7,8 +7,8 @@ import tempfile
 
 import polars as pl
 
-# Measured against the live file (2026-08-13, 614,565 lines; docs/notes/2026-08-12-adsbx-malformed-record.md
-# Round 4): every consumed field is absent-as-null or exactly one JSON type, derived not guessed.
+# Measured against the live file (2026-08-13, 614,565 lines; PR #170 round 4): every consumed field
+# is absent-as-null or exactly one JSON type, derived not guessed.
 _FIELD_TYPES: dict[str, tuple[type, ...]] = {
     "icao": (str,),
     "reg": (str,),

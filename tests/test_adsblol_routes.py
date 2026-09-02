@@ -1,16 +1,9 @@
 from __future__ import annotations
 
-import gzip as _gzip
 import json
-import logging
-import re
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
-import pytest
-import sqlalchemy as sa
-
-import include.adsblol_route_ledger as ledger
 import include.adsblol_routes as routes
 
 FIXTURE = Path(__file__).parent / "fixtures" / "trace_full_a61c53_2026-06-25.json"
@@ -23,26 +16,6 @@ def _doc():
 
 def _synthetic(points, icao="abc123", base=1782345600):
     return {"icao": icao, "timestamp": base, "trace": points}
-
-
-@pytest.fixture
-def ledger_eng():
-    eng = sa.create_engine("sqlite://")
-    ledger.ensure_table(eng)
-    return eng
-
-
-@pytest.fixture
-def quiet_routes(monkeypatch):
-    # Defaults keep run_daily offline and deterministic so each test states only its own arrangement.
-    caps = {"written": {}, "recorded": []}
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(routes, "write_parquet",
-                        lambda df, key: caps["written"].update({key: df.height}) or f"s3://b/{key}")
-    monkeypatch.setattr(routes.manifest, "record_load",
-                        lambda uri, _smin, _smax, rows, engine=None:  # noqa: ARG005 (engine kw-bound)
-                        caps["recorded"].append((uri, rows)))
-    return caps
 
 
 def test_real_trace_splits_into_rotation_legs():
@@ -154,327 +127,6 @@ def test_paths_frame_schema():
     assert set(routes.RAW_PATHS_SCHEMA) | {"ingested_at"} == set(df.columns)
 
 
-class _FakeResp:
-    def __init__(self, status_code=200, content=b""):
-        self.status_code = status_code
-        self.content = content
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise routes.requests.HTTPError(str(self.status_code))
-
-
-class _FakeSession:
-    def __init__(self, handler):
-        self._handler = handler
-        self.seen = {}
-
-    def get(self, url, headers=None, timeout=None):  # noqa: ARG002 (headers/timeout keyword-bound in fetch_trace)
-        self.seen["url"] = url
-        return self._handler(url)
-
-
-def test_fetch_trace_decompresses_gzip_and_builds_sharded_url():
-    body = _gzip.compress(b'{"icao": "a61c53", "timestamp": 1, "trace": []}')
-    session = _FakeSession(lambda _url: _FakeResp(200, body))
-    doc = routes.fetch_trace(DAY, "a61c53", session=session)
-    assert doc["icao"] == "a61c53"
-    assert session.seen["url"] == "https://globe.adsb.lol/globe_history/2026/06/25/traces/53/trace_full_a61c53.json"
-
-
-def test_fetch_trace_404_means_no_trace():
-    session = _FakeSession(lambda _url: _FakeResp(404, b""))
-    assert routes.fetch_trace(DAY, "deadbe", session=session) is None
-
-
-def test_fetch_trace_raises_after_retries(monkeypatch):
-    monkeypatch.setattr(routes.time, "sleep", lambda _s: None)
-    calls = {"n": 0}
-
-    def _boom(_url):
-        calls["n"] += 1
-        raise routes.requests.ConnectionError("boom")
-
-    session = _FakeSession(_boom)
-    with pytest.raises(RuntimeError):
-        routes.fetch_trace(DAY, "a61c53", session=session)
-    assert calls["n"] == 3
-
-
-def test_run_daily_fetches_day_and_prior_lands_and_records(monkeypatch, ledger_eng, quiet_routes):
-    monkeypatch.setattr(routes, "route_targets", lambda _day, **_kw: ["a61c53"])
-
-    fetched = []
-
-    def fake_fetch(day, hexid, **_kw):
-        fetched.append((hexid, day.isoformat()))
-        return _doc() if day == DAY else None  # D-1 missing
-
-    out = routes.run_daily(DAY, engine=ledger_eng, fetch=fake_fetch)
-    assert set(fetched) == {("a61c53", "2026-06-25"), ("a61c53", "2026-06-24")}
-    assert out["rows"] > 0 and out["path_rows"] > 0
-    written = quiet_routes["written"]
-    seg_keys = [k for k in written if k.startswith("bronze/adsblol_flight_segments/")]
-    path_keys = [k for k in written if k.startswith("bronze/adsblol_flight_paths/")]
-    assert len(seg_keys) == 1
-    assert len(path_keys) == 1
-    # Per-run stamp (v6.10): a same-day rerun must land a NEW object — a rewrite of a drained
-    # key never re-drains (record_load preserves ch_loaded_at).
-    m = re.fullmatch(r"bronze/adsblol_flight_segments/dt=2026-06-25/part-(\d{8}T\d{12})\.parquet", seg_keys[0])
-    assert m, seg_keys[0]
-    assert path_keys[0] == f"bronze/adsblol_flight_paths/dt=2026-06-25/part-{m.group(1)}.parquet"
-    # Sorted lists, not a set: equal seg/path counts must not mask a missing record_load call.
-    assert sorted(r for _, r in quiet_routes["recorded"]) == sorted([out["rows"], out["path_rows"]])
-    # Both attempts recorded: the landed day and the missing D-1.
-    assert ledger.filter_unattempted(
-        [("a61c53", "2026-06-25"), ("a61c53", "2026-06-24")], ledger_eng) == []
-
-
-@pytest.mark.usefixtures("quiet_routes")
-def test_run_daily_reports_progress(monkeypatch, ledger_eng):
-    monkeypatch.setattr(routes, "route_targets", lambda _day, **_kw: ["a61c53", "abc123"])
-
-    seen = []
-    # 2 hexes x (D, D-1) = 4 pairs; progress must fire once per pair, ending on (total, total).
-    routes.run_daily(DAY, engine=ledger_eng, fetch=lambda *_a, **_k: None,
-                     progress=lambda done, total: seen.append((done, total)))
-    assert [d for d, _ in seen] == [1, 2, 3, 4]
-    assert all(t == 4 for _, t in seen)
-    assert seen[-1] == (4, 4)
-
-
-def test_run_daily_explicit_targets_skips_route_query(monkeypatch, ledger_eng, quiet_routes):
-    # An explicit target list must bypass route_targets entirely (backfill re-segment path).
-    monkeypatch.setattr(routes, "route_targets",
-                        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("route_targets must not be called")))
-
-    fetched = []
-
-    def fake_fetch(day, hexid, **_kw):
-        fetched.append((hexid, day.isoformat()))
-        if hexid == "ffff01":
-            raise RuntimeError("trace fetch kept failing")
-        if hexid == "deadbe":
-            return None  # no trace for this hex that day -> missing
-        return _doc()
-
-    out = routes.run_daily(DAY, targets=["a61c53", "deadbe", "ffff01"], engine=ledger_eng, fetch=fake_fetch)
-    # Explicit targets fetch the given day ONLY -- no D-1 companion (each trace-day re-segments
-    # independently and every affected D-1 already appears in the target list in its own right).
-    assert set(fetched) == {("a61c53", "2026-06-25"), ("deadbe", "2026-06-25"), ("ffff01", "2026-06-25")}
-    assert out["fetched"] == 3
-    assert out["landed"] == 1
-    assert out["missing"] == 1
-    assert out["errors"] == 1
-    assert out["rows"] > 0
-    seg_keys = [k for k in quiet_routes["written"] if k.startswith("bronze/adsblol_flight_segments/")]
-    assert len(seg_keys) == 1
-
-
-@pytest.mark.usefixtures("quiet_routes")
-def test_run_daily_exposes_landed_hexes_only(ledger_eng):
-    def fake_fetch(_day, hexid, **_kw):
-        if hexid == "ffff01":
-            raise RuntimeError("trace fetch kept failing")
-        if hexid == "deadbe":
-            return None  # missing
-        return _doc()
-
-    out = routes.run_daily(DAY, targets=["a61c53", "deadbe", "ffff01"], engine=ledger_eng, fetch=fake_fetch)
-    # Only the landed hex is exposed for supersede-deletion; missing/error hexes are absent.
-    assert out["landed_hexes"] == ["a61c53"]
-    assert out["landed"] == 1 and out["missing"] == 1 and out["errors"] == 1
-
-
-@pytest.mark.usefixtures("quiet_routes")
-def test_run_daily_concurrent_fetches_each_pair_once(ledger_eng):
-    import threading
-
-    lock = threading.Lock()
-    fetched = []
-    thread_names = set()
-
-    def fake_fetch(day, hexid, **_kw):
-        with lock:
-            fetched.append((hexid, day.isoformat()))
-            thread_names.add(threading.current_thread().name)
-        return _doc()
-
-    targets = ["a61c53", "abc123", "def456", "111222"]
-    out = routes.run_daily(DAY, targets=targets, engine=ledger_eng, fetch=fake_fetch, workers=3)
-    # Explicit targets -> DAY only; every pair fetched exactly once across the pool.
-    assert sorted(fetched) == sorted((h, "2026-06-25") for h in targets)
-    assert out["fetched"] == 4
-    assert out["landed"] == 4
-    assert out["rows"] > 0
-    # Fetches ran on pool workers, never the main thread -> concurrency actually engaged.
-    assert "MainThread" not in thread_names
-
-
-@pytest.mark.usefixtures("quiet_routes")
-def test_run_daily_concurrent_counts_an_erroring_pair(ledger_eng):
-    def fake_fetch(_day, hexid, **_kw):
-        if hexid == "ffff01":
-            raise RuntimeError("trace fetch kept failing")
-        if hexid == "deadbe":
-            return None
-        return _doc()
-
-    out = routes.run_daily(DAY, targets=["a61c53", "deadbe", "ffff01"], engine=ledger_eng,
-                           fetch=fake_fetch, workers=3)
-    # A persistently-failing pair among concurrent fetches still tallies as one error, and the
-    # good pair still lands (outcome semantics identical to the serial path).
-    assert out["fetched"] == 3
-    assert out["landed"] == 1
-    assert out["missing"] == 1
-    assert out["errors"] == 1
-    assert out["rows"] > 0
-    assert ledger.filter_unattempted(
-        [("a61c53", "2026-06-25"), ("deadbe", "2026-06-25"), ("ffff01", "2026-06-25")], ledger_eng) == []
-
-
-def test_run_daily_skips_ledgered_pairs(monkeypatch, ledger_eng):
-    ledger.record_attempts([("a61c53", "2026-06-25", "landed"),
-                            ("a61c53", "2026-06-24", "landed")], ledger_eng)
-    monkeypatch.setattr(routes, "route_targets", lambda _day, **_kw: ["a61c53"])
-    out = routes.run_daily(DAY, engine=ledger_eng,
-                           fetch=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("fetched")))
-    assert out["fetched"] == 0 and out["uri"] is None
-
-
-def test_run_daily_isolates_a_persistently_failing_pair(monkeypatch, caplog, ledger_eng, quiet_routes):
-    caplog.set_level(logging.WARNING, logger="include.adsblol_routes")
-    monkeypatch.setattr(routes, "route_targets", lambda _day, **_kw: ["a61c53"])
-
-    def fake_fetch(day, _hexid, **_kw):
-        if day == DAY - timedelta(days=1):  # D-1 is the persistently-failing pair
-            raise RuntimeError("trace fetch kept failing")
-        return _doc()
-
-    out = routes.run_daily(DAY, engine=ledger_eng, fetch=fake_fetch)
-    assert out["rows"] > 0  # the good pair still landed despite the other erroring
-    assert quiet_routes["written"]  # write_parquet was reached, i.e. the run wasn't discarded
-    # Both pairs recorded in the ledger: 'error' behaves like 'missing' for filtering,
-    # so both are inside their cooldown right after the run.
-    assert ledger.filter_unattempted(
-        [("a61c53", "2026-06-25"), ("a61c53", "2026-06-24")], ledger_eng) == []
-    # A persistently-failing pair must be identifiable from task logs, not just the aggregate error count.
-    assert "a61c53" in caplog.text and "2026-06-24" in caplog.text
-
-
-def _malformed_doc():
-    # Parseable JSON but a trace point shaped nothing like adsb.lol's schema (not a list) ->
-    # _parse_point crashes deep in segmentation, not at fetch/preamble.
-    return {"icao": "badc0d", "timestamp": 1782345600, "trace": [None]}
-
-
-@pytest.mark.usefixtures("quiet_routes")
-def test_run_daily_isolates_a_malformed_trace_doc_serial(caplog, ledger_eng):
-    caplog.set_level(logging.WARNING, logger="include.adsblol_routes")
-
-    def fake_fetch(_day, hexid, **_kw):
-        return _malformed_doc() if hexid == "badc0d" else _doc()
-
-    out = routes.run_daily(DAY, targets=["a61c53", "badc0d"], engine=ledger_eng, fetch=fake_fetch)
-    # trace_segments/trace_paths raising on the malformed doc must not abort the batch: the
-    # good pair still lands and the bad one is isolated as an 'error' for ledger retry.
-    assert out["fetched"] == 2
-    assert out["landed"] == 1
-    assert out["errors"] == 1
-    assert out["rows"] > 0
-    assert ledger.filter_unattempted(
-        [("a61c53", "2026-06-25"), ("badc0d", "2026-06-25")], ledger_eng) == []
-    # A malformed doc must be identifiable from task logs (pair + traceback), not just the error tally.
-    assert "badc0d" in caplog.text and "2026-06-25" in caplog.text
-    assert "TypeError" in caplog.text
-
-
-@pytest.mark.usefixtures("quiet_routes")
-def test_run_daily_isolates_a_malformed_trace_doc_concurrent(ledger_eng):
-    def fake_fetch(_day, hexid, **_kw):
-        return _malformed_doc() if hexid == "badc0d" else _doc()
-
-    out = routes.run_daily(DAY, targets=["a61c53", "badc0d"], engine=ledger_eng,
-                           fetch=fake_fetch, workers=2)
-    # Same isolation on the concurrent path: fut.result() in _run_concurrent must never see the
-    # exception (caught inside the worker), so the aggregation loop can't abort mid-flight.
-    assert out["fetched"] == 2
-    assert out["landed"] == 1
-    assert out["errors"] == 1
-    assert out["rows"] > 0
-    assert ledger.filter_unattempted(
-        [("a61c53", "2026-06-25"), ("badc0d", "2026-06-25")], ledger_eng) == []
-
-
-@pytest.mark.usefixtures("quiet_routes")
-def test_run_daily_includes_aged_errors_outside_current_targets(ledger_eng):
-    ledger.record_attempts([("a61c53", "2026-06-20", "error")], ledger_eng)
-    with ledger_eng.begin() as conn:
-        conn.execute(sa.text(
-            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
-
-    fetched = []
-
-    def fake_fetch(day, hexid, **_kw):
-        fetched.append((hexid, day.isoformat()))
-        return _doc()
-
-    out = routes.run_daily(
-        DAY,
-        targets=["a61c53"],
-        engine=ledger_eng,
-        fetch=fake_fetch,
-        include_error_retries=True,
-    )
-    assert set(fetched) == {("a61c53", "2026-06-25"), ("a61c53", "2026-06-20")}
-    assert out["retry_pairs"] == 1 and out["fetched"] == 2
-
-
-@pytest.mark.usefixtures("quiet_routes")
-def test_run_daily_includes_aged_missing_outside_current_targets(ledger_eng):
-    ledger.record_attempts([("a61c53", "2026-06-20", "missing")], ledger_eng)
-    with ledger_eng.begin() as conn:
-        conn.execute(sa.text(
-            "UPDATE adsblol_route_attempts SET attempted_at = '2020-01-01 00:00:00+00:00'"))
-
-    fetched = []
-
-    def fake_fetch(day, hexid, **_kw):
-        fetched.append((hexid, day.isoformat()))
-        return _doc()
-
-    out = routes.run_daily(
-        DAY,
-        targets=["a61c53"],
-        engine=ledger_eng,
-        fetch=fake_fetch,
-        include_missing_retries=True,
-    )
-    assert set(fetched) == {("a61c53", "2026-06-25"), ("a61c53", "2026-06-20")}
-    assert out["retry_pairs"] == 1 and out["fetched"] == 2
-
-
-@pytest.mark.usefixtures("quiet_routes")
-def test_run_daily_raises_after_recording_failed_pairs():
-    # deliberately a bare engine (no ensure_table): run_daily must create the ledger itself
-    eng = sa.create_engine("sqlite://")
-
-    with pytest.raises(RuntimeError, match="remain eligible for retry"):
-        routes.run_daily(
-            DAY,
-            targets=["a61c53"],
-            engine=eng,
-            fetch=lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("boom")),
-            raise_on_errors=True,
-        )
-
-    with eng.begin() as conn:
-        row = conn.execute(sa.text(
-            "SELECT outcome, attempts FROM adsblol_route_attempts WHERE icao24 = 'a61c53'"
-        )).one()
-    assert row.outcome == "error" and row.attempts == 1
-
-
 class _FakeResult:
     def __init__(self, rows):
         self.result_rows = rows
@@ -519,6 +171,44 @@ def test_rooftop_cohort_filters_junk_lowercases_and_sorts():
     # "zzzzzz" isn't a hex digit string -> the Python-side belt drops it even though the fake
     # client bypasses the SQL match() filter; the rest dedup + sort.
     assert out == ["a61c53", "b61c53"]
+
+
+class _CountingClient(_FakeClient):
+    def __init__(self, rows):
+        super().__init__(rows)
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
+
+
+def test_release_targets_is_one_query_over_all_three_sources():
+    fake = _FakeClient([("a61c53",)])
+    routes.release_targets(DAY, client=fake)
+    sql = fake.seen["sql"]
+    assert "bronze.adsb_states" in sql
+    assert "bronze.opensky_states" in sql
+    assert "fct_flights_reconciled" in sql
+    assert sql.count("UNION ALL") == 2
+    # Both days bound once each: the release lane extracts D's tar for D and D+1 targets.
+    assert fake.seen["parameters"] == {"d0": "2026-06-25", "d1": "2026-06-26"}
+    assert "capture_date IN (%(d0)s, %(d1)s)" in sql
+    assert "toDate(snapshot_time) IN (%(d0)s, %(d1)s)" in sql
+    assert "toDate(start_time) IN (%(d0)s, %(d1)s)" in sql
+    assert "toDate(end_time) IN (%(d0)s, %(d1)s)" in sql
+    assert "match(h, '^[0-9a-f]{6}$')" in sql
+
+
+def test_release_targets_leaves_a_caller_supplied_client_open():
+    fake = _CountingClient([("a61c53",)])
+    assert routes.release_targets(DAY, client=fake) == ["a61c53"]
+    assert fake.closed == 0
+
+
+def test_release_targets_dedups_sorts_and_drops_junk():
+    fake = _FakeClient([("b61c53",), ("a61c53",), ("zzzzzz",), ("b61c53",)])
+    # The fake bypasses the SQL match(), so this pins the Python-side belt on the union's output.
+    assert routes.release_targets(DAY, client=fake) == ["a61c53", "b61c53"]
 
 
 def test_rooftop_cohort_closes_its_own_client(monkeypatch):

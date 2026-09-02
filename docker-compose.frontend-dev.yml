@@ -1,5 +1,6 @@
 # Opt-in live editing only: release mode bakes static into the image so Python and assets ship from one build.
-# Pair with `make livemap-watch`; the compose -f incantation lives in the README.
+# Pair with `make livemap-watch`, and bring livemap up with all three files:
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.frontend-dev.yml up -d livemap
 services:
   livemap:
     volumes:
