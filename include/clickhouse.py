@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 import sqlalchemy as sa
@@ -339,7 +340,26 @@ def run_backfill(reset: bool = True) -> dict:
 _OPTIMIZE_TIMEOUT_S = 1800
 
 
-def optimize_states_final(table: str = "opensky_states") -> dict:
+def closed_multipart_partitions(parts: list[tuple[str, int]], now: datetime | None = None) -> list[str]:
+    # Live = the current UTC month, not max(partition_id): swim_parser takes sourceTimeStamp unchecked, so one
+    # future-dated message would make the real live month look closed, and on rollover before the first
+    # new-month insert the just-closed month would be the max and never get its one FINAL.
+    live = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y%m")
+    future = sorted(pid for pid, _ in parts if pid > live)
+    if future:
+        log.warning("partitions newer than live month %s left alone: %s", live, future)
+    return sorted(pid for pid, n in parts if pid < live and n > 1)
+
+
+def _safe_partition_id(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise ValueError(f"invalid partition id: {value!r}")
+    return value
+
+
+def optimize_states_final(
+    table: str = "opensky_states", *, live_month_final: bool = True, now: datetime | None = None,
+) -> dict:
     # Force the ReplacingMergeTree dedup merge so a crash-replay surplus can't accumulate physically — CH merges
     # are async and a part "may stay unmerged indefinitely" (CH docs), and the exact content-fp gate reads
     # logical truth (distinct content) so it wouldn't see the bloat. Two guards keep this from being wasteful:
@@ -350,8 +370,8 @@ def optimize_states_final(table: str = "opensky_states") -> dict:
     #     OPTIMIZE does no dedup and would only churn parts.
     # RAISES on a real failure so the daily maintain_bronze_dedup DAG reds if dedup stalls.
     table = _safe_identifier(table)
-    # OPTIMIZE FINAL rewrites swim_flightdata's live-month partition (~13.5 GiB, ~330-370 s at max_threads=6 since
-    # fbe8c13) — past the driver's 300 s default, which reds the task while the merge completes server-side anyway.
+    # The rollover FINAL on swim_flightdata's just-closed month (~18 GiB, ~315 s at max_threads=6 since fbe8c13)
+    # is past the driver's 300 s default, which reds the task while the merge completes server-side anyway.
     client = ch_client(send_receive_timeout=_OPTIMIZE_TIMEOUT_S)
     try:
         rows = client.query(
@@ -360,6 +380,21 @@ def optimize_states_final(table: str = "opensky_states") -> dict:
         engine = rows[0][0] if rows else ""
         if not engine.startswith("ReplacingMergeTree"):
             return {"optimized": False, "skipped": True, "engine": engine}
+        if not live_month_final:
+            # A table gaining a part every few minutes is never single-part in its live month, so an unrestricted
+            # FINAL rewrote the whole partition nightly (#197): FINAL only closed months, background merges do the rest.
+            parts = client.query(
+                f"SELECT partition_id, count() FROM system.parts WHERE database = '{_CH_DB}' AND table = '{table}' "
+                "AND active GROUP BY partition_id"
+            ).result_rows
+            partitions = closed_multipart_partitions([(str(pid), int(n)) for pid, n in parts], now)
+            for pid in partitions:
+                # A background merge can collapse the month between the parts read and this statement.
+                client.command(
+                    f"OPTIMIZE TABLE {_CH_DB}.{table} PARTITION ID '{_safe_partition_id(pid)}' "
+                    "FINAL SETTINGS optimize_skip_merged_partitions = 1"
+                )
+            return {"optimized": bool(partitions), "skipped": False, "partitions": partitions}
         client.command(
             f"OPTIMIZE TABLE {_CH_DB}.{table} FINAL SETTINGS optimize_skip_merged_partitions = 1"
         )

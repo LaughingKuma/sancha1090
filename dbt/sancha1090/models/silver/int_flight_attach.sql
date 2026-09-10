@@ -19,11 +19,15 @@ with vrs_cand as (
 ),
 -- Score each candidate leg by position-aligned corroboration against the flight's own resolved votes:
 -- an observed dest matching a leg's origin is NOT support (that flight ended where the next leg starts).
+-- anti_support (Finding 2's veto below) is the opposite-position case: NULL-safe so a one-ended observed
+-- row still counts, excludes swim (a filed plan, not an observation) and same-airport self-snap artifacts.
 vrs_scored as (
     select
         c.flight_id as flight_id, c.icao24 as icao24, c.anchor_callsign as anchor_callsign,
         c.origin_icao as origin_icao, c.dest_icao as dest_icao, c.n_box_legs as n_box_legs,
-        countIf(a.origin_icao = c.origin_icao) + countIf(a.dest_icao = c.dest_icao) as support
+        countIf(a.origin_icao = c.origin_icao) + countIf(a.dest_icao = c.dest_icao) as support,
+        countIf(a.source != 'swim' and (a.dest_icao is null or a.origin_icao != a.dest_icao) and a.origin_icao = c.dest_icao)
+            + countIf(a.source != 'swim' and (a.origin_icao is null or a.origin_icao != a.dest_icao) and a.dest_icao = c.origin_icao) as anti_support
     from vrs_cand c
     left join {{ ref('int_flight_attached_votes') }} a
            on a.flight_id = c.flight_id
@@ -45,7 +49,9 @@ vrs_votes as (
     left join {{ ref('int_jet_airframes') }} j on j.icao24 = lower(p.icao24)
     left join {{ ref('dim_airports') }} oa on oa.icao = p.origin_icao
     left join {{ ref('dim_airports') }} da on da.icao = p.dest_icao
-    where p.n_box_legs = 1 or (p.support > 0 and p.n_supported = 1)
+    -- Finding 2 veto: a single-leg schedule votes unconditionally UNLESS the observed pair contradicts it
+    -- in the opposite position; n_box_legs=1 excluded from the support branch so it can't override the veto.
+    where (p.n_box_legs = 1 and p.anti_support = 0) or (p.n_box_legs != 1 and p.support > 0 and p.n_supported = 1)
 )
 select flight_id, source, source_rank, origin_icao, dest_icao, origin_gated, dest_gated
 from {{ ref('int_flight_attached_votes') }}

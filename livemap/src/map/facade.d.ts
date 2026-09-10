@@ -9,6 +9,7 @@ export interface PathState {
   histProvisional: boolean;
   histPts: PathPoint[];
   dimLive: number;
+  mapClickGuard: boolean;
 }
 
 export interface MapBounds {
@@ -28,7 +29,6 @@ export interface MapLike {
 export interface FacadeDeps {
   S: PathState;
   map: MapLike;
-  mapEl: HTMLElement | null;
   setHistPath(points: unknown[]): number;
   clearHistPath(): void;
   clearSelection(): void;

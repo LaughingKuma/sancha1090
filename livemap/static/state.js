@@ -30,6 +30,7 @@ export const S = (globalThis.__sancha_state ??= {
   estPendingKey: null, // "f:<fid>"|"h:<hex>" of an in-flight estimate fetch — a second click cancels instead of re-fetching (§9)
   histPathN: 0, // points actually drawn for the history path — the estimate button needs proof, not intent
   dimLive: 0, // 0–1: focus mode recedes the live fleet so a drawn path is the subject, not the crowd
+  mapClickGuard: false, // a focus owns the map: a bare click must not clear the selection, nor the drawn path with it
 });
 
 // a dead feed must read as "display stopped", not as a fleet-wide signal-loss event

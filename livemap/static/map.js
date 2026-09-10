@@ -1,9 +1,9 @@
-import { S, STREAM_FREEZE_S } from "./state.js?v=6.46";
-import { zoomMult, sizeFor, _svg, SHAPES } from "./silhouettes.js?v=6.46"; // also injects the <defs> the legend uses
-import "./mapsetup.js?v=6.46"; // build map + overlay before the trail/render loops reference them
-import { ingestTrails, appendSelectedFix, rebuildTrailSegments, loadHistory } from "./trails.js?v=6.46";
-import { renderSpotlight, mapApi } from "./interactions.js?v=6.46"; // registers the click/keydown/close listeners
-import { detectAcquisitions } from "./layers.js?v=6.46"; // starts the iso2/outline loaders + the rAF render loop
+import { S, STREAM_FREEZE_S } from "./state.js?v=6.48";
+import { zoomMult, sizeFor, _svg, SHAPES } from "./silhouettes.js?v=6.48"; // also injects the <defs> the legend uses
+import "./mapsetup.js?v=6.48"; // build map + overlay before the trail/render loops reference them
+import { ingestTrails, appendSelectedFix, rebuildTrailSegments, loadHistory } from "./trails.js?v=6.48";
+import { renderSpotlight, mapApi } from "./interactions.js?v=6.48"; // registers the click/keydown/close listeners
+import { detectAcquisitions } from "./layers.js?v=6.48"; // starts the iso2/outline loaders + the rAF render loop
 
 // ── Poll the server-side cache (one shared query stream, never one per tab) ──
 let pollInFlight = false;

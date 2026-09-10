@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import scripts.backfill_adsblol_resegment as bar
-from include.adsblol_routes import SLOW_GAP_CEIL_FT, SLOW_GAP_S, SLOW_GAP_SPEED_KMH
+from include.adsblol_routes import (
+    DWELL_GS_KT,
+    DWELL_S,
+    LOW_FIX_ALT_FT,
+    SLOW_GAP_CEIL_FT,
+    SLOW_GAP_S,
+    SLOW_GAP_SPEED_KMH,
+)
+
+
+SLOW_GAP_SQL, DWELL_SQL, TAKEOFF_SQL = bar.affected_sqls()
 
 
 def test_affected_sql_interpolates_task1_constants():
-    sql = bar.AFFECTED_SQL
+    sql = SLOW_GAP_SQL
     assert str(SLOW_GAP_S) in sql           # 1800 epoch-second turnaround-sized gap
     assert str(SLOW_GAP_CEIL_FT) in sql     # 9843.0 ft cruise ceiling (CH alt_ft is feet)
     assert str(SLOW_GAP_SPEED_KMH) in sql   # 100 km/h implied cross-gap speed guard
@@ -23,6 +33,111 @@ def test_affected_sql_interpolates_task1_constants():
     assert "/ ((ts - prev_ts) / 3600.)" in sql
     assert f"3600.) < {SLOW_GAP_SPEED_KMH}" in sql
     assert "greatCircleDistance" not in sql
+
+
+def test_run_sql_template_mirrors_parse_trace_runs():
+    tpl = bar._RUN_SQL
+    # One run finder for both _parse_trace mirrors: {pred} opens a run, a SLOW_GAP_S silence ends it (the walk
+    # drops the all-ground piece there, never persisted), the floor is DWELL_S on the persisted integer grid.
+    assert "{pred} AS in_run" in tpl
+    assert "lagInFrame(toNullable(in_run), 1, NULL)" in tpl
+    assert f"OR toUnixTimestamp(ts) - toUnixTimestamp(prev_ts) >= {SLOW_GAP_S}" in tpl
+    assert f"toUnixTimestamp(max(ts)) - toUnixTimestamp(min(ts)) >= {DWELL_S}\n     AND {{having}}" in tpl
+    assert "WHERE in_run\n" in tpl
+    # Whole-day windows spanning the old segment breaks (the walk runs before them); the table stays a slot
+    # for the end-to-end fixture's scratch table.
+    assert "PARTITION BY icao24, trace_day ORDER BY ts" in tpl
+    assert "seg_start" not in tpl
+    assert "AS prev_ts{extra_select}\n  FROM {table} FINAL\n  WHERE trace_day BETWEEN %(lo)s AND %(hi)s" in tpl
+    assert "UNION" not in tpl
+
+
+def test_dwell_sql_is_the_run_finder_over_dwell_fix():
+    sql = DWELL_SQL
+    # Same three guards as _dwell_fix, NULL failing open; only a run still holding an unflagged fix selects,
+    # which is what makes a re-landed hex-day drop out of the next dry run.
+    assert bar._DWELL_PRED == f"coalesce(alt_ft < {LOW_FIX_ALT_FT} AND gs_kt < {DWELL_GS_KT}, false)"
+    assert f"{bar._DWELL_PRED} AS in_run" in sql
+    assert "AND countIf(NOT gnd) > 0\n" in sql
+    assert "1800" in sql and "984.0" in sql and "30.0" in sql
+    assert "next_gnd" not in sql
+
+
+def test_takeoff_sql_is_the_run_finder_over_the_ground_flag():
+    sql = TAKEOFF_SQL
+    # A ground run on the flag alone (flagged or dwell-derived, so no gs/alt guard) whose next persisted fix is
+    # airborne (NULL at day end = no trim); the select-list alias is reused, ClickHouse resolves it.
+    assert bar._TAKEOFF_PRED == "gnd"
+    assert "coalesce(on_ground, false) AS gnd,\n    gnd AS in_run" in sql
+    assert "leadInFrame(toNullable(gnd), 1, NULL)" in sql
+    assert "ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS next_gnd\n  FROM" in sql
+    assert "AND argMax(tuple(next_gnd), ts).1 = false\n" in sql
+    assert "gs_kt" not in sql and "alt_ft" not in sql
+
+
+def test_affected_sqls_is_the_three_arms_formatted_over_the_table():
+    # One wave selects every arm, as separate statements: a UNION sorts the paths table twice at once.
+    assert bar.affected_sqls() == (SLOW_GAP_SQL, DWELL_SQL, TAKEOFF_SQL)
+    assert len(bar.AFFECTED_SQL_TEMPLATES) == 3
+    for arm in bar.affected_sqls():
+        assert "UNION" not in arm and "{" not in arm
+        assert "bronze.adsblol_flight_paths FINAL\n  WHERE trace_day BETWEEN %(lo)s AND %(hi)s" in arm
+    for arm in bar.affected_sqls(table="bronze.scratch_paths"):
+        assert "FROM bronze.scratch_paths FINAL" in arm and "adsblol_flight_paths" not in arm
+
+
+class _SelectorClient:
+    def __init__(self, rows_by_sql, span):
+        self._rows = rows_by_sql
+        self._span = span
+        self.windows = []
+        self.closed = False
+
+    def query(self, sql, parameters=None, **_kw):
+        if sql.startswith("SELECT minOrNull(trace_day), maxOrNull(trace_day) FROM "):
+            self.span_sql = sql
+            return _FakeQueryResult([self._span])
+        self.windows.append((sql, parameters["lo"], parameters["hi"]))
+        # Only the first week of each arm carries rows; later windows are empty like a quiet fortnight.
+        return _FakeQueryResult(self._rows.get(sql, []) if parameters["lo"] == self._span[0].isoformat() else [])
+
+    def close(self):
+        self.closed = True
+
+
+def test_affected_pairs_walks_weekly_windows_per_arm_lowercases_and_sorts_by_day_then_hex():
+    from datetime import date
+
+    client = _SelectorClient({
+        SLOW_GAP_SQL: [("A61C53", date(2026, 6, 26)), ("ffff01", date(2026, 6, 25))],
+        DWELL_SQL: [("a61c53", date(2026, 6, 26)), ("863b10", date(2026, 6, 25))],
+        TAKEOFF_SQL: [("a7615f", date(2026, 6, 28)), ("863b10", date(2026, 6, 25))],
+    }, span=(date(2026, 6, 25), date(2026, 7, 9)))
+    assert bar.affected_pairs(client=client) == [
+        ("863b10", "2026-06-25"), ("ffff01", "2026-06-25"), ("a61c53", "2026-06-26"), ("a7615f", "2026-06-28")]
+    # 15 days of paths = three 7-day windows per arm, contiguous and non-overlapping, arms in order.
+    weeks = [("2026-06-25", "2026-07-01"), ("2026-07-02", "2026-07-08"), ("2026-07-09", "2026-07-15")]
+    assert client.windows == [(arm, lo, hi) for arm in bar.affected_sqls() for lo, hi in weeks]
+    assert client.span_sql == "SELECT minOrNull(trace_day), maxOrNull(trace_day) FROM bronze.adsblol_flight_paths"
+    assert client.closed is False  # a caller-supplied client stays open
+
+
+def test_affected_pairs_on_empty_paths_table_runs_no_selector():
+    # minOrNull/maxOrNull return NULL over no rows; plain min/max would return 1970-01-01 and walk from there.
+    client = _SelectorClient({}, span=(None, None))
+    assert bar.affected_pairs(client=client) == []
+    assert client.windows == []
+
+
+def test_affected_pairs_table_hook_rewrites_every_statement():
+    from datetime import date
+
+    client = _SelectorClient({}, span=(date(2026, 6, 25), date(2026, 6, 25)))
+    assert bar.affected_pairs(client=client, table="bronze.scratch_paths") == []
+    assert client.span_sql.endswith(" FROM bronze.scratch_paths")
+    assert len(client.windows) == len(bar.affected_sqls())
+    for sql, _lo, _hi in client.windows:
+        assert "FROM bronze.scratch_paths FINAL" in sql and "adsblol_flight_paths" not in sql
 
 
 class _FakeQueryResult:

@@ -22,13 +22,15 @@ with raw_opinions as (
                and (toUnixTimestamp(last_seen) - toUnixTimestamp(first_seen)) / 3600.0 >= 8
                and {{ haversine_km('origin_lat', 'origin_lon', 'dest_lat', 'dest_lon') }}
                      < {{ var('fused_envelope_speed_kmh') }}
-                       * ((toUnixTimestamp(last_seen) - toUnixTimestamp(first_seen)) / 3600.0 - 1.5))
+                       * ((toUnixTimestamp(last_seen) - toUnixTimestamp(first_seen)) / 3600.0
+                          - {{ var('fused_envelope_slack_h') }}))
     union all
     select 'adsblol' as source, toUInt8(4) as source_rank,
            icao24, chain_start as win_start, chain_end as win_end, callsign, origin_icao, dest_icao
     from {{ ref('int_flight_chains_adsblol') }}
     where icao24 is not null and chain_start is not null and chain_end is not null
-      -- backstop for fused chains the boundary arms can't split (550-650 km/h headwind-ambiguous gaps)
+      -- backstop behind the chainer's round-trip seam cut (#215): what still exceeds the cap is single flights
+      -- with long transponder-on spans and straight-line through-stops that chain metadata cannot separate.
       and (toUnixTimestamp(chain_end) - toUnixTimestamp(chain_start)) / 3600.0 <= {{ var('reconcile_anchor_max_hours') }}
     union all
     select 'opensky_states' as source, toUInt8(5) as source_rank,

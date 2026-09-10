@@ -27,6 +27,11 @@ export const HUE = {
   dim: "#7e93a8",
   grid: "rgba(120,170,210,0.10)",
 };
+// tier key → series colour; "unknown" is the dim ink, never a fifth hue
+export const TIER_HUE = {
+  settled: HUE.settled, estimated: HUE.estimated, provisional: HUE.provisional,
+  none: HUE.none, unknown: HUE.dim,
+};
 const AXIS = {
   stroke: HUE.dim,
   grid: { stroke: HUE.grid, width: 1 },

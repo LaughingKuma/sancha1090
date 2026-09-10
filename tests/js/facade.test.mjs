@@ -5,9 +5,11 @@ import { stubFetch } from "./_support.mjs";
 
 // bounds default to a box the fixture path sits inside, so fit only fires where a test asks for it
 function setup({ bounds = [100, 200, 0, 60], fitThrows = false } = {}) {
-  const S = { pathFetchSeq: 0, histFlightId: "prior", histPathN: 7, histProvisional: true, histPts: [], dimLive: 0 };
+  const S = {
+    pathFetchSeq: 0, histFlightId: "prior", histPathN: 7, histProvisional: true, histPts: [], dimLive: 0,
+    mapClickGuard: false,
+  };
   const fits = [];
-  const listeners = [];
   let selCleared = 0;
   let histCleared = 0;
   const map = {
@@ -19,23 +21,16 @@ function setup({ bounds = [100, 200, 0, 60], fitThrows = false } = {}) {
       fits.push({ b, opts });
     },
   };
-  const mapEl = {
-    addEventListener: (type, fn, capture) => listeners.push({ type, fn, capture }),
-    removeEventListener: (type, fn, capture) => {
-      const i = listeners.findIndex((l) => l.type === type && l.fn === fn && l.capture === capture);
-      if (i >= 0) listeners.splice(i, 1);
-    },
-  };
   const setHistPath = (raw) => {
     S.histPts = (raw || []).map(([lon, lat, ts]) => ({ lon, lat, ts }));
     return S.histPts.length;
   };
   const api = createMapFacade({
-    S, map, mapEl, setHistPath,
+    S, map, setHistPath,
     clearHistPath: () => { histCleared++; S.histPts = []; S.histFlightId = null; },
     clearSelection: () => selCleared++,
   });
-  return { S, api, fits, listeners, sel: () => selCleared, cleared: () => histCleared };
+  return { S, api, fits, sel: () => selCleared, cleared: () => histCleared };
 }
 
 const PTS = [[120, 30, 1], [130, 35, 2], [140, 40, 3]];
@@ -152,13 +147,26 @@ test("a second request supersedes the first, which touches nothing on arrival", 
   const { S, api } = setup();
   const calls = stubFetch();
   const first = api.showFlightPath("1");
+  assert.equal(calls[0].signal.aborted, false);
   const second = api.showFlightPath("2");
+  assert.equal(calls[0].signal.aborted, true); // the superseded download is cut, not just its answer
+  assert.equal(calls[1].signal.aborted, false);
   calls[1].ok({ points: PTS });
   assert.deepEqual(await second, { status: "ok", n: 3 });
-  calls[0].ok({ points: [[0, 0, 1]] });
+  calls[0].ok({ points: [[0, 0, 1]] }); // a body that still lands after the abort changes nothing
   assert.deepEqual(await first, { status: "superseded", n: 0 });
   assert.equal(S.histPathN, 3); // the winner's geometry stands
   assert.equal(S.histPts.length, 3);
+});
+
+test("an aborted fetch reads as superseded, never as failed", async () => {
+  const { S, api } = setup();
+  const calls = stubFetch();
+  const first = api.showFlightPath("1");
+  api.showFlightPath("2");
+  calls[0].abort(); // the browser's own rejection once the signal fires
+  assert.deepEqual(await first, { status: "superseded", n: 0 });
+  assert.equal(S.pathFetchSeq, 2);
 });
 
 test("clearPath orphans an in-flight fetch", async () => {
@@ -166,6 +174,7 @@ test("clearPath orphans an in-flight fetch", async () => {
   const calls = stubFetch();
   const p = api.showFlightPath("42");
   api.clearPath();
+  assert.equal(calls[0].signal.aborted, true);
   assert.equal(cleared(), 2);
   assert.equal(S.histPathN, 0);
   calls[0].ok({ points: PTS });
@@ -173,18 +182,16 @@ test("clearPath orphans an in-flight fetch", async () => {
   assert.equal(S.histPathN, 0);
 });
 
-test("the map click guard is idempotent and swallows the click", () => {
-  const { api, listeners } = setup();
+test("the map click guard is a flag on the shared cell, no DOM listener", () => {
+  const { S, api } = setup();
   api.guardMapClicks(true);
   api.guardMapClicks(true);
-  assert.equal(listeners.length, 1);
-  assert.equal(listeners[0].capture, true);
-  let stopped = 0;
-  listeners[0].fn({ stopPropagation: () => stopped++ });
-  assert.equal(stopped, 1);
+  assert.equal(S.mapClickGuard, true);
   api.guardMapClicks(false);
   api.guardMapClicks(false);
-  assert.equal(listeners.length, 0);
+  assert.equal(S.mapClickGuard, false);
+  api.guardMapClicks(1); // truthy input lands as a boolean, so the click handler's test stays a strict one
+  assert.equal(S.mapClickGuard, true);
 });
 
 test("dimLive and clearSelection pass straight through", () => {

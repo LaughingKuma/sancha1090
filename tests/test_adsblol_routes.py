@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import json
-from datetime import date
 from pathlib import Path
 
+import pytest
+
 import include.adsblol_routes as routes
+from conftest import ARRIVE, BASE, DAY, _fix, _gnd
 
 FIXTURE = Path(__file__).parent / "fixtures" / "trace_full_a61c53_2026-06-25.json"
-DAY = date(2026, 6, 25)
+REPO = Path(__file__).resolve().parents[1]
+ROUTES_MODEL = REPO / "dbt" / "sancha1090" / "models" / "silver" / "int_flight_routes_adsblol.sql"
+LEGS_MODEL = REPO / "dbt" / "sancha1090" / "models" / "silver" / "int_flight_legs_opensky.sql"
+RECONCILE_GATES = REPO / "dbt" / "sancha1090" / "macros" / "reconcile_gates.sql"
 
 
 def _doc():
     return json.loads(FIXTURE.read_text())
 
 
-def _synthetic(points, icao="abc123", base=1782345600):
+def _synthetic(points, icao="abc123", base=BASE):
     return {"icao": icao, "timestamp": base, "trace": points}
 
 
@@ -350,7 +355,7 @@ def test_trace_paths_lockstep_on_slow_gap_split():
 
 def test_slow_gap_persisted_grid_fires_on_truncated_1800():
     # Raw wall-clock gap 1799.49 s (< SLOW_GAP_S) but the persisted whole-second ts differ by exactly
-    # 1800: the arm evaluates on that integer grid (matching AFFECTED_SQL), so it splits.
+    # 1800: the arm evaluates on that integer grid (matching SLOW_GAP_SQL), so it splits.
     a1 = [90.0, 34.00, 136.00, 6000, 200, 180, 0, -600, None, "adsb_icao", 6000, 0, 0, 0]
     a2 = [100.99, 34.00, 136.00, 6000, 180, 180, 0, -600, None, "adsb_icao", 6000, 0, 0, 0]
     b1 = [1900.48, 34.001, 136.00, 7000, 160, 0, 0, 700, None, "adsb_icao", 7000, 0, 0, 0]
@@ -426,6 +431,218 @@ def test_slow_gap_both_ground_splits_parked_cluster():
     a2 = [2280.0, 34.010, 136.000, 2500, 150, 0, 0, 700, None, "adsb_icao", 2500, 0, 0, 0]
     segs = routes.trace_segments(_synthetic([g0, g1, g2, a1, a2]), DAY)
     assert len(segs) == 1
-    assert segs[0]["seg_start"] == 1782345600 + 2160  # opens on the post-gap ground fix
+    assert segs[0]["seg_start"] == BASE + 2160  # opens on the post-gap ground fix
     assert segs[0]["first_on_ground"] is True
     assert segs[0]["num_fixes"] == 3
+
+
+@pytest.mark.parametrize("model", [ROUTES_MODEL, LEGS_MODEL], ids=["adsblol", "opensky_legs"])
+def test_snap_tier_order_by_pins_airport_type(model):
+    # #213A/#214: one snap tier across lanes -- each CTE orders through snap_order(), so a revert in either
+    # one fails here, not only in the heavier dbt-side test; the tier itself is pinned once on the macro.
+    sql = model.read_text()
+    origin_sql, dest_sql = sql.split("dest_snap as (", 1)
+    for name, block in (("origin_snap", origin_sql), ("dest_snap", dest_sql)):
+        assert block.count("order by {{ snap_order(") == 1, f"{name} no longer orders through snap_order()"
+    assert "a.iata != ''" not in sql
+    assert "a.scheduled_service and" not in sql
+    macros = RECONCILE_GATES.read_text()
+    assert "not in ('heliport', 'seaplane_base')" in macros, "real_airfield() macro definition moved/changed"
+    snap_order = macros[macros.index("macro snap_order("):]
+    assert "if({{ real_airfield('a.airport_type') }}" in snap_order, "snap_order() no longer tiers on real_airfield()"
+    assert "{{ var('snap_iata_pref_km') }}, 0, 1)," in snap_order, "snap_order() tier threshold missing"
+    # a.icao closes the window: distance alone isn't a total order (ATUA/AYUA share coordinates).
+    assert ", a.icao\n" in snap_order, "snap_order() tiebreak missing"
+
+
+def test_parked_dwell_splits_without_ground_flag():
+    # #229: 40 min parked at 300 ft baro under 10 kt with the ground bit never set reads as ground, so the
+    # air->ground break ends the arrival and the takeoff trim opens the departure on the run's last fix.
+    parked = [_fix(180.0 + k * 300, 34.02, 300, 5) for k in range(9)]  # 180 s .. 2580 s = 40 min
+    depart = [_fix(2700.0, 34.02, 300, 90), _fix(2760.0, 34.03, 1500, 150),
+              _fix(2820.0, 34.05, 4000, 220)]
+    doc = _synthetic(ARRIVE + parked + depart)
+    segs = routes.trace_segments(doc, DAY)
+    assert len(segs) == 2
+    assert segs[0]["seg_end"] == BASE + 120 and segs[0]["last_on_ground"] is False
+    assert segs[0]["num_fixes"] == 3
+    assert segs[1]["seg_start"] == BASE + 2580 and segs[1]["first_on_ground"] is True
+    assert segs[1]["first_alt_ft"] == 300  # the baro alt is kept; only the flag is derived
+    assert segs[1]["last_alt_ft"] == 4000 and segs[1]["num_fixes"] == 4
+    pts = routes.trace_paths(doc, DAY, segs)
+    assert {p["seg_start"] for p in pts} == {s["seg_start"] for s in segs}
+    for s in segs:
+        assert sum(1 for p in pts if p["seg_start"] == s["seg_start"]) == s["num_fixes"]
+    # The parked fixes before the last one belong to an all-ground piece and are never persisted.
+    assert [p["ts"] - BASE for p in pts if p["on_ground"]] == [2580]
+
+
+def test_parked_dwell_shorter_than_floor_stays_one_segment():
+    # 25 min under 10 kt (< DWELL_S): a long taxi queue, not a stop.
+    parked = [_fix(180.0 + k * 300, 34.02, 300, 5) for k in range(6)]  # 180 s .. 1680 s = 25 min
+    depart = [_fix(1740.0, 34.02, 300, 90), _fix(1800.0, 34.03, 1500, 150)]
+    segs = routes.trace_segments(_synthetic(ARRIVE + parked + depart), DAY)
+    assert len(segs) == 1 and segs[0]["num_fixes"] == 11
+
+
+def test_cruise_hold_never_reads_as_ground():
+    # The #107 cruise-hold class: 45 min at 5,000 ft with gs >= 80 throughout must stay one segment.
+    pts = [_fix(k * 300.0, 34.0 + (k % 2) * 0.05, 5000, 80 + (k % 3) * 10) for k in range(10)]
+    segs = routes.trace_segments(_synthetic(pts), DAY)
+    assert len(segs) == 1 and segs[0]["num_fixes"] == 10
+
+
+def test_taxi_out_stays_one_segment_and_opens_on_ground():
+    # A ground-bit-unset taxi-out before takeoff: 40 min under 10 kt then climb. No airborne fix precedes
+    # the run, so nothing splits; the segment opens on the run's last (derived) ground fix at the field.
+    taxi = [_fix(k * 300.0, 34.02, 300, 5) for k in range(9)]  # 0 .. 2400 s = 40 min
+    depart = [_fix(2460.0, 34.02, 300, 90), _fix(2520.0, 34.03, 1500, 150), _fix(2580.0, 34.05, 4000, 220)]
+    segs = routes.trace_segments(_synthetic(taxi + depart), DAY)
+    assert len(segs) == 1
+    assert segs[0]["first_on_ground"] is True and segs[0]["num_fixes"] == 4
+    assert segs[0]["seg_start"] == BASE + 2400
+
+
+def test_dwell_altitude_guard_keeps_balloons_and_hovers_airborne():
+    # HBAL124 at 53,000 ft under 30 kt for hours, JA10AP hovering at 1,700 ft: not on the ground.
+    for alt in (53000, 1700, routes.LOW_FIX_ALT_FT):
+        before = [_fix(0.0, 34.00, alt, 160), _fix(60.0, 34.01, alt, 140)]
+        slow = [_fix(120.0 + k * 300, 34.02, alt, 5) for k in range(9)]
+        after = [_fix(2880.0, 34.03, alt, 150), _fix(2940.0, 34.05, alt, 220)]
+        assert len(routes.trace_segments(_synthetic(before + slow + after), DAY)) == 1
+
+
+def test_dwell_none_speed_or_altitude_fails_open():
+    # A fix missing gs or alt breaks the run (mirrors DWELL_SQL's coalesce(..., false)), so two 20-min
+    # slow halves around it never add up to a dwell.
+    arrive = [_fix(0.0, 34.00, 2500, 160), _fix(60.0, 34.01, 300, 60)]
+    half1 = [_fix(120.0 + k * 300, 34.02, 300, 5) for k in range(5)]     # 120 .. 1320
+    hole = [_fix(1500.0, 34.02, 300, ""), _fix(1560.0, 34.02, "", 5)]
+    half2 = [_fix(1620.0 + k * 300, 34.02, 300, 5) for k in range(5)]    # 1620 .. 2820
+    depart = [_fix(2880.0, 34.03, 1500, 150), _fix(2940.0, 34.05, 4000, 220)]
+    assert len(routes.trace_segments(_synthetic(arrive + half1 + hole + half2 + depart), DAY)) == 1
+
+
+def test_stationary_segment_drops_once_read_as_ground():
+    # A "flight" that never exceeds 30 kt (JAL0000 tugs, MH691 taxiing with the bit unset) is all
+    # ground after the dwell read and falls at the keep-filter instead of voting a same-airport route.
+    pts = [_fix(k * 300.0, 34.02 + k * 0.0001, 100, 12) for k in range(8)]
+    assert routes.trace_segments(_synthetic(pts), DAY) == []
+
+
+def test_dwell_persisted_grid_boundary():
+    # Run length is measured on int(ts) like the slow-gap arm: 1799.6 s wall-clock that truncates to 1800
+    # splits; a run that truncates to 1799 does not.
+    def run(first, last):
+        arrive = [_fix(0.0, 34.00, 2500, 160), _fix(60.0, 34.01, 300, 60)]
+        slow = [_fix(first, 34.02, 300, 5), _fix(first + 900, 34.02, 300, 5), _fix(last, 34.02, 300, 5)]
+        depart = [_fix(last + 60, 34.03, 1500, 150), _fix(last + 120, 34.05, 4000, 220)]
+        return len(routes.trace_segments(_synthetic(arrive + slow + depart), DAY))
+    assert run(100.9, 1900.5) == 2   # int diff 1800
+    assert run(100.5, 1899.9) == 1   # int diff 1799
+
+
+def test_segments_and_paths_come_from_one_group_walk(monkeypatch):
+    # Both tables key off the same group boundaries; a second walk loop is how they drifted before.
+    doc = _doc()
+    calls = []
+    real = routes._iter_groups
+
+    def spy(points, base):
+        calls.append(len(points))
+        return real(points, base)
+
+    monkeypatch.setattr(routes, "_iter_groups", spy)
+    segs, pts = routes.trace_rows(doc, DAY)
+    assert len(calls) == 1
+    assert segs and {p["seg_start"] for p in pts} == {s["seg_start"] for s in segs}
+    assert routes.trace_segments(doc, DAY) == segs
+    assert routes.trace_paths(doc, DAY, segs) == pts
+    assert routes.trace_paths(doc, DAY, segs[:1]) == [p for p in pts if p["seg_start"] == segs[0]["seg_start"]]
+
+
+def test_leading_ground_run_trims_departure_to_last_ground_fix():
+    # DAL121 shape: the segment opens on a flagged-ground fix, parks 40 min under coverage, then departs.
+    # The last ground fix before rotation opens the departure; the all-ground piece before it drops.
+    parked = [_gnd(k * 300.0, 34.02) for k in range(9)]                     # 0 .. 2400 s
+    depart = [_gnd(2460.0, 34.02, gs=20), _fix(2520.0, 34.03, 1500, 150), _fix(2580.0, 34.05, 4000, 220)]
+    doc = _synthetic(parked + depart)
+    segs = routes.trace_segments(doc, DAY)
+    assert len(segs) == 1
+    assert segs[0]["seg_start"] == BASE + 2460 and segs[0]["first_on_ground"] is True
+    assert segs[0]["num_fixes"] == 3
+    pts = routes.trace_paths(doc, DAY, segs)
+    assert [p["ts"] - BASE for p in pts] == [2460, 2520, 2580]
+
+
+def test_turnaround_trim_keeps_arrival_and_opens_departure_at_takeoff():
+    # Arrival, landing ground fix, 45 min parked, departure: the arrival ends airborne as before, the
+    # parked piece drops, the departure opens on the last ground fix.
+    arrive = [_fix(0.0, 34.00, 2500, 160), _fix(60.0, 34.01, 1200, 140)]
+    parked = [_gnd(120.0 + k * 300, 34.02) for k in range(10)]               # 120 .. 2820 s
+    depart = [_fix(2880.0, 34.03, 1500, 150), _fix(2940.0, 34.05, 4000, 220)]
+    segs = routes.trace_segments(_synthetic(arrive + parked + depart), DAY)
+    assert [(s["seg_start"] - BASE, s["num_fixes"]) for s in segs] == [(0, 2), (2820, 3)]
+    assert segs[0]["last_on_ground"] is False and segs[1]["first_on_ground"] is True
+
+
+def test_ground_run_under_floor_keeps_the_whole_taxi_out():
+    # 25 min flagged ground then takeoff: under DWELL_S, so the segment still opens at the first ground fix.
+    parked = [_gnd(k * 300.0, 34.02) for k in range(6)]                     # 0 .. 1500 s
+    depart = [_fix(1560.0, 34.03, 1500, 150), _fix(1620.0, 34.05, 4000, 220)]
+    segs = routes.trace_segments(_synthetic(parked + depart), DAY)
+    assert len(segs) == 1 and segs[0]["seg_start"] == BASE and segs[0]["num_fixes"] == 8
+
+
+def test_ground_run_ends_at_a_turnaround_sized_silence():
+    # 40 min parked, a 35-min silence (the slow-gap arm splits there), 5 min ground, takeoff: the run that
+    # counts is the 5-min head, so nothing trims and the departure opens after the silence as it does today.
+    parked = [_gnd(k * 300.0, 34.02) for k in range(9)]                     # 0 .. 2400 s
+    head = [_gnd(2400.0 + routes.SLOW_GAP_S + 300 * k, 34.02) for k in range(2)]  # 4200, 4500
+    depart = [_fix(4560.0, 34.03, 1500, 150), _fix(4620.0, 34.05, 4000, 220)]
+    segs = routes.trace_segments(_synthetic(parked + head + depart), DAY)
+    assert len(segs) == 1 and segs[0]["seg_start"] == BASE + 4200 and segs[0]["num_fixes"] == 4
+
+
+def test_dwell_derived_ground_run_also_trims():
+    # The ground-bit-unset turnaround (AAL61 at KDFW): the dwell read makes the run ground, and the trim
+    # then opens the departure at its last fix rather than at the stand's first fix.
+    parked = [_fix(180.0 + k * 300, 34.02, 300, 5) for k in range(9)]       # 180 .. 2580 s
+    depart = [_fix(2700.0, 34.02, 300, 90), _fix(2760.0, 34.03, 1500, 150)]
+    segs = routes.trace_segments(_synthetic(ARRIVE + parked + depart), DAY)
+    assert [(s["seg_start"] - BASE, s["num_fixes"]) for s in segs] == [(0, 3), (2580, 3)]
+    assert segs[1]["first_on_ground"] is True and segs[1]["first_alt_ft"] == 300
+
+
+def test_ground_run_at_trace_end_never_trims():
+    parked = [_gnd(k * 300.0, 34.02) for k in range(9)]
+    assert routes.trace_segments(_synthetic([_fix(0.0, 34.00, 2500, 160)] + parked), DAY) == []
+
+
+def test_dwell_run_ends_at_a_turnaround_sized_silence():
+    # Two sub-floor slow heads either side of a parked silence (71c208 2026-09-01) stay two runs: the walk
+    # drops the all-ground tail at the silence, which the backfill selector could never see across.
+    def run(gap):
+        arrive = [_fix(0.0, 34.00, 2500, 160), _fix(60.0, 34.01, 1200, 140)]
+        tail = [_fix(120.0 + k * 100, 34.02, 75, 8) for k in range(6)]
+        head = [_fix(620.0 + gap + k * 100, 34.02, 75, 4) for k in range(6)]
+        depart = [_fix(620.0 + gap + 700, 34.03, 1500, 150), _fix(620.0 + gap + 760, 34.05, 4000, 220)]
+        return routes.trace_segments(_synthetic(arrive + tail + head + depart), DAY)
+    segs = run(routes.SLOW_GAP_S)
+    assert [(s["num_fixes"], s["last_on_ground"], s["first_on_ground"]) for s in segs] == [
+        (8, False, False), (8, False, False)]
+    segs = run(routes.SLOW_GAP_S - 1)  # one run: the tail drops, the trim opens the departure on its last fix
+    assert [(s["num_fixes"], s["last_on_ground"], s["first_on_ground"]) for s in segs] == [
+        (2, False, False), (3, False, True)]
+
+
+def test_same_second_interrupt_reads_as_the_persisted_dwell():
+    # Two sub-floor slow runs split by one 80 kt fix that shares its whole second with a later slow fix: the
+    # RMT keeps the slow one, so the selector sees a 40-min dwell and the walk must read the same run or never converge.
+    first = [_fix(180.0 + k * 100, 34.02, 300, 5) for k in range(10)]           # 180 .. 1080, 15 min
+    interrupt = [_fix(1180.2, 34.02, 300, 80), _fix(1180.7, 34.02, 300, 5)]
+    second = [_fix(1280.0 + k * 100, 34.02, 300, 5) for k in range(16)]         # 1280 .. 2780, 25 min
+    depart = [_fix(2900.0, 34.03, 1500, 150), _fix(2960.0, 34.05, 4000, 220)]
+    segs = routes.trace_segments(_synthetic(ARRIVE + first + interrupt + second + depart), DAY)
+    assert len(segs) == 2
+    assert segs[1]["seg_start"] == BASE + 2780 and segs[1]["first_on_ground"] is True

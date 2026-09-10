@@ -1,12 +1,7 @@
 import { esc, panel, rangeParams } from "../shell.js";
-import { fetchCoverage } from "../data";
-import { line, bars, stackedBars, HUE } from "../chart.js";
+import { fetchCoverage, TIER_KEYS } from "../data";
+import { line, bars, stackedBars, HUE, TIER_HUE } from "../chart.js";
 
-const TIER_KEYS = ["settled", "estimated", "provisional", "none", "unknown"];
-const TIER_HUE = {
-  settled: HUE.settled, estimated: HUE.estimated, provisional: HUE.provisional,
-  none: HUE.none, unknown: HUE.dim,
-};
 const fmt = (n) => Number(n || 0).toLocaleString();
 const daySecs = (d) => Date.parse(`${d}T00:00:00Z`) / 1000;
 const pct = (v) => (v == null ? "—" : `${(v * 100).toFixed(1)}%`);

@@ -14,6 +14,8 @@ def test_flight_id_unique(ch_cur):
 
 def test_plurality_honored(ch_cur):
     # Consensus = plurality: a non-curated resolved endpoint must be a top-vote airport in its votes map.
+    # Finding 3's coherence gate stays strict too -- a rescue pair is only admissible when it is itself
+    # top-vote on both sides, so it can never demote a real plurality winner.
     for airport, source, votes in (("origin_icao","origin_source","origin_votes"), ("dest_icao","dest_source","dest_votes")):
         bad = _q(ch_cur, f"SELECT count() FROM gold_ch.fct_flights_reconciled "
                          f"WHERE {airport} IS NOT NULL AND {source} != 'curated' AND length({votes}) > 0 "

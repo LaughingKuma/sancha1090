@@ -2,6 +2,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 SPINE = ROOT / "dbt" / "sancha1090" / "models" / "silver" / "int_flight_spine.sql"
+COMPAT = ROOT / "dbt" / "sancha1090" / "macros" / "callsign_compat.sql"
+DBT_TESTS = ROOT / "dbt" / "sancha1090" / "tests"
 
 
 def test_anti_joins_are_bounded_by_an_overlap_day_key():
@@ -17,3 +19,11 @@ def test_anti_joins_are_bounded_by_an_overlap_day_key():
 def test_spine_keeps_query_memory_backstop():
     # Below the 16 GB profile default so a regression reds this model instead of competing with the host.
     assert "'max_memory_usage': 4000000000" in SPINE.read_text()
+
+
+def test_flight_number_keeps_the_letters_after_its_digits():
+    # N123AB is not ABC123's flight 123 (#225): the compat macro and both spine oracles must read one token.
+    tail = "'[0-9]+[A-Z]{2,}$'"
+    assert tail in COMPAT.read_text()
+    assert tail in (DBT_TESTS / "assert_flight_spine_no_variant_dup_anchors.sql").read_text()
+    assert tail in (DBT_TESTS / "assert_flight_spine_no_registration_waive.sql").read_text()

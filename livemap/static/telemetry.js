@@ -2,13 +2,25 @@
 
 // ICAO emergency squawks — always-on alert set. squawk arrives as a STRING in /aircraft.
 const EMERGENCY_SQUAWKS = { "7700": "General", "7600": "Radio Fail", "7500": "Hijack" };
+// DO-260B emergency/priority status — transmitted on its own, no 7x00 squawk needed. readsb spells
+// medical/no-comm as lifeguard/nordo on the wire, so both spellings map; anything else non-'none' still alerts.
+const EMERGENCY_STATES = {
+  general: "General", medical: "Medical", lifeguard: "Medical", minfuel: "Min Fuel", nocomm: "No Comm",
+  nordo: "No Comm", unlawful: "Unlawful", downed: "Downed",
+};
+const titleCase = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
-// emergency squawk → { code, label } for a contact, else null
+// The squawk outranks the transmitted status for the code slot: a 7x00 is the crew's deliberate signal.
 export function emergencyOf(a) {
   const code = a && a.squawk != null ? String(a.squawk).trim() : "";
   // own-property guard: a spoofed squawk like "toString"/"constructor" must not match a prototype member
   const label = Object.hasOwn(EMERGENCY_SQUAWKS, code) ? EMERGENCY_SQUAWKS[code] : null;
-  return label ? { code, label } : null;
+  if (label) return { code, label };
+  const raw = a && a.emergency;
+  if (raw == null || raw === "none") return null; // readsb's default for nearly every airframe, per frame
+  const st = String(raw).trim().toLowerCase();
+  if (!st || st === "none") return null;
+  return { code: "EMERG", label: Object.hasOwn(EMERGENCY_STATES, st) ? EMERGENCY_STATES[st] : titleCase(st) };
 }
 
 // position_source → normalized kind ('mlat'/'adsb') or null. The ONE normalizer, so the label and

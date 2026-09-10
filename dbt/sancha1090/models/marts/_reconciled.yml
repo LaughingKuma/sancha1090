@@ -20,12 +20,12 @@ models:
         tests:
           - accepted_values:
               arguments:
-                values: ['unanimous', 'majority', 'tiebreak', 'single', 'curated']
+                values: ['unanimous', 'majority', 'tiebreak', 'single', 'curated', 'coherence']
       - name: dest_agreement
         tests:
           - accepted_values:
               arguments:
-                values: ['unanimous', 'majority', 'tiebreak', 'single', 'curated']
+                values: ['unanimous', 'majority', 'tiebreak', 'single', 'curated', 'coherence']
       - name: feasibility_gated
         description: "SP4 runway-feasibility gate provenance: 1 when the gate discarded at least one attached source's origin or dest on this flight (airline-shaped jet naming a short/unknown-runway small field), so the endpoint that won is a consensus over a reduced ballot; 0 when no source's endpoint was gated. Opinion seam only — vrs_routes gate hits are not represented, because admitting them would inflate n_sources (see the WHY comment in int_flight_attach)."
         tests:
@@ -53,6 +53,12 @@ models:
         description: Dest latitude (dim_airports); NULL when dest_icao is NULL.
       - name: dest_lon
         description: Dest longitude (dim_airports); NULL when dest_icao is NULL.
+      - name: foreign_unresolved_reason
+        description: "Why exactly one endpoint is NULL. 'coverage': the adsb.lol chain that voted on the flight has an airborne boundary fix at/above legs_cruise_alt_m on that side (its first fix for a missing origin, its last for a missing dest) -- the trace began after the climb or was lost before the descent, so adsb.lol saw no landing there: an unknown, usually foreign, airport rather than a domestic flight. Another lane may still have voted on that side and been dropped by the coherence gate; origin_agreement/dest_agreement = 'coherence' marks that case. NULL when both ends resolve, when no adsb.lol chain voted on the flight (none overlaps it, or the overlapping chain is over the anchor cap or attached to another flight), or when the chain did reach a low fix that still snapped nothing (no airport within legs_snap_km, or gated). Derived only; never fills the endpoint."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['coverage']
       - name: is_ladd
         description: "FAA LADD suppression flag (SP3b): 1 when the airframe's icao24 or normalized callsign matched a dim_ladd interval that was open or overlapped [start_time, end_time]. Flag only — the warehouse keeps the row; the public livemap drops is_ladd=1 at serve time (private instance shows every airframe). 0 until dim.dim_ladd is deployed (guarded literal)."
         tests:

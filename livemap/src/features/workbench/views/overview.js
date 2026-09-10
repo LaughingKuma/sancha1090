@@ -1,12 +1,7 @@
 import { esc, panel, doorway, rangeParams, renderFlagRows } from "../shell.js";
-import { fetchSummary, fetchFlags } from "../data";
-import { spark, stackedBars, HUE } from "../chart.js";
+import { fetchSummary, fetchFlags, TIER_KEYS } from "../data";
+import { spark, stackedBars, HUE, TIER_HUE } from "../chart.js";
 
-const TIER_KEYS = ["settled", "estimated", "provisional", "none", "unknown"];
-const TIER_HUE = {
-  settled: HUE.settled, estimated: HUE.estimated, provisional: HUE.provisional,
-  none: HUE.none, unknown: HUE.dim,
-};
 // A strip number counts the whole window, so its doorway carries no scope at all — the doorway table
 // resets every key the target reads, or an unfiltered headline would open a filtered list.
 const fmt = (n) => Number(n || 0).toLocaleString();

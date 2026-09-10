@@ -36,6 +36,9 @@ boundaries as (
 ),
 flagged as (
     select *,
+        dateDiff('second', prev_end_time, seg_start_time) as gap_s,
+        {{ haversine_km('prev_last_lat', 'prev_last_lon', 'first_lat', 'first_lon') }}
+            / (dateDiff('second', prev_end_time, seg_start_time) / 3600.0) as gap_kmh,
         case
             when prev_end_time is null then 1
             when dateDiff('second', prev_end_time, seg_start_time) <= 0 then 1
@@ -63,8 +66,35 @@ chained as (
         sum(chain_break) over (
             partition by icao24 order by seg_start_time, seg_end_time
             rows between unbounded preceding and current row
-        ) as chain_seq
+        ) as run_seq
     from flagged
+),
+-- #215: an over-cap run too short end-to-end for its span is a round trip with the turnaround hidden in a gap; the
+-- seam is its slowest turnaround-sized gap. Speed alone cannot place it (real detours read 570-750 km/h).
+run_shape as (
+    select *,
+        (toUnixTimestamp(max(seg_end_time) over w) - toUnixTimestamp(min(seg_start_time) over w)) / 3600.0 as run_span_h,
+        {{ haversine_km('tupleElement(argMin(tuple(first_lat, first_lon), seg_start_time) over w, 1)',
+                        'tupleElement(argMin(tuple(first_lat, first_lon), seg_start_time) over w, 2)',
+                        'tupleElement(argMax(tuple(last_lat, last_lon), seg_end_time) over w, 1)',
+                        'tupleElement(argMax(tuple(last_lat, last_lon), seg_end_time) over w, 2)') }} as run_e2e_km,
+        row_number() over (partition by icao24, run_seq
+                           order by if(chain_break = 0 and gap_s >= {{ var('chain_low_fix_gap_min') }} * 60, 0, 1),
+                                    ifNull(gap_kmh, inf), seg_start_time, seg_end_time) as seam_rank
+    from chained
+    window w as (partition by icao24, run_seq)
+),
+recut as (
+    select *,
+        sum(if(chain_break = 1
+               or (seam_rank = 1 and chain_break = 0 and gap_s >= {{ var('chain_low_fix_gap_min') }} * 60
+                   and run_span_h > {{ var('reconcile_anchor_max_hours') }}
+                   and run_e2e_km < {{ var('fused_envelope_speed_kmh') }} * (run_span_h - {{ var('fused_envelope_slack_h') }})),
+               1, 0)) over (
+            partition by icao24 order by seg_start_time, seg_end_time
+            rows between unbounded preceding and current row
+        ) as chain_seq
+    from run_shape
 ),
 callsign_pick as (
     -- Dominant callsign per chain (by fixes, ties earliest-seen then lexical) for livemap keying.
@@ -77,7 +107,7 @@ callsign_pick as (
             select icao24, chain_seq, callsign,
                    sum(num_fixes)      as cs_fixes,
                    min(seg_start_time) as first_seen
-            from chained
+            from recut
             where callsign is not null
             group by icao24, chain_seq, callsign
         )
@@ -102,8 +132,12 @@ chains as (
         argMax(tuple(dest_name), seg_end_time).1 as dest_name,
         argMax(tuple(dest_lat),  seg_end_time).1 as dest_lat,
         argMax(tuple(dest_lon),  seg_end_time).1 as dest_lon,
+        -- boundary fixes: a NULL snap beside an airborne cruise fix is a coverage hole, beside a low fix it is not.
+        -- One tuple per side over a total order: seg_end_time ties, and a split pick could pair two segments' fixes.
+        argMin(tuple(first_alt_m, first_on_ground), tuple(seg_start_time, seg_end_time)) as first_fix,
+        argMax(tuple(last_alt_m, last_on_ground), tuple(seg_end_time, seg_start_time))   as last_fix,
         uniqExactIf(callsign, callsign is not null) <= 1 as callsign_consistent
-    from chained
+    from recut
     group by icao24, chain_seq
 )
 select
@@ -115,6 +149,8 @@ select
     c.num_fixes,
     c.callsign_consistent,
     c.origin_icao, c.origin_name, c.origin_lat, c.origin_lon,
-    c.dest_icao,   c.dest_name,   c.dest_lat,   c.dest_lon
+    c.dest_icao,   c.dest_name,   c.dest_lat,   c.dest_lon,
+    c.first_fix.1 as first_alt_m, c.first_fix.2 as first_on_ground,
+    c.last_fix.1 as last_alt_m, c.last_fix.2 as last_on_ground
 from chains c
 left join callsign_pick cp on cp.icao24 = c.icao24 and cp.chain_seq = c.chain_seq

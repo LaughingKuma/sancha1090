@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import os
 import re
+from datetime import datetime
 from pathlib import Path
-
-import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 MODEL = REPO / "dbt" / "sancha1090" / "models" / "silver" / "int_flight_attached_votes.sql"
@@ -31,34 +29,13 @@ def test_reducer_keys_are_pinned_verbatim():
         "isNull(dest_icao),ifNull(dest_icao,'')))aspicked"
     ) in tail
     assert (
-        "argMin(tuple(picked.2,picked.3,picked.4),tuple(-multiIf(source='opensky_flights',"
+        "argMin(tuple(picked.2,picked.3,picked.4,win_start),tuple(-multiIf(source='opensky_flights',"
         "toInt8(if(picked.3isnotnull,1,0)+if(picked.4isnotnull,1,0)),toInt8(0)),-picked.7,win_start,"
         "isNull(picked.3),ifNull(picked.3,''),isNull(picked.4),ifNull(picked.4,'')))asvote"
     ) in tail
     assert "max(picked.5)assrc_origin_gated,max(picked.6)assrc_dest_gated" in tail
-
-
-@pytest.fixture()
-def ch():
-    # Same connect/skip contract as test_ch_migration_integration: skip without CH, fail when CI
-    # says it must run.
-    try:
-        import clickhouse_connect
-        c = clickhouse_connect.get_client(
-            host=os.environ.get("CLICKHOUSE_HOST", "clickhouse"),
-            port=int(os.environ.get("CLICKHOUSE_PORT", "8123")),
-            username=os.environ.get("CLICKHOUSE_USER", "default"),
-            password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
-        )
-        c.command("SELECT 1")
-    except Exception as e:
-        if os.environ.get("CH_INTEGRATION_REQUIRED") == "1":
-            pytest.fail(f"ClickHouse required but not reachable: {e!r}")
-        pytest.skip(f"ClickHouse not reachable: {e!r}")
-    try:
-        yield c
-    finally:
-        c.close()
+    # the vote carries its opinion key (icao24, win_start) so the mart can read the chain that voted (#214).
+    assert "icao24,vote.4aswin_start" in tail
 
 
 _STRUCT = (
@@ -95,16 +72,17 @@ _CAND = [
     (901, 1, "opensky_flights", 3, None, "RJCC", 1, 0, "iii", T1, 900),  # gate hit must still flag the vote
 ]
 
+_D1, _D2 = datetime(2026, 8, 1, 0, 0), datetime(2026, 8, 1, 3, 0)
 _EXPECTED = [
-    (102, "adsblol", 4, "RJTT", "RJCC", 0, 0),
-    (202, "adsblol", 4, "RJTT", "RJCC", 0, 0),
-    (301, "adsblol", 4, "RJTT", "RJCC", 0, 0),
-    (401, "swim", 1, "PANC", "RJBB", 0, 0),
-    (501, "swim", 1, "RJTT", "RJAA", 0, 0),
-    (601, "opensky_flights", 3, "RJTT", "RJCC", 0, 0),
-    (701, "adsblol", 4, "RJOO", None, 0, 0),
-    (801, "adsblol", 4, "RJTT", "RJCC", 0, 0),
-    (901, "opensky_flights", 3, "RJTT", "RJCC", 1, 0),
+    (102, "adsblol", 4, "RJTT", "RJCC", 0, 0, "aaa", _D1),
+    (202, "adsblol", 4, "RJTT", "RJCC", 0, 0, "bbb", _D1),
+    (301, "adsblol", 4, "RJTT", "RJCC", 0, 0, "ccc", _D1),
+    (401, "swim", 1, "PANC", "RJBB", 0, 0, "ddd", _D1),
+    (501, "swim", 1, "RJTT", "RJAA", 0, 0, "eee", _D1),
+    (601, "opensky_flights", 3, "RJTT", "RJCC", 0, 0, "fff", _D2),  # the winning window's start rides along
+    (701, "adsblol", 4, "RJOO", None, 0, 0, "ggg", _D1),
+    (801, "adsblol", 4, "RJTT", "RJCC", 0, 0, "hhh", _D1),
+    (901, "opensky_flights", 3, "RJTT", "RJCC", 1, 0, "iii", _D2),
 ]
 
 

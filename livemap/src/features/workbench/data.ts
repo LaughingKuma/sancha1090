@@ -106,8 +106,10 @@ const countsOver = (keys: readonly string[]) => (t: unknown): Counts => {
   return o;
 };
 const tierMix = countsOver(TIERS);
-// the aggregate marts can serve an "unknown" bucket the four-tier row mix drops — coverage needs it
-const tierCounts = countsOver([...TIERS, "unknown"]);
+// the aggregate marts can serve an "unknown" bucket the four-tier row mix drops — coverage and the
+// overview stack their series over this one spelling
+export const TIER_KEYS: readonly string[] = [...TIERS, "unknown"];
+const tierCounts = countsOver(TIER_KEYS);
 // a class the frontend has no chip for would render as an unlabelled doorway — drop it
 const classCounts = (c: unknown): Counts => {
   const src = obj(c);

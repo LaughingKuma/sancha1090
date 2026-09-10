@@ -140,7 +140,7 @@ QUERY = """
     SELECT capture_ts, hex, flight, lat, lon, alt_baro, gs, track,
            typecode, aircraft_desc, registration, body_class, is_military, is_helicopter, is_ladd,
            airline_name, reg_country, recv, own_op, year, category,
-           squawk, position_source,
+           squawk, emergency, position_source,
            baro_rate, geom_rate, rssi, nav_altitude_mcp, nav_modes
     FROM mv_current_aircraft
     WHERE lat IS NOT NULL AND lon IS NOT NULL
@@ -496,16 +496,26 @@ def _fetch_flights(hex_: str) -> list:
         client.close()
     out = []
     for src, ts, o_code, o_name, d_code, d_name, callsign, flight_id in res.result_rows:
-        out.append({
+        cs = (callsign or "").strip() or None
+        origin, dest = {"code": o_code, "name": o_name}, {"code": d_code, "name": d_name}
+        # a coverage hole leaves one end NULL; the callsign's last known route fills it, labelled, but only
+        # when it shares the resolved end — the reciprocal leg would otherwise fabricate ICN → ≈ICN
+        known = _routes.get(cs) if cs and (o_code is None or d_code is None) else None
+        if known and o_code is None and known.get("origin") and known.get("dest") == d_code:
+            origin = {"code": known["origin"], "name": known.get("origin_city"), "last_known": True}
+        if known and d_code is None and known.get("dest") and known.get("origin") == o_code:
+            dest = {"code": known["dest"], "name": known.get("dest_city"), "last_known": True}
+        row = {
             "src": src,
             # CH driver returns naive UTC datetimes — pin tzinfo so process TZ can't skew epochs
             "ts": ts.replace(tzinfo=datetime.timezone.utc).timestamp() if ts is not None else None,
-            "origin": {"code": o_code, "name": o_name},
-            "dest": {"code": d_code, "name": d_name},
-            "callsign": (callsign or "").strip() or None,
+            "origin": origin,
+            "dest": dest,
+            "callsign": cs,
             # decimal string, not a number: cityHash64 UInt64 overflows JS Number, so it must stay text end-to-end
             "flight_id": flight_id,
-        })
+        }
+        out.append(row)
     return out
 
 

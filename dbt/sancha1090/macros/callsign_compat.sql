@@ -16,7 +16,10 @@
    ('5J5108' -> 5108, never 5) so it is the LAST digit run, zero-stripped ('KAL0017' -> '17'). #}
 {% macro callsign_flight_num(expr) -%}
 {%- set t = 'upper(trimBoth(' ~ expr ~ '))' -%}
-{%- set run = "arrayElement(extractAll(" ~ t ~ ", '[0-9]+'), -1)" -%}
+{#- Letters after the run are the number too ('N681HC' -> '681HC', 'FIN7LP' -> '7LP'): a registration or an
+    alphanumeric flight ID is not flight 681 (#225). A lone suffix letter still drops ('JAL46D' -> '46'). -#}
+{%- set tail = "extract(" ~ t ~ ", '[0-9]+[A-Z]{2,}$')" -%}
+{%- set run = "ifNull(nullIf(" ~ tail ~ ", ''), arrayElement(extractAll(" ~ t ~ ", '[0-9]+'), -1))" -%}
 {%- set stripped = "replaceRegexpOne(" ~ run ~ ", '^0+', '')" -%}
 if({{ callsign_is_junk(expr) }} or not match({{ t }}, '[0-9]'),
    NULL,

@@ -9,13 +9,15 @@ with a as (
     where anchor_callsign is not null
 ),
 n as (
+    -- a two-letter tail keeps N123AB apart from ABC123's flight 123 (#225) and makes a registration spelled
+    -- two ways (N681HC/LN681HC) equal, so that pair waives as one callsign would; this oracle must agree
     select *,
+        ifNull(nullIf(extract(cs, '[0-9]+[A-Z]{2,}$'), ''), arrayElement(extractAll(cs, '[0-9]+'), -1)) as num_run,
         if(not match(cs, '^[A-Z0-9]*[A-Z][A-Z0-9]*$')
            or cs = repeat(substring(cs, 1, 1), length(cs))
            or not match(cs, '[0-9]'),
            NULL,
-           if(replaceRegexpOne(arrayElement(extractAll(cs, '[0-9]+'), -1), '^0+', '') = '', '0',
-              replaceRegexpOne(arrayElement(extractAll(cs, '[0-9]+'), -1), '^0+', ''))) as cs_num
+           if(replaceRegexpOne(num_run, '^0+', '') = '', '0', replaceRegexpOne(num_run, '^0+', ''))) as cs_num
     from a
 )
 -- Junk yields cs_num NULL, dropped by the non-null equality: NULL-compat is a different rule than a

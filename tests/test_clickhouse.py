@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -301,3 +302,87 @@ def test_transform_adsblol_paths_frame_types():
     assert out.schema["ts"] == pl.Datetime("us", "UTC")
     assert out.schema["trace_day"] == pl.Date
     assert out.get_column("ts").dt.epoch("s").to_list() == [1782365500]
+
+
+class _OptimizeClient:
+    # Records every command so a test can pin the exact OPTIMIZE text the DAG will send.
+    def __init__(self, parts):
+        self.parts = parts
+        self.commands = []
+        self.queries = []
+
+    def query(self, sql):
+        self.queries.append(sql)
+        rows = self.parts if "system.parts" in sql else [("ReplacingMergeTree",)]
+        return SimpleNamespace(result_rows=rows)
+
+    def command(self, sql, **_kw):
+        self.commands.append(sql)
+
+    def close(self):
+        pass
+
+
+_SEP = datetime(2026, 9, 8, 18, 30, tzinfo=timezone.utc)
+_OCT = datetime(2026, 10, 1, 18, 30, tzinfo=timezone.utc)
+_PARTITION_FINAL = (
+    "OPTIMIZE TABLE {db}.swim_flightdata PARTITION ID '{pid}' FINAL SETTINGS optimize_skip_merged_partitions = 1"
+)
+
+
+def _optimize(monkeypatch, table, parts, now=_SEP, live_month_final=False):
+    fake = _OptimizeClient(parts)
+    monkeypatch.setattr(ch, "ch_client", lambda **_kw: fake)
+    return ch.optimize_states_final(table, live_month_final=live_month_final, now=now), fake
+
+
+def test_swim_optimize_mid_month_touches_nothing(monkeypatch):
+    # #197: the live month is multi-part every night (a part per 5-min tableize), so it must never be FINAL'd.
+    result, fake = _optimize(monkeypatch, "swim_flightdata", [("202607", 1), ("202608", 1), ("202609", 7)])
+    assert fake.commands == []
+    assert result == {"optimized": False, "skipped": False, "partitions": []}
+
+
+@pytest.mark.parametrize("parts, now", [
+    ([("202608", 1), ("202609", 41), ("202610", 3)], _OCT),
+    # 00:05 Oct 1 with no October part yet: the closed month is the max partition, and it must still get its FINAL.
+    ([("202608", 1), ("202609", 41)], datetime(2026, 10, 1, 0, 5, tzinfo=timezone.utc)),
+])
+def test_swim_optimize_first_run_of_new_month_finals_previous_month_only(monkeypatch, parts, now):
+    result, fake = _optimize(monkeypatch, "swim_flightdata", parts, now=now)
+    assert fake.commands == [_PARTITION_FINAL.format(db=ch._CH_DB, pid="202609")]
+    assert result["partitions"] == ["202609"] and result["optimized"] is True
+
+
+def test_swim_optimize_previous_month_already_single_part_is_idempotent(monkeypatch):
+    # The rollover FINAL keys on system.parts, not a stored flag: once single-part it is never rewritten again.
+    _, fake = _optimize(monkeypatch, "swim_flightdata", [("202609", 1), ("202610", 9)], now=_OCT)
+    assert fake.commands == []
+
+
+def test_swim_optimize_future_dated_partition_never_makes_the_live_month_closed(monkeypatch, caplog):
+    # One message with a future sourceTimeStamp lands a 202701 part; max(partition_id) would FINAL live 202609.
+    with caplog.at_level("WARNING", logger="include.clickhouse"):
+        result, fake = _optimize(monkeypatch, "swim_flightdata", [("202609", 7), ("202701", 2)])
+    assert fake.commands == []
+    assert result["partitions"] == []
+    assert "202701" in caplog.text and "202609" in caplog.text
+
+
+def test_closed_multipart_partitions_orders_and_skips_live_and_future():
+    assert ch.closed_multipart_partitions([], now=_SEP) == []
+    assert ch.closed_multipart_partitions([("202609", 5)], now=_SEP) == []
+    assert ch.closed_multipart_partitions([("202609", 2), ("202607", 3), ("202608", 1)], now=_SEP) == ["202607"]
+    assert ch.closed_multipart_partitions([("202607", 3), ("202701", 4), ("202609", 9)], now=_SEP) == ["202607"]
+    # `now` in another zone still picks the UTC month: 2026-10-01 07:00 JST is 2026-09-30 22:00 UTC.
+    jst = datetime(2026, 10, 1, 7, 0, tzinfo=timezone(timedelta(hours=9)))
+    assert ch.closed_multipart_partitions([("202609", 9)], now=jst) == []
+
+
+def test_live_month_final_keeps_the_unrestricted_final(monkeypatch):
+    # The partition rule is the parameter, not the table name; the default is the byte-identical unrestricted FINAL.
+    for table in ("opensky_states", "adsb_states"):
+        result, fake = _optimize(monkeypatch, table, [("202609", 7)], live_month_final=True)
+        assert fake.commands == [f"OPTIMIZE TABLE {ch._CH_DB}.{table} FINAL SETTINGS optimize_skip_merged_partitions = 1"]
+        assert result == {"optimized": True, "skipped": False}
+        assert not any("system.parts" in q for q in fake.queries)

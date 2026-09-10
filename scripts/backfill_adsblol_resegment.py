@@ -1,34 +1,44 @@
 from __future__ import annotations
 
-# Re-extract trace-days the segmenter's new slow-gap arm would now split (turnaround-sized silence,
-# below the cruise ceiling, implied cross-gap speed too slow to have stayed airborne).
+# Re-extract trace-days the segmenter now reads differently: the slow-gap arm, the dwell read and the
+# takeoff trim (#229).
 # Also the shared re-land wave engine (run/cli/sweep_stale): backfill_adsblol_class1.py drives it with
 # its own selector, so this script outlives its own wave's convergence.
 import argparse
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from include import adsblol_route_ledger as ledger
 from include.adsblol_release import land_release_day, member_progress
-from include.adsblol_routes import SLOW_GAP_CEIL_FT, SLOW_GAP_S, SLOW_GAP_SPEED_KMH
+from include.adsblol_routes import (
+    DWELL_GS_KT,
+    DWELL_S,
+    LOW_FIX_ALT_FT,
+    SLOW_GAP_CEIL_FT,
+    SLOW_GAP_S,
+    SLOW_GAP_SPEED_KMH,
+)
 from include.clickhouse import (
     ch_client,
     load_adsblol_paths_pending_to_ch,
     load_adsblol_segments_pending_to_ch,
 )
 
+PATHS_TABLE = "bronze.adsblol_flight_paths"
+
 # Interpolates the Task 1 constants directly (feet, epoch seconds, km/h) — never hardcode copies.
 # The speed expression mirrors _haversine_km term-for-term (R=6371.0, division form) so a pair is
 # SQL-selected iff the Python arm splits it — the dry-run converges to zero. The gap>=SLOW_GAP_S
 # conjunct keeps the divisor >= 1800 s, so the float division never blows up (CH won't raise anyway).
-AFFECTED_SQL = f"""
+_SLOW_GAP_SQL = f"""
 WITH gaps AS (
   SELECT icao24, trace_day, seg_start,
     ts, lagInFrame(ts, 1) OVER (PARTITION BY icao24, trace_day, seg_start ORDER BY ts) AS prev_ts,
     alt_ft, lagInFrame(alt_ft, 1) OVER (PARTITION BY icao24, trace_day, seg_start ORDER BY ts) AS prev_alt_ft,
     lat, lagInFrame(lat, 1) OVER (PARTITION BY icao24, trace_day, seg_start ORDER BY ts) AS prev_lat,
     lon, lagInFrame(lon, 1) OVER (PARTITION BY icao24, trace_day, seg_start ORDER BY ts) AS prev_lon
-  FROM bronze.adsblol_flight_paths FINAL
+  FROM {{table}} FINAL
+  WHERE trace_day BETWEEN %(lo)s AND %(hi)s
 )
 SELECT DISTINCT icao24, trace_day
 FROM gaps
@@ -42,23 +52,96 @@ WHERE prev_ts IS NOT NULL
 ORDER BY trace_day, icao24
 """
 
+# The run finder both _parse_trace mirrors share: maximal {pred} runs on the persisted integer grid, whole-day
+# windows (a run spans an old air->ground break), cut at a SLOW_GAP_S silence, kept when spanning >= DWELL_S.
+_RUN_SQL = f"""
+WITH fixes AS (
+  SELECT icao24, trace_day, ts, coalesce(on_ground, false) AS gnd,
+    {{pred}} AS in_run,
+    lagInFrame(toNullable(in_run), 1, NULL)
+      OVER (PARTITION BY icao24, trace_day ORDER BY ts ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS prev_in_run,
+    lagInFrame(ts, 1)
+      OVER (PARTITION BY icao24, trace_day ORDER BY ts ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS prev_ts{{extra_select}}
+  FROM {{table}} FINAL
+  WHERE trace_day BETWEEN %(lo)s AND %(hi)s
+),
+runs AS (
+  SELECT *, sum(if(in_run AND (NOT coalesce(prev_in_run, false)
+                               OR toUnixTimestamp(ts) - toUnixTimestamp(prev_ts) >= {SLOW_GAP_S}), 1, 0))
+    OVER (PARTITION BY icao24, trace_day ORDER BY ts
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS run_id
+  FROM fixes
+)
+SELECT DISTINCT icao24, trace_day
+FROM (
+  SELECT icao24, trace_day
+  FROM runs
+  WHERE in_run
+  GROUP BY icao24, trace_day, run_id
+  HAVING toUnixTimestamp(max(ts)) - toUnixTimestamp(min(ts)) >= {DWELL_S}
+     AND {{having}}
+)
+ORDER BY trace_day, icao24
+"""
+
+
+def _run_sql(pred: str, having: str, extra_select: str = "") -> str:
+    # {table} stays a slot: the end-to-end fixture points the statement at a scratch table later.
+    return _RUN_SQL.format(pred=pred, having=having, extra_select=extra_select, table="{table}")
+
+
+# Dwell read: a run still holding an unflagged fix is a hex-day the new walk changes.
+_DWELL_PRED = f"coalesce(alt_ft < {LOW_FIX_ALT_FT} AND gs_kt < {DWELL_GS_KT}, false)"
+_DWELL_SQL = _run_sql(_DWELL_PRED, "countIf(NOT gnd) > 0")
+
+# Takeoff trim: a ground run on the flag alone whose next fix is airborne (NULL at day end = no trim). Re-landed,
+# only the run's last fix survives (the rest drops as all-ground), so the arm goes quiet.
+_TAKEOFF_PRED = "gnd"
+_TAKEOFF_SQL = _run_sql(
+    _TAKEOFF_PRED, "argMax(tuple(next_gnd), ts).1 = false",
+    extra_select=""",
+    leadInFrame(toNullable(gnd), 1, NULL)
+      OVER (PARTITION BY icao24, trace_day ORDER BY ts ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS next_gnd""")
+
+# Run one after the other, a week of trace_days at a time: the window over a whole FINAL read buffers every
+# partition (one pass hit the 16 GB query cap at 460M fixes), and no run or gap crosses a trace_day.
+AFFECTED_SQL_TEMPLATES = (_SLOW_GAP_SQL, _DWELL_SQL, _TAKEOFF_SQL)
+SLICE_DAYS = 7
+
+
+def affected_sqls(*, table: str = PATHS_TABLE) -> tuple[str, ...]:
+    return tuple(t.format(table=table) for t in AFFECTED_SQL_TEMPLATES)
+
 
 def _day_iso(value) -> str:
     # CH returns trace_day as a Date; the ledger stores it as ISO TEXT.
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
-def affected_pairs(client=None) -> list[tuple[str, str]]:
-    from include.clickhouse import ch_client
-
+def affected_pairs(client=None, *, table: str = PATHS_TABLE) -> list[tuple[str, str]]:
     c = client or ch_client()
+    pairs: set[tuple[str, str]] = set()
     try:
-        rows = c.query(AFFECTED_SQL).result_rows
+        # minOrNull: plain min/max over an empty table return 1970-01-01, not NULL, on CH 26.5.
+        lo, hi = c.query(
+            f"SELECT minOrNull(trace_day), maxOrNull(trace_day) FROM {table}").result_rows[0]
+        if lo is None:
+            return []
+        windows = []
+        cursor = lo
+        while cursor <= hi:
+            windows.append({"lo": cursor.isoformat(),
+                            "hi": (cursor + timedelta(days=SLICE_DAYS - 1)).isoformat()})
+            cursor += timedelta(days=SLICE_DAYS)
+        for sql in affected_sqls(table=table):
+            for window in windows:
+                # Lower icao24 to match route_targets / ledger keys.
+                pairs.update((str(r[0]).lower(), _day_iso(r[1]))
+                             for r in c.query(sql, parameters=window).result_rows)
     finally:
         if client is None:
             c.close()
-    # Lower icao24 to match route_targets / ledger keys.
-    return [(str(r[0]).lower(), _day_iso(r[1])) for r in rows]
+    return sorted(pairs, key=lambda p: (p[1], p[0]))
 
 
 _SUPERSEDED_TABLES = ("bronze.adsblol_flight_segments", "bronze.adsblol_flight_paths")
@@ -75,7 +158,7 @@ ORDER BY trace_day, icao24
 
 
 def sweep_stale(client=None, *, execute: bool = False):
-    # Paths RMT-replace in place (AFFECTED_SQL goes quiet), so a crash before delete leaves
+    # Paths RMT-replace in place (the selectors go quiet), so a crash before delete leaves
     # re-keyed rows behind forever; batch-mixed hex-days under FINAL are that exact signature.
     c = client or ch_client()
     try:

@@ -6,6 +6,8 @@ import zlib
 from datetime import date
 from typing import Any, BinaryIO, Callable, Iterator, Optional
 
+from include.adsblol_trace_utils import num, trace_preamble
+
 KT_TO_MPS = 0.514444
 FT_TO_M = 0.3048
 FPM_TO_MPS = 0.00508
@@ -130,21 +132,6 @@ def member_icao(name: str) -> Optional[str]:
     return hexid
 
 
-def _num(value: Any) -> Optional[float]:
-    return float(value) if isinstance(value, (int, float)) else None
-
-
-def _trace_preamble(trace_doc: dict[str, Any]) -> Optional[tuple[list[Any], str, float]]:
-    points = trace_doc.get("trace") or []
-    if not points:
-        return None
-    icao = (trace_doc.get("icao") or "").lower()
-    base = trace_doc.get("timestamp")
-    if not icao or icao.startswith("~") or base is None:
-        return None
-    return points, icao, base
-
-
 def _point_row(
     icao: str,
     callsign: Optional[str],
@@ -159,11 +146,11 @@ def _point_row(
 ) -> dict[str, Any]:
     alt_baro = point[3] if len(point) > 3 else None
     on_ground = alt_baro == "ground"
-    gs = _num(point[4]) if len(point) > 4 else None
-    track = _num(point[5]) if len(point) > 5 else None
-    baro_rate = _num(point[7]) if len(point) > 7 else None
-    alt_geom = _num(point[10]) if len(point) > 10 else None
-    alt_main = None if on_ground else _num(alt_baro)
+    gs = num(point[4]) if len(point) > 4 else None
+    track = num(point[5]) if len(point) > 5 else None
+    baro_rate = num(point[7]) if len(point) > 7 else None
+    alt_geom = num(point[10]) if len(point) > 10 else None
+    alt_main = None if on_ground else num(alt_baro)
     # flags&8 = the altitude field is geometric, not barometric.
     alt_is_geom = bool(flags & 8)
 
@@ -201,7 +188,7 @@ def resample_trace(
     staleness_s: int = STALENESS_S,
     bbox: tuple[float, float, float, float] = JAPAN_BBOX,
 ) -> list[dict[str, Any]]:
-    preamble = _trace_preamble(trace_doc)
+    preamble = trace_preamble(trace_doc)
     if preamble is None:
         return []
     points, icao, base = preamble
@@ -242,7 +229,7 @@ def resample_trace(
         t, point, flags = chosen
         if boundary - t > staleness_s:
             continue
-        lat, lon = _num(point[1]), _num(point[2])
+        lat, lon = num(point[1]), num(point[2])
         if lat is None or lon is None:
             continue
         if not (lamin <= lat <= lamax and lomin <= lon <= lomax):
@@ -258,7 +245,7 @@ def dense_rows(
     day_start: int,
     zones: dict[str, tuple[float, float, float, float]] = DENSE_ZONES,
 ) -> list[dict[str, Any]]:
-    preamble = _trace_preamble(trace_doc)
+    preamble = trace_preamble(trace_doc)
     if preamble is None:
         return []
     points, icao, base = preamble
@@ -284,7 +271,7 @@ def dense_rows(
         # flags&1 = repeated last-known fix: fine for identity fill, not position.
         if flags & 1:
             continue
-        lat, lon = _num(point[1]), _num(point[2])
+        lat, lon = num(point[1]), num(point[2])
         if lat is None or lon is None:
             continue
         # First match wins (dict order): named zones before the japan_dense catch-all.

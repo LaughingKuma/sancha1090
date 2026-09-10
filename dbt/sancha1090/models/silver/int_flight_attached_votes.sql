@@ -62,14 +62,15 @@ anchor_pick as (
     from cand
     group by source, icao24, win_start
 ),
--- A fragmented source (e.g. adsblol's unchained short segments) can independently max-overlap the same
--- anchor from several opinions; collapse to one vote per (flight_id, source), best overlap wins.
+-- Several opinions from one source can pick the same anchor, so only the best-overlap opinion gets a vote.
+-- Its (icao24, win_start) key lets consumers find the opinion that cast the vote.
 votes as (
     select
         picked.1 as flight_id,
         source,
+        icao24,
         argMin(
-            tuple(picked.2, picked.3, picked.4),
+            tuple(picked.2, picked.3, picked.4, win_start),
             tuple(
                 -- opensky_flights near-dups: most-resolved first, so a merged near-dup never votes with a wide
                 -- NULL-endpoint capture. Inert (0) for every other source: they keep overlap-first.
@@ -89,7 +90,7 @@ votes as (
         max(picked.5) as src_origin_gated,
         max(picked.6) as src_dest_gated
     from anchor_pick
-    group by flight_id, source
+    group by flight_id, source, icao24
 )
 select
     flight_id,
@@ -98,5 +99,7 @@ select
     vote.2 as origin_icao,
     vote.3 as dest_icao,
     src_origin_gated as origin_gated,
-    src_dest_gated as dest_gated
+    src_dest_gated as dest_gated,
+    icao24,
+    vote.4 as win_start
 from votes

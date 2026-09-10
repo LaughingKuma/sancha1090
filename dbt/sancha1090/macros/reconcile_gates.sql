@@ -13,6 +13,19 @@
 (({{ airline_expr }}) and ({{ jet_expr }}) and {{ jet_infeasible_airport(runway_col, type_col) }})
 {%- endmacro %}
 
+{# #213A: iata != '' and scheduled_service both let a legacy-labeled military field (e.g. Kadena)
+   wrongly outrank a closer real airfield -- airport_type is the one signal that doesn't. #}
+{% macro real_airfield(type_col) -%}
+({{ type_col }} not in ('heliport', 'seaplane_base'))
+{%- endmacro %}
+
+{# One snap tier for every lane (#214): a real airfield within snap_iata_pref_km beats a nearer heliport,
+   then distance, then a.icao -- distance alone is not a total order (ATUA/AYUA share coordinates). #}
+{% macro snap_order(fix_lat, fix_lon) -%}
+if({{ real_airfield('a.airport_type') }} and {{ haversine_km(fix_lat, fix_lon, 'a.lat', 'a.lon') }} <= {{ var('snap_iata_pref_km') }}, 0, 1),
+{{ haversine_km(fix_lat, fix_lon, 'a.lat', 'a.lon') }}, a.icao
+{%- endmacro %}
+
 {# Callsign match key for the vrs_routes lane: transmitted callsigns zero-pad the flight number
    (SFJ0043) where the schedule DB doesn't (SFJ43); normalize both sides with the same expression. #}
 {% macro callsign_norm(callsign_col) -%}

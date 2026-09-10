@@ -2,6 +2,8 @@
 -- Finding 3: a multi-leg vrs vote (n_box_legs >= 2) requires exactly one position-aligned,
 -- observation-corroborated candidate. Every non-NULL endpoint emitted by the vote must belong to that
 -- sole supported leg; jet gating may NULL either endpoint, but int_flight_attach drops both-NULL votes.
+-- Finding 2: a single-leg vote (n_box_legs = 1) must never survive when the flight's own observed pair
+-- contradicts it in the opposite position -- that's the reciprocal-rotation-leg veto.
 with vrs_votes as (
     select flight_id, origin_icao as voted_origin, dest_icao as voted_dest
     from {{ ref('int_flight_attach') }}
@@ -24,6 +26,14 @@ legs as (
     join flight_norm fn on fn.flight_id = vv.flight_id
     join {{ ref('stg_vrs_routes') }} v on v.callsign_norm = fn.callsign_norm
 ),
+-- Reads int_flight_attached_votes (what production anti_support reads), not int_flight_attach, so a
+-- dropped observation there can't hide the contradiction; scoped to the single-leg flights this checks.
+observed_anti as (
+    select flight_id, origin_icao, dest_icao
+    from {{ ref('int_flight_attached_votes') }}
+    where source != 'swim'
+      and flight_id in (select flight_id from legs where n_box_legs = 1)
+),
 corroborated as (
     select l.flight_id as flight_id, l.voted_origin as voted_origin, l.voted_dest as voted_dest,
            l.n_box_legs as n_box_legs, l.leg_origin as leg_origin, l.leg_dest as leg_dest,
@@ -42,3 +52,10 @@ having countIf(support_cnt > 0) != 1
         and (voted_origin is null or voted_origin = leg_origin)
         and (voted_dest is null or voted_dest = leg_dest)
     ) != 1
+union all
+select l.flight_id
+from legs l
+join observed_anti o on o.flight_id = l.flight_id
+where l.n_box_legs = 1
+  and ((o.dest_icao is null or o.origin_icao != o.dest_icao) and o.origin_icao = l.leg_dest
+    or (o.origin_icao is null or o.origin_icao != o.dest_icao) and o.dest_icao = l.leg_origin)

@@ -27,7 +27,10 @@ def maintain_bronze_dedup():
         # daily merge on the RMT tables (each self-skips a not-yet-RMT/absent table, so no churn pre-migration). Raises.
         from include.clickhouse import optimize_states_final
 
-        return {t: optimize_states_final(t) for t in ("opensky_states", "adsb_states", "swim_flightdata")}
+        # swim_flightdata gains a part every 5 min, so its live month is never single-part: FINAL only its closed
+        # months (#197); the states tables keep the unrestricted FINAL.
+        policy = {"opensky_states": True, "adsb_states": True, "swim_flightdata": False}
+        return {t: optimize_states_final(t, live_month_final=live) for t, live in policy.items()}
 
     @task
     def memory_headroom() -> dict:

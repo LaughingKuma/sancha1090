@@ -65,6 +65,7 @@ One row per warehouse object. "Built by" names the DAG (with its dbt selector), 
 | `silver_ch.int_flight_spine` | silver | `transform_marts` (`tag:reconcile`) |
 | `silver_ch.int_flight_opinions` | silver | `transform_marts` (`tag:reconcile`) |
 | `silver_ch.int_flight_attach` | silver | `transform_marts` (`tag:reconcile`) |
+| `silver_ch.int_flight_ballot` | silver | `transform_marts` (`tag:reconcile`) |
 | `silver_ch.int_flight_attached_votes` | silver | `transform_marts` (`tag:reconcile`) |
 | `silver_ch.int_jet_airframes` | silver | `transform_marts` (`tag:reconcile`) |
 | `silver_ch.dim_aircraft` | silver | `transform_adsb_silver` (`tag:adsb`) |

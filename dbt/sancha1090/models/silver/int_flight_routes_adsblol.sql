@@ -9,11 +9,8 @@ with segs as (
 origin_snap as (
     select s.icao24, s.seg_start_time,
            a.icao as origin_icao, a.name as origin_name, a.lat as origin_lat, a.lon as origin_lon,
-           -- IATA-bearing airports within snap_iata_pref_km outrank a marginally-nearer no-IATA
-           -- field (seaplane bases/heliports); beyond that pure nearest, unchanged.
            row_number() over (partition by s.icao24, s.seg_start_time
-                              order by if(a.iata != '' and {{ haversine_km('s.first_lat', 's.first_lon', 'a.lat', 'a.lon') }} <= {{ var('snap_iata_pref_km') }}, 0, 1),
-                                       {{ haversine_km('s.first_lat', 's.first_lon', 'a.lat', 'a.lon') }}) as rn
+                              order by {{ snap_order('s.first_lat', 's.first_lon') }}) as rn
     from (
         select icao24, seg_start_time, first_lat, first_lon,
                -- Airliners don't land at unscheduled strips: gate their snap candidates (spec 2026-07-05).
@@ -38,11 +35,8 @@ origin_snap as (
 dest_snap as (
     select s.icao24, s.seg_start_time,
            a.icao as dest_icao, a.name as dest_name, a.lat as dest_lat, a.lon as dest_lon,
-           -- IATA-bearing airports within snap_iata_pref_km outrank a marginally-nearer no-IATA
-           -- field (seaplane bases/heliports); beyond that pure nearest, unchanged.
            row_number() over (partition by s.icao24, s.seg_start_time
-                              order by if(a.iata != '' and {{ haversine_km('s.last_lat', 's.last_lon', 'a.lat', 'a.lon') }} <= {{ var('snap_iata_pref_km') }}, 0, 1),
-                                       {{ haversine_km('s.last_lat', 's.last_lon', 'a.lat', 'a.lon') }}) as rn
+                              order by {{ snap_order('s.last_lat', 's.last_lon') }}) as rn
     from (
         select icao24, seg_start_time, last_lat, last_lon,
                -- Airliners don't land at unscheduled strips: gate their snap candidates (spec 2026-07-05).

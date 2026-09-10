@@ -10,91 +10,85 @@
 
 -- Cross-source consensus flight mart: per flight, plurality per endpoint, authority + scheduled-service
 -- tiebreak, single-source flagged, curated override on top; full provenance. Additive -- pure lanes untouched.
-with flight_shape as (
-    -- only airliners get the sched tiebreak below; a real military flight may legitimately land at RJCJ.
-    -- SP4: is_jet feeds the ballot gate -- an opinion's own callsign can be NULL (single-ping legs), so
-    -- infeasibility is also enforced per-flight on the anchor identity, post-attach.
-    select sp.flight_id as flight_id,
-           {{ airline_shaped('sp.anchor_callsign') }} as is_airline,
-           (j.icao24 is not null) as is_jet
-    from {{ ref('int_flight_spine') }} sp
-    left join {{ ref('int_jet_airframes') }} j on j.icao24 = lower(sp.icao24)
+-- The ballot computation itself lives in int_flight_ballot (see its header for why): a materialized
+-- table can be joined more than once for free, where a CTE re-runs its whole query per reference.
+with ballot as (
+    select * from {{ ref('int_flight_ballot') }}
 ),
-origin_ballot as (
-    select a.flight_id as flight_id, a.origin_icao as airport, count() as votes,
-           min(a.source_rank) as best_rank, max(coalesce(ap.scheduled_service, false)) as sched
+-- Finding 3: origin/dest vote independently, so their pair can be unasserted by any source -- pruned to
+-- the ~0.2% of flights this applies to, before the (otherwise whole-mart-scanning) admissibility joins.
+unresolved as (
+    select flight_id from ballot
+    where origin_icao is not null and dest_icao is not null and not pair_asserted
+),
+complete_pairs as (
+    select a.flight_id, a.origin_icao, a.dest_icao, a.source_rank
     from {{ ref('int_flight_attach') }} a
-    left join {{ ref('dim_airports') }} ap on ap.icao = a.origin_icao
-    left join flight_shape fs on fs.flight_id = a.flight_id
-    where a.origin_icao is not null
-      -- SP4 ballot gate: anchor-identity backstop -- a NULL-callsign opinion must not launder an
-      -- infeasible field onto an airline-jet flight (opinion-level gate can't see the anchor).
-      and not {{ jet_infeasible_endpoint('coalesce(fs.is_airline, false)', 'coalesce(fs.is_jet, false)', 'ap.runway_length_ft', 'ap.airport_type') }}
-    group by a.flight_id, a.origin_icao
+    where a.origin_icao is not null and a.dest_icao is not null
+      and a.flight_id in (select flight_id from unresolved)
 ),
-origin_annot as (
-    select *,
-        sum(votes) over (partition by flight_id) as total_votes,
-        max(votes) over (partition by flight_id) as top_votes,
-        count() over (partition by flight_id) as distinct_airports
-    from origin_ballot
+admissible_pairs as (
+    -- a rescue candidate must be a top-vote airport on BOTH sides of its own independent ballot,
+    -- exactly like the ballot's own winners are -- rank then picks among these equally-plausible pairs.
+    select cp.flight_id as flight_id, cp.origin_icao as origin_icao, cp.dest_icao as dest_icao,
+        cp.source_rank as source_rank,
+        row_number() over (partition by cp.flight_id order by cp.source_rank asc, cp.origin_icao asc, cp.dest_icao asc) as rn
+    from complete_pairs cp
+    join ballot b on b.flight_id = cp.flight_id
+    where b.origin_votes[cp.origin_icao] = arrayMax(mapValues(b.origin_votes))
+      and b.dest_votes[cp.dest_icao] = arrayMax(mapValues(b.dest_votes))
 ),
-origin_rank as (
-    select oa.*, fs.is_airline as is_airline,
-        sum(if(oa.votes = oa.top_votes, 1, 0)) over (partition by oa.flight_id) as n_top,
-        row_number() over (partition by oa.flight_id
-            order by oa.votes desc, (fs.is_airline and oa.sched) desc, oa.best_rank asc, oa.airport asc) as rn
-    from origin_annot oa
-    left join flight_shape fs on fs.flight_id = oa.flight_id
+rescue_pair as (
+    select flight_id, origin_icao as rescue_origin, dest_icao as rescue_dest, source_rank as rescue_rank
+    from admissible_pairs where rn = 1
 ),
-origin_win as (
-    select flight_id,
-        airport as origin_icao,
-        {{ rank_source_label('best_rank') }} as origin_src,
-        multiIf(total_votes = 1, 'single', distinct_airports = 1, 'unanimous', n_top > 1, 'tiebreak', 'majority') as origin_agr
-    from origin_rank where rn = 1
-),
-origin_votes_map as (
-    select flight_id, CAST((groupArray(airport), groupArray(votes)) AS Map(String, UInt64)) as origin_votes
-    from origin_ballot group by flight_id
-),
-dest_ballot as (
-    select a.flight_id as flight_id, a.dest_icao as airport, count() as votes,
-           min(a.source_rank) as best_rank, max(coalesce(ap.scheduled_service, false)) as sched
-    from {{ ref('int_flight_attach') }} a
-    left join {{ ref('dim_airports') }} ap on ap.icao = a.dest_icao
-    left join flight_shape fs on fs.flight_id = a.flight_id
-    where a.dest_icao is not null
-      -- SP4 ballot gate: anchor-identity backstop -- a NULL-callsign opinion must not launder an
-      -- infeasible field onto an airline-jet flight (opinion-level gate can't see the anchor).
-      and not {{ jet_infeasible_endpoint('coalesce(fs.is_airline, false)', 'coalesce(fs.is_jet, false)', 'ap.runway_length_ft', 'ap.airport_type') }}
-    group by a.flight_id, a.dest_icao
-),
-dest_annot as (
-    select *,
-        sum(votes) over (partition by flight_id) as total_votes,
-        max(votes) over (partition by flight_id) as top_votes,
-        count() over (partition by flight_id) as distinct_airports
-    from dest_ballot
-),
-dest_rank as (
-    select da.*, fs.is_airline as is_airline,
-        sum(if(da.votes = da.top_votes, 1, 0)) over (partition by da.flight_id) as n_top,
-        row_number() over (partition by da.flight_id
-            order by da.votes desc, (fs.is_airline and da.sched) desc, da.best_rank asc, da.airport asc) as rn
-    from dest_annot da
-    left join flight_shape fs on fs.flight_id = da.flight_id
-),
-dest_win as (
-    select flight_id,
-        airport as dest_icao,
-        {{ rank_source_label('best_rank') }} as dest_src,
-        multiIf(total_votes = 1, 'single', distinct_airports = 1, 'unanimous', n_top > 1, 'tiebreak', 'majority') as dest_agr
-    from dest_rank where rn = 1
-),
-dest_votes_map as (
-    select flight_id, CAST((groupArray(airport), groupArray(votes)) AS Map(String, UInt64)) as dest_votes
-    from dest_ballot group by flight_id
+pair_coherence as (
+    -- Coherence applies only when both sides have a vote; fallback keeps the stronger vote count (rank
+    -- ties only). 'coherence' marks only a value actually changed -- an unchanged rescue/fallback side keeps its label.
+    select
+        b.flight_id as flight_id,
+        multiIf(b.dest_icao is null, b.origin_icao,
+                b.origin_icao is null, null,
+                b.pair_asserted, b.origin_icao,
+                rp.flight_id is not null, rp.rescue_origin,
+                b.origin_votes_n > b.dest_votes_n or (b.origin_votes_n = b.dest_votes_n and b.origin_best_rank <= b.dest_best_rank), b.origin_icao,
+                null) as origin_icao,
+        multiIf(b.dest_icao is null, b.origin_src,
+                b.origin_icao is null, null,
+                b.pair_asserted, b.origin_src,
+                rp.flight_id is not null and rp.rescue_origin = b.origin_icao, b.origin_src,
+                rp.flight_id is not null, {{ rank_source_label('rp.rescue_rank') }},
+                b.origin_votes_n > b.dest_votes_n or (b.origin_votes_n = b.dest_votes_n and b.origin_best_rank <= b.dest_best_rank), b.origin_src,
+                null) as origin_src,
+        multiIf(b.dest_icao is null, b.origin_agr,
+                b.origin_icao is null, null,
+                b.pair_asserted, b.origin_agr,
+                rp.flight_id is not null and rp.rescue_origin = b.origin_icao, b.origin_agr,
+                rp.flight_id is not null, 'coherence',
+                b.origin_votes_n > b.dest_votes_n or (b.origin_votes_n = b.dest_votes_n and b.origin_best_rank <= b.dest_best_rank), b.origin_agr,
+                'coherence') as origin_agr,
+        multiIf(b.origin_icao is null, b.dest_icao,
+                b.dest_icao is null, null,
+                b.pair_asserted, b.dest_icao,
+                rp.flight_id is not null, rp.rescue_dest,
+                b.dest_votes_n > b.origin_votes_n or (b.dest_votes_n = b.origin_votes_n and b.dest_best_rank < b.origin_best_rank), b.dest_icao,
+                null) as dest_icao,
+        multiIf(b.origin_icao is null, b.dest_src,
+                b.dest_icao is null, null,
+                b.pair_asserted, b.dest_src,
+                rp.flight_id is not null and rp.rescue_dest = b.dest_icao, b.dest_src,
+                rp.flight_id is not null, {{ rank_source_label('rp.rescue_rank') }},
+                b.dest_votes_n > b.origin_votes_n or (b.dest_votes_n = b.origin_votes_n and b.dest_best_rank < b.origin_best_rank), b.dest_src,
+                null) as dest_src,
+        multiIf(b.origin_icao is null, b.dest_agr,
+                b.dest_icao is null, null,
+                b.pair_asserted, b.dest_agr,
+                rp.flight_id is not null and rp.rescue_dest = b.dest_icao, b.dest_agr,
+                rp.flight_id is not null, 'coherence',
+                b.dest_votes_n > b.origin_votes_n or (b.dest_votes_n = b.origin_votes_n and b.dest_best_rank < b.origin_best_rank), b.dest_agr,
+                'coherence') as dest_agr
+    from ballot b
+    left join rescue_pair rp on rp.flight_id = b.flight_id
 ),
 n_src as (
     select flight_id, uniqExact(source) as n_sources from {{ ref('int_flight_attach') }} group by flight_id
@@ -103,22 +97,42 @@ gate as (
     select flight_id, max(origin_gated) as origin_gated, max(dest_gated) as dest_gated
     from {{ ref('int_flight_attach') }} group by flight_id
 ),
+box_spine as (
+    -- Day-keyed like int_flight_attached_votes: icao24 alone paired every spine row with every same-hex fix ever (#191).
+    -- opensky_flights anchors bypass this gate in `resolved`, so hashing them here only widens the probe side.
+    select flight_id, icao24, anchor_source, flight_start, flight_end,
+           {{ overlap_days('flight_start', 'flight_end') }} as overlap_day
+    from {{ ref('int_flight_spine') }}
+    where flight_start is not null and flight_end is not null and anchor_source != 'opensky_flights'
+),
+{#- OpenSky's poll misses flights adsb.lol or the rooftop saw in the box (#213 D); only adsblol anchors can
+    fall to this gate (opensky_states anchors are in-box by construction), so the extra lanes probe those alone. #}
+{%- set box_lanes = [
+    {'src': 'opensky_states', 'hex_expr': 'icao24', 'ts_expr': 'snapshot_time',
+     'lat': 's.latitude', 'lon': 's.longitude', 'anchor_filter': none},
+    {'src': 'adsblol_states', 'hex_expr': 'icao24', 'ts_expr': 'snapshot_time',
+     'lat': 's.latitude', 'lon': 's.longitude', 'anchor_filter': "anchor_source = 'adsblol'"},
+    {'src': 'adsb_states', 'hex_expr': 'lower(hex)', 'ts_expr': "toDateTime64(capture_ts, 6, 'UTC')",
+     'lat': 's.lat', 'lon': 's.lon', 'anchor_filter': "anchor_source = 'adsblol'"},
+] %}
 box_observed as (
     -- The Japan box saw this flight (in-box bronze fix in-window; japan_box_* vars, EXISTS-semantics so dups fine).
-    -- Day-keyed like int_flight_attached_votes: icao24 alone paired every spine row with every same-hex fix ever (#191).
+    -- The spine is the hash side: ~1M rows against tens of millions per bronze lane, which stream past it.
+{%- for lane in box_lanes %}
+    {%- if not loop.first %}
+    union distinct
+    {%- endif %}
     select distinct sp.flight_id as flight_id
     from (
-        select flight_id, icao24, flight_start, flight_end,
-               {{ overlap_days('flight_start', 'flight_end') }} as overlap_day
-        from {{ ref('int_flight_spine') }}
-        where flight_start is not null and flight_end is not null
-    ) sp
-    join (
-        select icao24, snapshot_time, toUInt32(toRelativeDayNum(snapshot_time)) as overlap_day
-        from {{ source('bronze', 'opensky_states') }} s
-        where {{ in_japan_box('s.latitude', 's.longitude') }}
-    ) s on s.icao24 = sp.icao24 and s.overlap_day = sp.overlap_day
+        select {{ lane.hex_expr }} as icao24, {{ lane.ts_expr }} as snapshot_time,
+               toUInt32(toRelativeDayNum({{ lane.ts_expr }})) as overlap_day
+        from {{ source('bronze', lane.src) }} s
+        where {{ in_japan_box(lane.lat, lane.lon) }}
+    ) s
+    join (select * from box_spine{% if lane.anchor_filter %} where {{ lane.anchor_filter }}{% endif %}) sp
+      on sp.icao24 = s.icao24 and sp.overlap_day = s.overlap_day
     where s.snapshot_time between sp.flight_start and sp.flight_end
+{%- endfor %}
 ),
 curated as (
     -- Windowless human override; latest valid_from wins if windows overlap.
@@ -135,6 +149,16 @@ curated as (
         left join {{ ref('dim_airports') }} da on da.icao = nullIf(ov.dest_icao, '')
     ) where rn = 1
 ),
+trace_end as (
+    -- The label follows the vote: the chain int_flight_attached_votes attached here, not any overlapping chain (over-cap
+    -- chains cannot vote, a chain spanning two flights attaches to one). te_flight_id: a flight_id here makes `r.*` emit `r.flight_id`.
+    select av.flight_id as te_flight_id,
+           c.first_alt_m as first_alt_m, c.first_on_ground as first_on_ground,
+           c.last_alt_m as last_alt_m, c.last_on_ground as last_on_ground
+    from {{ ref('int_flight_attached_votes') }} av
+    join {{ ref('int_flight_chains_adsblol') }} c on c.icao24 = av.icao24 and c.chain_start = av.win_start
+    where av.source = 'adsblol'
+),
 resolved as (
     select
         sp.flight_id as flight_id,
@@ -147,23 +171,23 @@ resolved as (
         -- SP4 left a mark here: at least one source's endpoint was discarded as infeasible, so the endpoint
         -- that survived is a consensus over a reduced ballot. Opinion seam only (see int_flight_attach).
         toUInt8(coalesce(g.origin_gated, 0) = 1 or coalesce(g.dest_gated, 0) = 1) as feasibility_gated,
-        -- per endpoint: curated override > consensus winner
-        coalesce(cur.origin_icao, ow.origin_icao) as origin_icao,
-        multiIf(cur.origin_icao is not null, 'curated', ow.origin_icao is not null, ow.origin_src, null) as origin_source,
-        multiIf(cur.origin_icao is not null, 'curated', ow.origin_icao is not null, ow.origin_agr, null) as origin_agreement,
-        ovm.origin_votes as origin_votes,
-        coalesce(cur.dest_icao, dw.dest_icao) as dest_icao,
-        multiIf(cur.dest_icao is not null, 'curated', dw.dest_icao is not null, dw.dest_src, null) as dest_source,
-        multiIf(cur.dest_icao is not null, 'curated', dw.dest_icao is not null, dw.dest_agr, null) as dest_agreement,
-        dvm.dest_votes as dest_votes,
+        -- per endpoint: curated override > coherence-checked consensus winner
+        coalesce(cur.origin_icao, pc.origin_icao) as origin_icao,
+        -- gated on origin_agr, not origin_icao: a gate-nulled endpoint has icao=NULL but agr='coherence',
+        -- and that provenance must survive even though the served value itself is null.
+        multiIf(cur.origin_icao is not null, 'curated', pc.origin_agr is not null, pc.origin_src, null) as origin_source,
+        multiIf(cur.origin_icao is not null, 'curated', pc.origin_agr is not null, pc.origin_agr, null) as origin_agreement,
+        b.origin_votes as origin_votes,
+        coalesce(cur.dest_icao, pc.dest_icao) as dest_icao,
+        multiIf(cur.dest_icao is not null, 'curated', pc.dest_agr is not null, pc.dest_src, null) as dest_source,
+        multiIf(cur.dest_icao is not null, 'curated', pc.dest_agr is not null, pc.dest_agr, null) as dest_agreement,
+        b.dest_votes as dest_votes,
         ac.registration, ac.typecode,
         al.name as airline_name, al.country as airline_country,
         {{ ch_hex_country('sp.icao24') }} as reg_country
     from {{ ref('int_flight_spine') }} sp
-    left join origin_win ow on ow.flight_id = sp.flight_id
-    left join origin_votes_map ovm on ovm.flight_id = sp.flight_id
-    left join dest_win dw on dw.flight_id = sp.flight_id
-    left join dest_votes_map dvm on dvm.flight_id = sp.flight_id
+    left join ballot b on b.flight_id = sp.flight_id
+    left join pair_coherence pc on pc.flight_id = sp.flight_id
     left join n_src nc on nc.flight_id = sp.flight_id
     left join gate g on g.flight_id = sp.flight_id
     left join curated cur on cur.flight_id = sp.flight_id
@@ -201,6 +225,12 @@ select
     oap.lat as origin_lat, oap.lon as origin_lon,
     dap.name as dest_name, nullIf(dap.iata, '') as dest_iata, nullIf(dap.city, '') as dest_city,
     dap.lat as dest_lat, dap.lon as dest_lon,
+    -- 'coverage': the adsb.lol chain left this flight airborne at cruise on its unresolved side -- an unknown foreign
+    -- end, not a domestic flight. Another lane's vote there may have been gate-nulled (agreement = 'coherence').
+    multiIf((r.origin_icao is null) = (r.dest_icao is null), null,
+            r.origin_icao is null and not te.first_on_ground and te.first_alt_m >= {{ var('legs_cruise_alt_m') }}, 'coverage',
+            r.dest_icao is null and not te.last_on_ground and te.last_alt_m >= {{ var('legs_cruise_alt_m') }}, 'coverage',
+            null) as foreign_unresolved_reason,
 {%- if ladd_rel is not none %}
     -- window-aware suppression flag; warehouse keeps the row (flag only), livemap drops it at serve time.
     toUInt8(r.flight_id in (select flight_id from ladd_match)) as is_ladd
@@ -211,3 +241,4 @@ select
 from resolved r
 left join {{ ref('dim_airports') }} oap on oap.icao = r.origin_icao
 left join {{ ref('dim_airports') }} dap on dap.icao = r.dest_icao
+left join trace_end te on te.te_flight_id = r.flight_id

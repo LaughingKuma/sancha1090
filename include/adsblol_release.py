@@ -192,8 +192,7 @@ def extract_day(day: date, reader: Any, targets: set[str], *,
             ex.outcomes[hexid] = "error"
             continue
         try:
-            segs = routes.trace_segments(doc, day)
-            paths = routes.trace_paths(doc, day, segs)
+            segs, paths = routes.trace_rows(doc, day)
         except Exception:
             log.warning("trace segmentation failed for (%s, %s)", hexid, day, exc_info=True)
             # A malformed-but-parseable doc must not abort the day's whole stream, but it still

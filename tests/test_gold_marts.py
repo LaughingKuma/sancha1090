@@ -72,6 +72,16 @@ def test_flight_legs_duration_and_fixes_nonnegative(ch_cur):
     assert bad_fixes == 0, f"{bad_fixes} legs with num_fixes <= 0"
 
 
+def test_flight_legs_one_fix_has_no_route(ch_cur):
+    # #213C: the one-fix vote suppression is inherited from int_flight_legs_opensky, so a snap-only view
+    # must never show a one-fix leg with a route or a route_source.
+    n_route, n_rows = _q(ch_cur, "SELECT countIf(route_source IS NOT NULL OR origin_icao IS NOT NULL "
+                                 "OR dest_icao IS NOT NULL), count(*) "
+                                 "FROM gold_ch.fct_flight_legs WHERE num_fixes < 2")[0]
+    assert n_rows > 0, "no one-fix legs at all -- the population the rule guards is gone"
+    assert n_route == 0, f"{n_route} one-fix legs in fct_flight_legs carry a snapped endpoint"
+
+
 def test_agg_route_traffic_top_route_valid(ch_cur):
     rows = _q(ch_cur, "SELECT route_inferred, origin_icao, dest_icao, flight_count, origin_lat, dest_lon "
                       "FROM gold_ch.agg_route_traffic ORDER BY flight_count DESC LIMIT 1")

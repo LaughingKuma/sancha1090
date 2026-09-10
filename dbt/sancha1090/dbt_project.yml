@@ -68,9 +68,10 @@ vars:
   legs_snap_km: 100       # max airport snap distance from a low-altitude endpoint fix
   legs_cruise_alt_m: 3000 # below this an endpoint is a takeoff/landing; above it = overflight -> NULL endpoint
   legs_turnaround_min: 30 # a callsign flip across a gap this long = out/back rotation -> split the leg
+  legs_frozen_min: 30     # an airborne run of byte-identical positions longer than this is OpenSky re-serving a lost aircraft -> only its first fix counts (#213C)
   callsign_backfill_window_s: 600 # max gap to a same-airframe OpenSky snapshot when backfilling a blank ADS-B callsign
   callsign_backfill_rebuild_days: 3  # int_adsb_callsign_from_opensky: trailing UTC days REPLACEd per run off the rooftop watermark; a day settles once its neighbour has landed (+/- window), the third day is slack for a late rooftop push
-  snap_iata_pref_km: 10   # an IATA-bearing airport this close beats a marginally-nearer no-IATA field (PALH vs PANC)
+  snap_iata_pref_km: 10   # else a closer heliport/seaplane base wrongly wins the endpoint snap (PALH vs PANC, #213A)
   chain_speed_min_kmh: 300   # implied boundary groundspeed below this = the aircraft stopped (landing)
   chain_speed_max_kmh: 1100  # above this = not the same continuous flight
   anchor_merge_gap_min: 30  # two opensky_flights summaries for one icao24 this close (compatible callsign) = one physical flight
@@ -82,8 +83,9 @@ vars:
   chain_stop_alt_m: 8000     # jets only: turboprops legitimately cruise slow below this
   chain_low_fix_alt_m: 300   # a boundary fix below this (baro) is landing/departing, not cruising
   chain_low_fix_gap_min: 45  # low fix + a turnaround-sized gap = it landed; smaller gaps still chain
-  reconcile_anchor_max_hours: 16  # no Japan-relevant nonstop exceeds ~14.5h; longer windows are fused rotations
-  fused_envelope_speed_kmh: 550   # opensky_flights window vs O/D distance sanity floor
+  reconcile_anchor_max_hours: 16  # no Japan-relevant nonstop exceeds ~14.5h airborne; over it = fused rotations, or single flights with long transponder-on spans (#215)
+  fused_envelope_speed_kmh: 550   # window vs end-to-end distance sanity floor (opensky_flights O/D; adsblol chain first->last fix)
+  fused_envelope_slack_h: 1.5     # ground/taxi time a window may carry before the distance floor applies to the rest
   jet_min_runway_ft: 4500  # below this a jet airliner cannot operate; shortest scheduled-jet field in scope ~6,500 ft (RJKA)
   path_window_pad_min: 10  # fct_flight_path: pad each reconciled window this many min per side (mart windows are observation clips)
   path_settlement_lag_days: 1  # latest trace_day minus this lag: the 14:30 UTC OpenSky anchor waves land AFTER a start day first builds BY DESIGN -- fct_flight_path's contiguous orphan batch owns the stale-partition cleanup

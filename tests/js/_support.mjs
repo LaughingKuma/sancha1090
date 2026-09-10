@@ -1,16 +1,19 @@
 // Test doubles shared by the facade / focus / deep-link harnesses (not matched by the *.test.mjs glob).
 
-// one deferred answer per fetch, so a test decides when (and whether) a call lands
+// one deferred answer per fetch, so a test decides when (and whether) a call lands; `signal` is the
+// caller's AbortSignal (or undefined), and `abort()` rejects the way a real fetch does once it fires
 export function stubFetch() {
   const calls = [];
-  globalThis.fetch = (url) => {
+  globalThis.fetch = (url, init = {}) => {
     let settle, fail;
     const p = new Promise((res, rej) => { settle = res; fail = rej; });
     calls.push({
       url,
+      signal: init.signal,
       ok: (body) => settle({ ok: true, json: async () => body }),
       notOk: () => settle({ ok: false, json: async () => ({}) }),
       boom: () => fail(new Error("offline")),
+      abort: () => fail(new DOMException("aborted", "AbortError")),
     });
     return p;
   };

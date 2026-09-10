@@ -36,6 +36,49 @@ def test_fetch_flights_shapes_rows(livemap, monkeypatch):
     assert isinstance(out[0]["flight_id"], str)   # serialized as a string, never coerced to int
 
 
+ROUTE = {"origin": "HND", "origin_city": "Tokyo", "dest": "DEL", "dest_city": "Delhi", "departed_epoch": 1}
+
+
+def test_fetch_flights_fills_a_null_end_from_the_last_known_route(livemap, monkeypatch):
+    # issue 214 quick win: a foreign-end coverage hole leaves one endpoint NULL; the callsign's last known
+    # route fills that end only, and the row says so — the resolved end stays the mart's own
+    rows = [("reconciled", None, "HND", "Tokyo Haneda", None, None, "JAL39 ", "1"),
+            ("reconciled", None, None, None, "DEL", "Delhi", "JAL39", "2")]
+    monkeypatch.setattr(livemap, "_ch_client", lambda: fake_ch(rows))
+    monkeypatch.setattr(livemap, "_routes", {"JAL39": ROUTE})
+    out = livemap._fetch_flights("abc123")
+    assert out[0]["origin"] == {"code": "HND", "name": "Tokyo Haneda"}
+    assert out[0]["dest"] == {"code": "DEL", "name": "Delhi", "last_known": True}
+    assert out[1]["origin"] == {"code": "HND", "name": "Tokyo", "last_known": True}
+    assert out[1]["dest"] == {"code": "DEL", "name": "Delhi"}
+
+
+def test_fetch_flights_never_fills_from_a_reciprocal_or_unrelated_route(livemap, monkeypatch):
+    # the last known route must share the flight's resolved end: the reciprocal leg (resolved DEL, route
+    # HND→DEL) would fabricate DEL → ≈DEL, and a different rotation says nothing about this flight
+    rows = [("reconciled", None, "DEL", "Delhi", None, None, "JAL39", "1"),
+            ("reconciled", None, None, None, "HND", "Tokyo Haneda", "JAL39", "2"),
+            ("reconciled", None, "NRT", "Tokyo Narita", None, None, "JAL39", "3")]
+    monkeypatch.setattr(livemap, "_ch_client", lambda: fake_ch(rows))
+    monkeypatch.setattr(livemap, "_routes", {"JAL39": ROUTE})
+    out = livemap._fetch_flights("abc123")
+    assert out[0]["dest"] == {"code": None, "name": None}
+    assert out[1]["origin"] == {"code": None, "name": None}
+    assert out[2]["dest"] == {"code": None, "name": None}
+
+
+def test_fetch_flights_leaves_complete_and_routeless_rows_alone(livemap, monkeypatch):
+    rows = [("reconciled", None, "HND", "Tokyo Haneda", "VIDP", "Delhi", "JAL39", "1"),  # complete: never overwritten
+            ("reconciled", None, "HND", "Tokyo Haneda", None, None, "ANA1", "2"),        # no route for the callsign
+            ("reconciled", None, "HND", "Tokyo Haneda", None, None, None, "3")]          # no callsign at all
+    monkeypatch.setattr(livemap, "_ch_client", lambda: fake_ch(rows))
+    monkeypatch.setattr(livemap, "_routes", {"JAL39": {**ROUTE, "dest": "SIN", "dest_city": "Singapore"}})
+    out = livemap._fetch_flights("abc123")
+    assert out[0]["dest"] == {"code": "VIDP", "name": "Delhi"}
+    assert out[1]["dest"] == {"code": None, "name": None}
+    assert out[2]["dest"] == {"code": None, "name": None}
+
+
 def test_flights_passthrough(livemap, monkeypatch):
     # loaded (empty) suppression so passthrough is exercised, not the None-state fail-close
     monkeypatch.setattr(livemap, "_ladd_suppress", livemap._EMPTY_SUPPRESS)

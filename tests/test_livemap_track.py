@@ -52,6 +52,7 @@ def test_aircraft_query_serves_emergency_and_source_fields(livemap):
     assert m, "aircraft query shape changed: missing SELECT ... FROM mv_current_aircraft"
     select_list = m.group("select")
     assert re.search(r"\bsquawk\b", select_list, flags=re.I)
+    assert re.search(r"\bemergency\b", select_list, flags=re.I)  # 213 F: the transmitted status, not just the squawk
     assert re.search(r"\bposition_source\b", select_list, flags=re.I)
 
 

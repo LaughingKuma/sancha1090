@@ -1,13 +1,13 @@
-// The map's one public handle: it owns the shared /path pipeline, the fleet dim and the #map click
+// The map's one public handle: it owns the shared /path pipeline, the fleet dim and the map click
 // guard, so a feature island can drive the map without ever reaching into the state cell.
 
 /**
  * @param {import("../src/map/facade").FacadeDeps} deps
  * @returns {import("../src/map/facade").MapFacade}
  */
-export function createMapFacade({ S, map, mapEl, setHistPath, clearHistPath, clearSelection }) {
-  /** @type {((e: Event) => void) | null} */
-  let clickGuard = null;
+export function createMapFacade({ S, map, setHistPath, clearHistPath, clearSelection }) {
+  /** @type {AbortController | null} */
+  let inflight = null;
 
   // Frame the whole journey unless both ends are already on-screen. Endpoints, not a point-count fraction:
   // dense approach fixes cluster at one end and would fool a fraction test on a trans-ocean flight.
@@ -29,10 +29,11 @@ export function createMapFacade({ S, map, mapEl, setHistPath, clearHistPath, cle
       map.fitBounds([[w, s], [e, n]], { padding: 80, maxZoom: 11, duration: 700 });
   }
 
-  // One claim for both entry points: orphan any in-flight fetch and drop the drawn path now, so a request
-  // and a clear are the same operation — the request merely fills the path back in when its answer wins.
+  // One claim for both entry points: abort any in-flight fetch (a ~1 MB settled path must not download and
+  // parse for nothing) and drop the drawn path now, so a request and a clear are the same operation.
   function clearPath() {
     S.pathFetchSeq++;
+    inflight?.abort();
     clearHistPath();
     S.histPathN = 0;
   }
@@ -41,9 +42,15 @@ export function createMapFacade({ S, map, mapEl, setHistPath, clearHistPath, cle
     async showFlightPath(flightId, { fit = false } = {}) {
       clearPath(); // synchronous: any request supersedes an in-flight one, spotlight or focus alike
       const seq = S.pathFetchSeq;
-      const j = await fetch(`/path/${encodeURIComponent(flightId)}`, { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : null))
-        .catch(() => null);
+      const ctl = new AbortController();
+      inflight = ctl;
+      let j = null;
+      try {
+        const r = await fetch(`/path/${encodeURIComponent(flightId)}`, { cache: "no-store", signal: ctl.signal });
+        j = r.ok ? await r.json() : null;
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return { status: "superseded", n: 0 }; // clearPath cut this one loose
+      }
       if (seq !== S.pathFetchSeq) return { status: "superseded", n: 0 }; // a newer owner holds the pipeline
       let n;
       try {
@@ -64,17 +71,10 @@ export function createMapFacade({ S, map, mapEl, setHistPath, clearHistPath, cle
       S.dimLive = x;
     },
     clearSelection,
-    // Live picking is off while dimmed, so a bare map click reaches the spotlight's clear handler and
-    // would wipe the drawn path out from under the caller — swallow it before maplibre dispatches.
+    // A flag the map's own click handler consults, not a DOM swallow: a capture-phase listener on #map
+    // also starved the zoom buttons inside it, and the guard is about the selection, not the DOM.
     guardMapClicks(on) {
-      if (!mapEl) return;
-      if (on && !clickGuard) {
-        clickGuard = (e) => e.stopPropagation();
-        mapEl.addEventListener("click", clickGuard, true);
-      } else if (!on && clickGuard) {
-        mapEl.removeEventListener("click", clickGuard, true);
-        clickGuard = null;
-      }
+      S.mapClickGuard = !!on;
     },
   };
 }

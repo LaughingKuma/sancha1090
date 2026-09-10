@@ -4,12 +4,13 @@ import logging
 import math
 import os
 import re
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any
 
 import polars as pl
 
-from include.adsblol_backfill import _num, _trace_preamble
+from include.adsblol_trace_utils import num, trace_preamble
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,11 @@ SLOW_GAP_SPEED_KMH = 100
 # Mirrors dbt legs_cruise_alt_m (3000 m, the snap/overflight ceiling): a real landing descends
 # through it, so cruise-level coverage voids (both fixes high) must not split.
 SLOW_GAP_CEIL_FT = 9843.0
+
+# A ground bit the transponder never sets keeps a whole turnaround airborne (AAL61 at KDFW, MH691 at RJTT):
+# >= 30 min under 30 kt below LOW_FIX_ALT_FT is that signal; the altitude guard spares balloons and hovers.
+DWELL_GS_KT = 30.0
+DWELL_S = 1800
 
 RAW_SEGMENTS_SCHEMA = {
     "icao24": pl.Utf8,
@@ -61,108 +67,191 @@ def _haversine_km(lat1, lon1, lat2, lon2):
     return 2 * 6371.0 * math.asin(math.sqrt(a))
 
 
-def _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft,
-               prev_lat, prev_lon, lat, lon):
-    # One source for both walk loops (segments + paths) so their grouping can never drift.
-    gap = t - prev_t
+@dataclass(slots=True)
+class _Fix:
+    t: float
+    lat: float
+    lon: float
+    alt_ft: float | None
+    on_ground: bool
+    gs_kt: float | None
+    point: list
+    takeoff: bool = False
+
+
+def _seg_break(prev: _Fix, fix: _Fix):
+    # _iter_groups is the only caller; the low-fix and slow-gap arms catch landings with no ground fix.
+    if fix.takeoff:
+        return True
+    gap = fix.t - prev.t
     if gap > GAP_SPLIT_S:
         return True
-    if on_ground and prev_on_ground is False:
+    if fix.on_ground and prev.on_ground is False:
         return True
-    lo = min(prev_alt_ft if prev_alt_ft is not None else 99999.0,
-             alt_ft if alt_ft is not None else 99999.0)
+    lo = min(prev.alt_ft if prev.alt_ft is not None else 99999.0,
+             fix.alt_ft if fix.alt_ft is not None else 99999.0)
     if gap >= LOW_FIX_GAP_S and lo < LOW_FIX_ALT_FT:
         return True
     # Slow-gap landing: a turnaround-sized silence, below the cruise ceiling, that the aircraft
     # crossed too slowly to have stayed airborne -> it landed inside the gap even when no
     # ground/low fix bookends it. Both guards must hold, or a cruise-level or fast crossing splits.
-    # Paths persist whole-second ts, so this arm evaluates on that integer grid — AFFECTED_SQL is
+    # Paths persist whole-second ts, so this arm evaluates on that integer grid — SLOW_GAP_SQL is
     # formula-identical (SQL-selected iff Python-splits) so the backfill's dry-run converges to zero.
     # Also fragments parked stretches at 30-min silences; all-ground pieces then drop at the keep-filter.
-    gap_i = int(t) - int(prev_t)
+    gap_i = int(fix.t) - int(prev.t)
     return (gap_i >= SLOW_GAP_S and lo < SLOW_GAP_CEIL_FT
-            and _haversine_km(prev_lat, prev_lon, lat, lon) / (gap_i / 3600.0) < SLOW_GAP_SPEED_KMH)
+            and _haversine_km(prev.lat, prev.lon, fix.lat, fix.lon) / (gap_i / 3600.0) < SLOW_GAP_SPEED_KMH)
 
 
 def _parse_point(point, base):
-    # One source for both walk loops (segments + paths) so their per-point parse/reject can never drift.
     t = base + float(point[0])
     flags = point[6] if len(point) > 6 and isinstance(point[6], int) else 0
     # flags&1 = repeated last-known fix: identity fill, not a position.
     if flags & 1:
         return None
-    lat, lon = _num(point[1]), _num(point[2])
+    lat, lon = num(point[1]), num(point[2])
     if lat is None or lon is None:
         return None
     alt_raw = point[3] if len(point) > 3 else None
     on_ground = alt_raw == "ground"
-    alt_ft = 0.0 if on_ground else _num(alt_raw)
-    return t, lat, lon, alt_ft, on_ground
+    alt_ft = 0.0 if on_ground else num(alt_raw)
+    gs_kt = num(point[4]) if len(point) > 4 else None
+    return t, lat, lon, alt_ft, on_ground, gs_kt
+
+
+def _dwell_fix(f: _Fix):
+    return (f.alt_ft is not None and f.alt_ft < LOW_FIX_ALT_FT
+            and f.gs_kt is not None and f.gs_kt < DWELL_GS_KT)
+
+
+def _runs(fixes, pred):
+    # Maximal pred runs spanning >= DWELL_S on the persisted integer grid (DWELL_SQL parity), cut at a
+    # SLOW_GAP_S silence: the walk drops the all-ground piece there, so a selector could never see across it.
+    i, n = 0, len(fixes)
+    while i < n:
+        if not pred(fixes[i]):
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and pred(fixes[j + 1]) and int(fixes[j + 1].t) - int(fixes[j].t) < SLOW_GAP_S:
+            j += 1
+        if int(fixes[j].t) - int(fixes[i].t) >= DWELL_S:
+            yield i, j
+        i = j + 1
+
+
+def _persisted(fixes, pred):
+    # Paths persist one row per whole second, last write wins: a run predicate must read every fix of a
+    # second as its last fix does, or the selector sees a dwell the walk never splits and never converges.
+    last = {}
+    for k, f in enumerate(fixes):
+        last[int(f.t)] = k
+    return lambda f: pred(fixes[last[int(f.t)]])
+
+
+def _parse_trace(points, base) -> list[_Fix]:
+    # One pass feeds the group walk: the dwell read needs the whole run before the walk sees a fix.
+    fixes = []
+    for point in points:
+        parsed = _parse_point(point, base)
+        if parsed is not None:
+            fixes.append(_Fix(*parsed, point))
+    for i, j in _runs(fixes, _persisted(fixes, _dwell_fix)):
+        for f in fixes[i:j + 1]:
+            f.on_ground = True
+    # Takeoff trim: the last ground fix of a >= DWELL_S ground run opens the departure segment (DAL121: 16 h
+    # parked inside one flight); a run that ends the trace has no departure to open.
+    for _i, j in _runs(fixes, _persisted(fixes, lambda f: f.on_ground)):
+        if j + 1 < len(fixes):
+            fixes[j].takeoff = True
+    return fixes
+
+
+def _iter_groups(points, base):
+    # Same session breaks as fct_flight_legs (the landing's ground fix opens the next group, at the
+    # arrival airport); the one walk feeds both segments and paths, so their grouping cannot drift.
+    group: list[_Fix] = []
+    prev = None
+    for fix in _parse_trace(points, base):
+        if prev is not None and _seg_break(prev, fix):
+            yield group
+            group = []
+        group.append(fix)
+        prev = fix
+    if group:
+        yield group
+
+
+def trace_rows(trace_doc: dict[str, Any], day: date
+               ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    # Capture-only full paths ride the same walk as the segments: retrofitting later would mean
+    # re-streaming the whole tarball backlog, and one walk means their grouping cannot drift.
+    preamble = trace_preamble(trace_doc)
+    if preamble is None:
+        return [], []
+    points, icao, base = preamble
+    day_iso = day.isoformat()
+
+    segments: list[dict[str, Any]] = []
+    groups: list[list[_Fix]] = []
+    for group in _iter_groups(points, base):
+        groups.append(group)
+        n = len(group)
+        air = sum(1 for f in group if not f.on_ground)
+        # Parked/taxi-only clusters aren't flights.
+        if n < _MIN_FIXES or air == 0:
+            continue
+        callsigns: dict[str, int] = {}
+        for f in group:
+            extra = f.point[8] if len(f.point) > 8 else None
+            flight = (extra.get("flight") or "").strip() if isinstance(extra, dict) else ""
+            if flight:
+                callsigns[flight] = callsigns.get(flight, 0) + 1
+        callsign = (
+            sorted(callsigns.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+            if callsigns else None
+        )
+        first, last = group[0], group[-1]
+        segments.append({
+            "icao24": icao,
+            "callsign": callsign,
+            "seg_start": int(first.t),
+            "seg_end": int(last.t),
+            "num_fixes": n,
+            "first_lat": first.lat, "first_lon": first.lon,
+            "first_alt_ft": first.alt_ft, "first_on_ground": first.on_ground,
+            "last_lat": last.lat, "last_lon": last.lon,
+            "last_alt_ft": last.alt_ft, "last_on_ground": last.on_ground,
+            "trace_day": day_iso,
+            "source": "adsblol",
+        })
+
+    # Paths key off the group's start second, not the keep filter: a dropped piece opening inside a kept
+    # segment's second (ground-bit flapping on rollout) persists under it; re-keying needs its own evidence.
+    keep_starts = {s["seg_start"] for s in segments}
+    paths: list[dict[str, Any]] = []
+    for group in groups:
+        seg_start = int(group[0].t)
+        if seg_start not in keep_starts:
+            continue
+        for f in group:
+            paths.append({
+                "icao24": icao,
+                "seg_start": seg_start,
+                "ts": int(f.t),
+                "lat": f.lat, "lon": f.lon,
+                "alt_ft": f.alt_ft,
+                "on_ground": f.on_ground,
+                "gs_kt": f.gs_kt,
+                "track_deg": num(f.point[5]) if len(f.point) > 5 else None,
+                "trace_day": day_iso,
+                "source": "adsblol",
+            })
+    return segments, paths
 
 
 def trace_segments(trace_doc: dict[str, Any], day: date) -> list[dict[str, Any]]:
-    preamble = _trace_preamble(trace_doc)
-    if preamble is None:
-        return []
-    points, icao, base = preamble
-
-    segs: list[dict[str, Any]] = []
-    cur: Optional[dict[str, Any]] = None
-    prev_t: Optional[float] = None
-    prev_on_ground: Optional[bool] = None
-    prev_alt_ft: Optional[float] = None
-    prev_lat: Optional[float] = None
-    prev_lon: Optional[float] = None
-
-    for point in points:
-        parsed = _parse_point(point, base)
-        if parsed is None:
-            continue
-        t, lat, lon, alt_ft, on_ground = parsed
-        extra = point[8] if len(point) > 8 else None
-        flight = (extra.get("flight") or "").strip() if isinstance(extra, dict) else ""
-
-        # Same session breaks as fct_flight_legs: long gap, or ground contact after air
-        # (the landing's ground fix opens the next segment, at the arrival airport). The
-        # low-fix and slow-gap arms catch landings whose ground fix never appears in the trace.
-        if cur is None or _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft,
-                                     prev_lat, prev_lon, lat, lon):
-            if cur is not None:
-                segs.append(cur)
-            cur = {"first": (t, lat, lon, alt_ft, on_ground), "callsigns": {}, "n": 0, "air": 0}
-        cur["last"] = (t, lat, lon, alt_ft, on_ground)
-        cur["n"] += 1
-        cur["air"] += 0 if on_ground else 1
-        if flight:
-            cur["callsigns"][flight] = cur["callsigns"].get(flight, 0) + 1
-        prev_t, prev_on_ground, prev_alt_ft, prev_lat, prev_lon = t, on_ground, alt_ft, lat, lon
-
-    if cur is not None:
-        segs.append(cur)
-
-    rows: list[dict[str, Any]] = []
-    for s in segs:
-        # Parked/taxi-only clusters aren't flights.
-        if s["n"] < _MIN_FIXES or s["air"] == 0:
-            continue
-        callsign = (
-            sorted(s["callsigns"].items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
-            if s["callsigns"] else None
-        )
-        ft, flat, flon, falt, fgnd = s["first"]
-        lt, llat, llon, lalt, lgnd = s["last"]
-        rows.append({
-            "icao24": icao,
-            "callsign": callsign,
-            "seg_start": int(ft),
-            "seg_end": int(lt),
-            "num_fixes": s["n"],
-            "first_lat": flat, "first_lon": flon, "first_alt_ft": falt, "first_on_ground": fgnd,
-            "last_lat": llat, "last_lon": llon, "last_alt_ft": lalt, "last_on_ground": lgnd,
-            "trace_day": day.isoformat(),
-            "source": "adsblol",
-        })
-    return rows
+    return trace_rows(trace_doc, day)[0]
 
 
 RAW_PATHS_SCHEMA = {
@@ -182,49 +271,10 @@ RAW_PATHS_SCHEMA = {
 
 def trace_paths(trace_doc: dict[str, Any], day: date,
                 segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    # Capture-only full paths: the same trace pass keeps every kept segment's fixes —
-    # retrofitting later would mean re-streaming the whole tarball backlog.
-    preamble = _trace_preamble(trace_doc)
-    if preamble is None or not segments:
+    if not segments:
         return []
-    points, icao, base = preamble
-    # An int-second [seg_start, seg_end] re-check misbins fixes at split boundaries
-    # (truncation collisions); re-walk trace_segments' exact rule and key off the group.
     keep_starts = {s["seg_start"] for s in segments}
-
-    rows: list[dict[str, Any]] = []
-    group_start: Optional[int] = None
-    prev_t: Optional[float] = None
-    prev_on_ground: Optional[bool] = None
-    prev_alt_ft: Optional[float] = None
-    prev_lat: Optional[float] = None
-    prev_lon: Optional[float] = None
-    for point in points:
-        parsed = _parse_point(point, base)
-        if parsed is None:
-            continue
-        t, lat, lon, alt_ft, on_ground = parsed
-
-        if group_start is None or _seg_break(t, prev_t, prev_on_ground, on_ground, prev_alt_ft, alt_ft,
-                                             prev_lat, prev_lon, lat, lon):
-            group_start = int(t)
-        prev_t, prev_on_ground, prev_alt_ft, prev_lat, prev_lon = t, on_ground, alt_ft, lat, lon
-
-        if group_start not in keep_starts:
-            continue
-        rows.append({
-            "icao24": icao,
-            "seg_start": group_start,
-            "ts": int(t),
-            "lat": lat, "lon": lon,
-            "alt_ft": alt_ft,
-            "on_ground": on_ground,
-            "gs_kt": _num(point[4]) if len(point) > 4 else None,
-            "track_deg": _num(point[5]) if len(point) > 5 else None,
-            "trace_day": day.isoformat(),
-            "source": "adsblol",
-        })
-    return rows
+    return [r for r in trace_rows(trace_doc, day)[1] if r["seg_start"] in keep_starts]
 
 
 def _frame(rows: list[dict[str, Any]], schema: dict) -> pl.DataFrame:

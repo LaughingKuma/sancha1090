@@ -1,10 +1,7 @@
 import { W, esc, panel, navigate, rangeParams, renderFlagRows, renderPager, PAGE_LIMIT } from "../shell.js";
 import { fetchFlags } from "../data";
+import { FLAG_CLASSES } from "../url";
 
-const CLASSES = [
-  "tiebreak_endpoint", "single_source", "one_sided_intl", "feasibility_snap", "diversion",
-  "same_endpoint", "military",
-];
 // the wire/URL value is the mart's exact class name — only the label loses the underscores
 const label = (c) => String(c || "").replaceAll("_", " ");
 
@@ -17,7 +14,7 @@ function chips(host, classes) {
   bar.innerHTML =
     `<button type="button" class="wb-chip" data-cls="" aria-pressed="${String(!W.flagClass)}">` +
     `all ${esc(rowTotal.toLocaleString())}</button>` +
-    CLASSES.map(
+    FLAG_CLASSES.map(
       (c) =>
         `<button type="button" class="wb-chip" data-cls="${esc(c)}" aria-pressed="${String(W.flagClass === c)}">` +
         `${esc(label(c))} ${esc((classes[c] || 0).toLocaleString())}</button>`,

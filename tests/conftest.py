@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -188,6 +189,48 @@ def ch_cur():
         yield _Cur(client)
     finally:
         client.close()
+
+
+@pytest.fixture()
+def ch():
+    # Live clickhouse_connect client for the integration tests (NOT include.clickhouse, which pulls in psycopg2, so
+    # a lean CI runner works): skip without CH, fail when CH_INTEGRATION_REQUIRED says it must run.
+    try:
+        import clickhouse_connect
+        c = clickhouse_connect.get_client(
+            host=os.environ.get("CLICKHOUSE_HOST", "clickhouse"),
+            port=int(os.environ.get("CLICKHOUSE_PORT", "8123")),
+            username=os.environ.get("CLICKHOUSE_USER", "default"),
+            password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
+        )
+        c.command("SELECT 1")
+    except Exception as e:
+        if os.environ.get("CH_INTEGRATION_REQUIRED") == "1":
+            pytest.fail(f"ClickHouse required but not reachable: {e!r}")
+        pytest.skip(f"ClickHouse not reachable: {e!r}")
+    # Only reachability skips; a setup error here is a real failure. A bare clickhouse-server has only `default`.
+    c.command("CREATE DATABASE IF NOT EXISTS bronze")
+    try:
+        yield c
+    finally:
+        c.close()
+
+
+# Synthetic adsb.lol trace points for the segmenter tests: one whole-second base so seg_start/ts pins read as
+# offsets, and the three-fix approach that every turnaround shape opens with.
+DAY = date(2026, 6, 25)
+BASE = 1782345600
+
+
+def _fix(t, lat, alt, gs, lon=136.0):
+    return [t, lat, lon, alt, gs, 180, 0, 0, None, "adsb_icao", alt, 0, 0, 0]
+
+
+def _gnd(t, lat, lon=136.0, gs=5):
+    return [t, lat, lon, "ground", gs, 180, 0, 0, None, "adsb_icao", 0, 0, 0, 0]
+
+
+ARRIVE = [_fix(0.0, 34.00, 2500, 160), _fix(60.0, 34.01, 1200, 140), _fix(120.0, 34.02, 300, 60)]
 
 
 @pytest.fixture(scope="session", autouse=True)

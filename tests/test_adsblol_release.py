@@ -145,7 +145,7 @@ def test_segmentation_failures_count_toward_the_gate(eng, caps, monkeypatch):
     def _boom(*_a, **_kw):
         raise ValueError("segmenter broke")
 
-    monkeypatch.setattr(rel.routes, "trace_segments", _boom)
+    monkeypatch.setattr(rel.routes, "trace_rows", _boom)
     with pytest.raises(RuntimeError, match="quality gate"):
         rel.land_release_day(DAY, CLEAN, engine=eng, reader=_tar(*CLEAN), min_traces=1)
     assert caps["written"] == {} and caps["recorded"] == []

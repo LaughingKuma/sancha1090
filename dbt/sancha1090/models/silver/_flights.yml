@@ -11,6 +11,11 @@ models:
           - unique
   - name: stg_flight_segments_adsblol
     description: Global flight segments extracted from adsb.lol full traces (route backstory lane).
+    # The chainer's segs join, its num_fixes sums and the snap-tier test all read one segment per key.
+    tests:
+      - grain:
+          arguments:
+            column_names: [icao24, seg_start_time]
     columns:
       - name: icao24
         tests: [not_null]
@@ -22,12 +27,20 @@ models:
       - name: icao24
         tests: [not_null]
   - name: int_flight_chains_adsblol
-    description: Coverage-gap segments chained into whole flights (cruise-plausible implied boundary speed); origin = first segment's snap, dest = last segment's.
+    description: Coverage-gap segments chained into whole flights (cruise-plausible implied boundary speed); a chain over the anchor cap whose first->last distance is too short for its span is a fused round trip and is cut at its slowest turnaround-sized gap. origin = first segment's snap, dest = last segment's.
     columns:
       - name: icao24
         tests: [not_null]
       - name: chain_start
         tests: [not_null]
+      - name: first_alt_m
+        description: Altitude (m) of the first segment's first fix; with first_on_ground, tells a cruise-entry chain from one that started low but snapped nothing.
+      - name: first_on_ground
+        description: First segment's first fix was on the ground.
+      - name: last_alt_m
+        description: Altitude (m) of the last segment's last fix; at/above legs_cruise_alt_m the trace was lost before descent (fct_flights_reconciled.foreign_unresolved_reason).
+      - name: last_on_ground
+        description: Last segment's last fix was on the ground.
   - name: int_flight_legs_opensky
     description: OpenSky-states O/D opinion (sessionize + pure sched-gated snap + callsign-split); a reconciler input. fct_flight_legs consumes this model (SP2 dedup); canonical OpenSky-states O/D opinion.
     columns:
@@ -66,3 +79,11 @@ models:
     columns:
       - name: flight_id
         tests: [not_null]
+      - name: win_start
+        description: Window start of the opinion that cast the vote; with icao24 it keys that opinion (for adsblol, the chain), so a consumer reads the chain the ballot heard rather than any chain overlapping the flight.
+        tests: [not_null]
+  - name: int_flight_ballot
+    description: Per-flight origin/dest plurality winners plus full vote maps, one row per flight_id (left join of origin_win/dest_win) -- extracted out of fct_flights_reconciled so its Finding 3 coherence gate can join this more than once without re-running the ballot computation per reference.
+    columns:
+      - name: flight_id
+        tests: [not_null, unique]

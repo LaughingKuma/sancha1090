@@ -1,14 +1,12 @@
-import { S } from "./state.js?v=6.46";
-import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.46";
-import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.46";
-import { map, overlay } from "./mapsetup.js?v=6.46";
-import { createMapFacade } from "./facade.js?v=6.46";
+import { S } from "./state.js?v=6.48";
+import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.48";
+import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.48";
+import { map, overlay } from "./mapsetup.js?v=6.48";
+import { createMapFacade } from "./facade.js?v=6.48";
 
 // Composed here because this module holds every dependency and owns the spotlight, which shares the
 // facade's /path pipeline. It is the only thing a feature island ever receives.
-export const mapApi = createMapFacade({
-  S, map, mapEl: document.getElementById("map"), setHistPath, clearHistPath, clearSelection,
-});
+export const mapApi = createMapFacade({ S, map, setHistPath, clearHistPath, clearSelection });
 
 // Spotlight panel (v5.6) — pure reader of S.selected + S.snap.
 const spEl = (id) => document.getElementById(id);
@@ -23,7 +21,8 @@ const snapRow = () => (S.selected ? S.snap.aircraft.find((x) => x.hex === S.sele
 const flightsWrapEl = spEl("sp-flights");
 const flightsListEl = spEl("sp-flights-list");
 const flightsHdEl = spEl("sp-flights-hd");
-const ffCode = (end) => (end && end.code) || "?";
+// ≈ marks an end filled from the callsign's last known route, the card's existing "approximate" glyph
+const ffCode = (end) => (end && end.code ? `${end.last_known ? "≈" : ""}${end.code}` : "?");
 const ffDate = (ts) => {
   if (ts == null) return "";
   const d = new Date(ts * 1000);
@@ -104,40 +103,13 @@ export function clearEstimate() {
   updateEstButton();
   updateEstLiveButton(snapRow());
 }
-function fetchEstimate(fid) {
+// One fetch path for both estimate arms (settled flight "f:<fid>", live airframe "h:<hex>"); only the wording of
+// an empty result differs per arm, so the arm passes it in rather than forking the fetch.
+function runEstimate(url, key, onEmpty) {
   const seq = ++S.estFetchSeq;
-  S.estPendingKey = "f:" + fid;
-  fetch(`/path/${encodeURIComponent(fid)}/estimate`, { cache: "no-store" })
-    .then((r) => (r.ok ? r.json() : null)) // a 429/5xx envelope is not an estimate
-    .then((j) => {
-      if (seq !== S.estFetchSeq) return; // superseded by a newer pick or clear
-      S.estPendingKey = null;
-      if (!j) return;
-      S.estSegments = (j.segments || []).map((s) => ({
-        path: s.points.map((p) => [p[0], p[1]]),
-        kind: s.kind,
-        band: s.meta.uncertainty,
-      }));
-      // the subject key means "an estimate is DRAWN" — set only when segments actually installed
-      S.estSubjectKey = S.estSegments.length ? `f:${fid}` : null;
-      if (S.estSegments.length === 0 && j.skips && j.skips.length) {
-        const live = activeRow ? activeRow.querySelector(".ff-route") : null;
-        if (live) showRouteHint(live, `no estimate · ${j.skips[0].reason}`);
-      }
-      renderSpotlight();
-      updateEstButton();
-    })
-    .catch(() => {})
-    .finally(() => {
-      if (seq === S.estFetchSeq) S.estPendingKey = null;
-    });
-}
-function fetchLiveEstimate(hex) {
-  resetEstLiveHint(); // a new request owns the button — any prior subject's hint is void
-  const seq = ++S.estFetchSeq;
-  S.estPendingKey = "h:" + hex;
+  S.estPendingKey = key;
   updateEstLiveButton(snapRow());
-  fetch(`/estimate/live/${encodeURIComponent(hex)}`, { cache: "no-store" })
+  fetch(url, { cache: "no-store" })
     .then((r) => (r.ok ? r.json() : null)) // a 429/5xx envelope is not an estimate
     .then((j) => {
       if (seq !== S.estFetchSeq) return; // superseded by a newer request or clear
@@ -147,9 +119,11 @@ function fetchLiveEstimate(hex) {
         path: s.points.map((p) => [p[0], p[1]]),
         kind: s.kind,
         band: s.meta.uncertainty,
+        filed: !!s.meta.route, // a filed-plan bridge, not a pure great circle — the hover says so
       }));
-      S.estSubjectKey = S.estSegments.length ? `h:${hex}` : null;
-      if (!S.estSegments.length) showEstLiveHint("no estimate");
+      // the subject key means "an estimate is DRAWN" — set only when segments actually installed
+      S.estSubjectKey = S.estSegments.length ? key : null;
+      if (!S.estSegments.length) onEmpty(j);
       renderSpotlight();
       updateEstButton();
     })
@@ -157,6 +131,15 @@ function fetchLiveEstimate(hex) {
     .finally(() => {
       if (seq === S.estFetchSeq) S.estPendingKey = null;
     });
+}
+const fetchEstimate = (fid) => runEstimate(`/path/${encodeURIComponent(fid)}/estimate`, "f:" + fid, (j) => {
+  if (!(j.skips && j.skips.length)) return;
+  const live = activeRow ? activeRow.querySelector(".ff-route") : null;
+  if (live) showRouteHint(live, `no estimate · ${j.skips[0].reason}`);
+});
+function fetchLiveEstimate(hex) {
+  resetEstLiveHint(); // a new request owns the button — any prior subject's hint is void
+  runEstimate(`/estimate/live/${encodeURIComponent(hex)}`, "h:" + hex, () => showEstLiveHint("no estimate"));
 }
 // Clicking a recent-sightings row draws that historical flight's fused path; clicking it again clears it.
 function selectSighting(fid, li, route) {
@@ -221,7 +204,10 @@ function renderFlights(list, expanded = false) {
     route.className = "ff-route";
     route.textContent = `${ffCode(f.origin)} → ${ffCode(f.dest)}`;
     const oName = f.origin && f.origin.name, dName = f.dest && f.dest.name;
-    if (oName || dName) route.title = `${oName || ffCode(f.origin)} → ${dName || ffCode(f.dest)}`;
+    const base = oName || dName ? `${oName || ffCode(f.origin)} → ${dName || ffCode(f.dest)}` : "";
+    const note = (f.origin?.last_known || f.dest?.last_known) ? "last known route" : "";
+    const title = [base, note].filter(Boolean).join(" · ");
+    if (title) route.title = title;
     li.append(date, call, route);
     if (f.flight_id) {
       // rows click through to the historical fused path; role+tabindex give a native-button affordance
@@ -403,7 +389,8 @@ async function selectAircraft(hex) {
 map.on("click", (e) => {
   const pick = overlay._deck?.pickObject({ x: e.point.x, y: e.point.y, radius: 4, layerIds: ["planes"] });
   if (pick && pick.object && pick.object.a.hex) selectAircraft(pick.object.a.hex);
-  else clearSelection();
+  // a focus owns the map: the bare click stays inert so it cannot clear the selection and the drawn path with it
+  else if (!S.mapClickGuard) clearSelection();
 });
 
 // Hover card — own DOM node (not deck's built-in tooltip, which anchors top-left at the cursor
@@ -446,7 +433,7 @@ function pickHover() {
     const d = pick.object;
     const label = document.createElement("div");
     label.className = "model";
-    label.textContent = `ESTIMATED · ${d.band.floor ? "≥" : "±"}${d.band.p50_km}–${d.band.p90_km} km (${d.band.bin})`;
+    label.textContent = `ESTIMATED${d.filed ? " · filed route" : ""} · ${d.band.floor ? "≥" : "±"}${d.band.p50_km}–${d.band.p90_km} km (${d.band.bin})`;
     hoverEl.className = "ac-tip";
     hoverEl.replaceChildren(label);
   } else return hideHover();

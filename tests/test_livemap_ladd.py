@@ -178,6 +178,17 @@ def test_fetch_drops_suppressed_rows_and_records_mv_belt(livemap_public, monkeyp
     assert "beef00" in livemap_public._mv_ladd_hexes      # MV-belt drop recorded so /track can fail closed for it
 
 
+def test_public_fetch_emergency_rides_the_row_filter(livemap_public, monkeypatch):
+    # emergency is a live field on the same row the LADD filter drops: a listed airframe's alert never
+    # leaks through, a clean airframe's rides the payload as sent (issue 213 F)
+    rows = [{**r, "emergency": "general" if r["hex"] in ("deadbe", "beef00", "cafe11") else "none"} for r in MV_ROWS]
+    monkeypatch.setattr(livemap_public, "_ladd_suppress", LISTED)
+    monkeypatch.setattr(livemap_public, "_mv_ladd_hexes", {})
+    monkeypatch.setattr(livemap_public, "_rw_rows", lambda *_a, **_k: rows)
+    out = livemap_public._fetch()["aircraft"]
+    assert [(a["hex"], a["emergency"]) for a in out] == [("cafe11", "general")]
+
+
 def test_track_suppressed_hex_returns_empty_without_hitting_rw(livemap_public, monkeypatch):
     monkeypatch.setattr(livemap_public, "_ladd_suppress",
                         {"hex": frozenset({"abc123"}), "callsign": frozenset()})
