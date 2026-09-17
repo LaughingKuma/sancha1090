@@ -70,12 +70,25 @@ def _cases() -> dict[str, dict]:
         "short_turnaround": ARRIVE + [_gnd(180.0 + k * 300, 34.02) for k in range(4)]
         + [_fix(1500.0, 34.03, 1500, 150), _fix(1560.0, 34.05, 4000, 220)],
         "cruise_hold": [_fix(k * 300.0, 34.0 + (k % 2) * 0.05, 5000, 80 + (k % 3) * 10) for k in range(10)],
+        # 71be22 shape: a ground-bit flicker inside the trim second keeps the roll as a segment under the old walk
+        # while the departure already opens on the run's last fix; quiet once it drops (the run is one fix long)
+        "takeoff_roll_flicker": [_gnd(k * 300.0, 34.02) for k in range(9)]
+        + [_gnd(2460.0, 34.02, gs=60), _gnd(2500.0, 34.021, gs=80), _gnd(2520.2, 34.022, gs=88),
+           _fix(2520.4, 34.022, 25, 88), _gnd(2520.9, 34.022, gs=90)]
+        + [_fix(2580.0, 34.03, 1500, 150), _fix(2640.0, 34.05, 4000, 220)],
         # two sub-floor slow runs split by an 80 kt fix whose whole second the RMT hands to a later slow fix:
         # the persisted rows read as one 40-min dwell, so the walk must split it or the selector never quiets
         "same_second_interrupt": ARRIVE + [_fix(180.0 + k * 100, 34.02, 300, 5) for k in range(10)]
         + [_fix(1180.2, 34.02, 300, 80), _fix(1180.7, 34.02, 300, 5)]
         + [_fix(1280.0 + k * 100, 34.02, 300, 5) for k in range(16)]
         + [_fix(2900.0, 34.03, 1500, 150), _fix(2960.0, 34.05, 4000, 220)],
+        # 899000 06-04 shape: a rollout flap kept as a 2-fix segment with the parked run persisted under its second,
+        # then a silence and a ground row: the new walk drops both, so the arm must accept any row after the run
+        "rollout_flap_parked_silence": ARRIVE
+        + [_gnd(180.2, 34.02, gs=90), _fix(180.5, 34.02, 25, 88), _gnd(180.8, 34.02, gs=85), _gnd(240.0, 34.02, gs=40)]
+        + [_gnd(480.0 + k * 300, 34.02) for k in range(8)]
+        + [_gnd(silence + 2200 + k * 300, 34.02) for k in range(3)]
+        + [_fix(silence + 2860, 34.03, 1500, 150), _fix(silence + 2920, 34.05, 4000, 220)],
     }
     docs = {f"e2e{n:03d}": {"icao": f"e2e{n:03d}", "timestamp": BASE, "trace": pts}
             for n, pts in enumerate(cases.values())}
@@ -113,7 +126,13 @@ def test_selectors_pick_exactly_the_changed_hex_days_then_go_quiet(scratch_ch, m
     changed = {(h, DAY.isoformat()) for h in docs
                if old[h][0] != new[h][0] or _persisted(old[h][1]) != _persisted(new[h][1])}
     assert {h for h, _ in changed} == {
-        "e2e000", "e2e001", "e2e003", "e2e004", "e2e007", "e2e011", "a61c53"}, "fixture shapes drifted"
+        "e2e000", "e2e001", "e2e003", "e2e004", "e2e007", "e2e011", "e2e012", "e2e013", "a61c53"}, \
+        "fixture shapes drifted"
+    # The roll's departure already opens on the run's last fix under the old walk (the air->ground break at the
+    # flicker), so a selector gating on seg_start = ts would never re-land it; the run's length is the signal.
+    roll_old = _persisted(old["e2e011"][1])
+    assert roll_old[BASE + 2520][0] == BASE + 2520 and min(roll_old) == BASE
+    assert min(_persisted(new["e2e011"][1])) == BASE + 2520
 
     for h in docs:
         _insert(scratch_ch, old[h][1])
@@ -122,4 +141,11 @@ def test_selectors_pick_exactly_the_changed_hex_days_then_go_quiet(scratch_ch, m
     scratch_ch.command(f"TRUNCATE TABLE {TABLE}")
     for h in docs:
         _insert(scratch_ch, new[h][1])
+    assert bar.affected_pairs(client=scratch_ch, table=TABLE) == []
+
+    # A same-second pair (same_second_rotation, same_second_interrupt) can be kept either way by the RMT, so quiet
+    # must not depend on the writer's list order.
+    scratch_ch.command(f"TRUNCATE TABLE {TABLE}")
+    for h in docs:
+        _insert(scratch_ch, new[h][1][::-1])
     assert bar.affected_pairs(client=scratch_ch, table=TABLE) == []

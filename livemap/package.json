@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@preact/signals": "2.11.0",
-    "preact": "10.29.8"
+    "preact": "10.29.8",
+    "uplot": "1.6.32"
   }
 }

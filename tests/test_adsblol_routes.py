@@ -575,6 +575,39 @@ def test_leading_ground_run_trims_departure_to_last_ground_fix():
     assert [p["ts"] - BASE for p in pts] == [2460, 2520, 2580]
 
 
+def test_takeoff_roll_with_a_ground_bit_flicker_drops_whole():
+    # A ground-bit flicker inside a second the grid reads as ground, mid-roll (a27c78 06-27) or in the trim second
+    # (71be22 06-24), must not keep the roll: only the run's last fix persists, as the departure's first fix.
+    parked = [_gnd(k * 300.0, 34.02, gs=5) for k in range(9)]                 # 0 .. 2400 s
+    roll = [_gnd(2460.0, 34.02, gs=60), _gnd(2500.2, 34.021, gs=80), _fix(2500.4, 34.021, 25, 80),
+            _gnd(2500.9, 34.021, gs=85), _gnd(2520.2, 34.022, gs=88), _fix(2520.4, 34.022, 25, 88),
+            _gnd(2520.9, 34.022, gs=90)]
+    depart = [_fix(2580.0, 34.03, 1500, 150), _fix(2640.0, 34.05, 4000, 220)]
+    doc = _synthetic(parked + roll + depart)
+    segs = routes.trace_segments(doc, DAY)
+    assert [(s["seg_start"] - BASE, s["num_fixes"], s["first_on_ground"]) for s in segs] == [(2520, 3, True)]
+    pts = routes.trace_paths(doc, DAY, segs)
+    assert [(p["ts"] - BASE, p["seg_start"] - BASE, p["on_ground"]) for p in pts] == [
+        (2520, 2520, True), (2580, 2520, False), (2640, 2520, False)]
+
+
+def test_takeoff_roll_drop_leaves_the_arrival_its_fix_in_the_landing_second():
+    # The trimmed run starts at the landing second, whose earlier fix is the arrival's last airborne one (899000
+    # 06-04): flagging it ground would move it into the dropped roll and shorten the arrival by a fix.
+    landing = [_fix(180.2, 34.02, 275, 101), _gnd(180.5, 34.02, gs=99), _fix(180.7, 34.02, 275, 99),
+               _gnd(180.8, 34.02, gs=99), _gnd(240.0, 34.02, gs=40)]
+    parked = [_gnd(480.0 + k * 300.0, 34.02) for k in range(8)]                 # 480 .. 2580 s
+    depart = [_fix(2640.0, 34.03, 1500, 150), _fix(2700.0, 34.05, 4000, 220)]
+    doc = _synthetic(ARRIVE + landing + parked + depart)
+    segs = routes.trace_segments(doc, DAY)
+    assert [(s["seg_start"] - BASE, s["seg_end"] - BASE, s["num_fixes"], s["last_on_ground"]) for s in segs] == [
+        (0, 180, 4, False), (2580, 2700, 3, False)]
+    pts = routes.trace_paths(doc, DAY, segs)
+    assert [(p["ts"] - BASE, p["seg_start"] - BASE, p["on_ground"]) for p in pts] == [
+        (0, 0, False), (60, 0, False), (120, 0, False), (180, 0, False),
+        (2580, 2580, True), (2640, 2580, False), (2700, 2580, False)]
+
+
 def test_turnaround_trim_keeps_arrival_and_opens_departure_at_takeoff():
     # Arrival, landing ground fix, 45 min parked, departure: the arrival ends airborne as before, the
     # parked piece drops, the departure opens on the last ground fix.

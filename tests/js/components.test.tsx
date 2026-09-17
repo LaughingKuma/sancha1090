@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "preact";
 import { act } from "preact/test-utils";
-import { EPOCH, KEY, flush, inst, resetStore, stubFetch } from "./_fixtures";
+import { EPOCH, KEY, flush, inst, resetStore, restoreFetch, stubFetch } from "./_fixtures";
 import type { FlagInstance } from "../../livemap/src/features/workbench/data";
 import { useResource } from "../../livemap/src/features/workbench/resource";
 import { focus, navigate, status, wb } from "../../livemap/src/features/workbench/store";
@@ -26,6 +26,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => render(null, host));
   host.remove();
+  restoreFetch();
   vi.restoreAllMocks(); // here, not at a test's tail — a failed assertion must not leak the stub
 });
 

@@ -65,14 +65,17 @@ def test_dwell_sql_is_the_run_finder_over_dwell_fix():
 
 def test_takeoff_sql_is_the_run_finder_over_the_ground_flag():
     sql = TAKEOFF_SQL
-    # A ground run on the flag alone (flagged or dwell-derived, so no gs/alt guard) whose next persisted fix is
-    # airborne (NULL at day end = no trim); the select-list alias is reused, ClickHouse resolves it.
+    # A ground run on the flag alone (flagged or dwell-derived, so no gs/alt guard) followed by any persisted row
+    # (NULL at day end = no trim); the select-list alias is reused, ClickHouse resolves it.
     assert bar._TAKEOFF_PRED == "gnd"
     assert "coalesce(on_ground, false) AS gnd,\n    gnd AS in_run" in sql
     assert "leadInFrame(toNullable(gnd), 1, NULL)" in sql
     assert "ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS next_gnd\n  FROM" in sql
-    assert "AND argMax(tuple(next_gnd), ts).1 = false\n" in sql
+    assert "AND argMax(tuple(next_gnd), ts).1 IS NOT NULL\n" in sql
     assert "gs_kt" not in sql and "alt_ft" not in sql
+    # No seg_start gate: a run whose last fix already opens a segment but whose taxi roll still persists (the 381
+    # pairs the 2026-09-14 wave left) is a hex-day the walk changes; re-landed, the run is one fix long anyway.
+    assert "seg_start" not in sql
 
 
 def test_affected_sqls_is_the_three_arms_formatted_over_the_table():

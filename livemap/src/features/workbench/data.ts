@@ -180,8 +180,10 @@ function instance(r: Raw): Instance {
   };
 }
 
-export async function fetchAirlines(params: Record<string, unknown>): Promise<Paged<AirlineRow> | null> {
-  const j = await call("airlines", `/workbench/airlines${qs(params)}`);
+export async function fetchAirlines(
+  params: Record<string, unknown>, signal?: AbortSignal,
+): Promise<Paged<AirlineRow> | null> {
+  const j = await call("airlines", `/workbench/airlines${qs(params)}`, signal);
   if (!j) return null;
   return page(
     j,
@@ -196,8 +198,10 @@ export async function fetchAirlines(params: Record<string, unknown>): Promise<Pa
   );
 }
 
-export async function fetchServices(params: Record<string, unknown>): Promise<Paged<ServiceRow> | null> {
-  const j = await call("services", `/workbench/services${qs(params)}`);
+export async function fetchServices(
+  params: Record<string, unknown>, signal?: AbortSignal,
+): Promise<Paged<ServiceRow> | null> {
+  const j = await call("services", `/workbench/services${qs(params)}`, signal);
   if (!j) return null;
   return page(
     j,
@@ -225,8 +229,10 @@ export async function fetchInstances(
   };
 }
 
-export async function fetchSummary(params: Record<string, unknown>): Promise<Summary | null> {
-  const j = await call("summary", `/workbench/summary${qs(params)}`);
+export async function fetchSummary(
+  params: Record<string, unknown>, signal?: AbortSignal,
+): Promise<Summary | null> {
+  const j = await call("summary", `/workbench/summary${qs(params)}`, signal);
   if (!j) return null;
   if (j.complete === false) return null; // server-marked outage renders as unavailable, never as zeros
   const f = obj(j.flags);
@@ -250,8 +256,10 @@ export async function fetchSummary(params: Record<string, unknown>): Promise<Sum
   };
 }
 
-export async function fetchTrends(params: Record<string, unknown>): Promise<Trends | null> {
-  const j = await call("trends", `/workbench/trends${qs(params)}`);
+export async function fetchTrends(
+  params: Record<string, unknown>, signal?: AbortSignal,
+): Promise<Trends | null> {
+  const j = await call("trends", `/workbench/trends${qs(params)}`, signal);
   if (!j) return null;
   if (j.complete === false) return null; // server-marked outage renders as unavailable, never as zeros
   // an airline name is the key here, so the key cap is the filter-value cap, not a label width
@@ -273,8 +281,10 @@ export async function fetchTrends(params: Record<string, unknown>): Promise<Tren
   };
 }
 
-export async function fetchFlags(params: Record<string, unknown>): Promise<FlagsPage | null> {
-  const j = await call("flags", `/workbench/flags${qs(params)}`);
+export async function fetchFlags(
+  params: Record<string, unknown>, signal?: AbortSignal,
+): Promise<FlagsPage | null> {
+  const j = await call("flags", `/workbench/flags${qs(params)}`, signal);
   if (!j) return null;
   if (j.complete === false) return null; // server-marked outage renders as unavailable, never as zeros
   return {
@@ -299,8 +309,10 @@ const mixRows = (a: unknown): MixRow[] =>
     .map((r) => ({ value: text(r.value, 48), producer: text(r.producer, 24), n: num(r.n) ?? 0 }))
     .filter((r) => r.value !== "");
 
-export async function fetchEstimates(params: Record<string, unknown>): Promise<Estimates | null> {
-  const j = await call("estimates", `/workbench/estimates${qs(params)}`);
+export async function fetchEstimates(
+  params: Record<string, unknown>, signal?: AbortSignal,
+): Promise<Estimates | null> {
+  const j = await call("estimates", `/workbench/estimates${qs(params)}`, signal);
   if (!j) return null;
   if (j.complete === false) return null; // server-marked outage renders as unavailable, never as zeros
   const m = obj(j.mix);

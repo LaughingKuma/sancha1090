@@ -1,7 +1,9 @@
-import { test } from "node:test";
+import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createMapFacade } from "../../livemap/static/facade.js";
-import { stubFetch } from "./_support.mjs";
+import { stubFetch, restoreFetch } from "./_support.mjs";
+
+afterEach(restoreFetch);
 
 // bounds default to a box the fixture path sits inside, so fit only fires where a test asks for it
 function setup({ bounds = [100, 200, 0, 60], fitThrows = false } = {}) {

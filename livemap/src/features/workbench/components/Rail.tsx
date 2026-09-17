@@ -1,19 +1,27 @@
+import type { FunctionComponent } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { activeView, status } from "../store";
+import { activeView, status, type ViewName } from "../store";
+import { Coverage } from "./Coverage";
 import { Drill } from "./Drill";
-import { LegacyView } from "./LegacyView";
+import { Estimates } from "./Estimates";
+import { Flags } from "./Flags";
 import { Log } from "./Log";
+import { Overview } from "./Overview";
 import { RangeChips } from "./RangeChips";
 import { Search } from "./Search";
+import { Trends } from "./Trends";
 import { ViewTabs } from "./ViewTabs";
 
-// log and drill are components over resource(); the other five views still paint through the adapter host.
-// The tabpanel id is the ViewTabs' aria-controls target and the e2e body locator, so every branch carries it.
+// keyed by ViewName so a view added to the vocabulary fails to compile here until it has a component
+const VIEWS: Record<ViewName, FunctionComponent> = {
+  overview: Overview, drill: Drill, log: Log, flags: Flags,
+  trends: Trends, estimates: Estimates, coverage: Coverage,
+};
+
+// The tabpanel id is the ViewTabs' aria-controls target and the e2e body locator, so it is the one host.
 function RailBody() {
-  const view = activeView.value;
-  if (view === "log" || view === "drill")
-    return <div class="wb-body" id="wb-body" role="tabpanel">{view === "log" ? <Log /> : <Drill />}</div>;
-  return <LegacyView />;
+  const View = VIEWS[activeView.value];
+  return <div class="wb-body" id="wb-body" role="tabpanel"><View /></div>;
 }
 
 export function Rail() {

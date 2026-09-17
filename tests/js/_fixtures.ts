@@ -4,7 +4,7 @@ import { readUrl } from "../../livemap/src/features/workbench/url";
 import type { Instance } from "../../livemap/src/features/workbench/data";
 import { dropFocus, flash, initStore, milAvailable, status, wb } from "../../livemap/src/features/workbench/store";
 
-export { flush, spyFacade, stubFetch } from "./_support.mjs";
+export { flush, restoreFetch, spyFacade, stubFetch } from "./_support.mjs";
 
 export const EPOCH = 1785421800;
 export const KEY = `86d3a1.${EPOCH}.ANA1`;

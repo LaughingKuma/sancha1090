@@ -1,3 +1,6 @@
+/* The island links ONE stylesheet (index.css), so uPlot's rides in here rather than as a second asset. */
+@import "uplot/dist/uPlot.min.css";
+
 /* Tokens come from index.html's :root — the rail must read as the same instrument, not a bolted-on panel. */
 .wb-stale {
   position: fixed; z-index: 12; left: 18px; top: 118px; padding: 8px 12px;

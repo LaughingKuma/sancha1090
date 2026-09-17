@@ -10,6 +10,13 @@ export type Fetched<T> =
   | { state: "unreachable" }
   | { state: "superseded"; prev?: T };
 
+// A view's read of a Fetched: superseded hands back the retired envelope, which only a chart may still
+// draw — `stale` blanks every data-bearing cell around it.
+export const drawn = <T,>(st: Fetched<T>): { p: T | null; stale: boolean } =>
+  st.state === "ok"
+    ? { p: st.data, stale: false }
+    : { p: st.state === "superseded" ? st.prev ?? null : null, stale: true };
+
 export interface Resource<T> {
   value: ReadonlySignal<Fetched<T>>;
   dispose(): void;

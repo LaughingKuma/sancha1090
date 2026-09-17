@@ -94,11 +94,11 @@ def _run_sql(pred: str, having: str, extra_select: str = "") -> str:
 _DWELL_PRED = f"coalesce(alt_ft < {LOW_FIX_ALT_FT} AND gs_kt < {DWELL_GS_KT}, false)"
 _DWELL_SQL = _run_sql(_DWELL_PRED, "countIf(NOT gnd) > 0")
 
-# Takeoff trim: a ground run on the flag alone whose next fix is airborne (NULL at day end = no trim). Re-landed,
-# only the run's last fix survives (the rest drops as all-ground), so the arm goes quiet.
+# Takeoff trim: a ground run on the flag alone with any row after it (NULL at trace end = no trim): the walk never
+# writes a trimmed run's roll, so one followed by a ground row after a silence (899000 06-04) is stale too.
 _TAKEOFF_PRED = "gnd"
 _TAKEOFF_SQL = _run_sql(
-    _TAKEOFF_PRED, "argMax(tuple(next_gnd), ts).1 = false",
+    _TAKEOFF_PRED, "argMax(tuple(next_gnd), ts).1 IS NOT NULL",
     extra_select=""",
     leadInFrame(toNullable(gnd), 1, NULL)
       OVER (PARTITION BY icao24, trace_day ORDER BY ts ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS next_gnd""")

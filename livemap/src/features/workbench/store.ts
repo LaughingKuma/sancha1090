@@ -37,6 +37,8 @@ export const activeApt = computed(() => wb.value.apt);
 export const activeType = computed(() => wb.value.type);
 export const activeOd = computed(() => wb.value.od);
 export const activeMil = computed(() => wb.value.mil);
+export const activeFlagClass = computed(() => wb.value.flagClass);
+export const activeDim = computed(() => wb.value.dim);
 export const activePage = computed(() => wb.value.page);
 // drill's level machine: a search hit on an airframe or airport enters at the instance level
 export const drillLevel = computed(() =>
@@ -99,12 +101,6 @@ export function doorway(target: ViewName, carry: Partial<WbState> = {}, opts: Na
   if (carry.range !== undefined) patch.range = carry.range; // the rail's range is chrome, not view scope
   navigate(patch, opts);
 }
-
-// what the active view fetches on: view + range + exactly the scope keys that view reads, so a focus
-// click (wb.inst) can never re-fetch a list
-export const viewKey = computed(() =>
-  JSON.stringify([wb.value.view, wb.value.range, ...VIEW_SCOPE[wb.value.view].map((k) => wb.value[k]), milAvailable.value]),
-);
 
 export const openAirline = (name: string) => doorway("drill", { airline: name });
 export const openService = (callsign: string, airline: string | null = null) =>

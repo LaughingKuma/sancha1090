@@ -131,10 +131,22 @@ def install(app_mod):
                  "airframes": wb.shape_search_airframe, "airports": wb.shape_search_airport}
         return {k: [shape[k](r) for r in v[:limit]] for k, v in hit.items()}
 
+    def fetch_estimates(day_from, day_to):
+        # an unset window is the whole ledger, which is what the install-time shape already holds
+        if not (day_from or day_to):
+            return estimates
+        p = wb.estimates_params(day_from, day_to)
+        lo, hi = str(p["day_from"]), str(p["day_to"])
+        headline = [r for r in est["headline"] if r[4] <= hi and lo <= r[5]]
+        daily = [r for r in est["daily"] if lo <= r[0] <= hi]
+        # mix and outcomes are window aggregates in the real query, so a window with no day has neither
+        return wb.shape_estimates(headline, daily, est["mix"] if daily else [],
+                                  est["outcomes"] if daily else None, True)
+
     for name, fn in {"fetch_airlines": fetch_airlines, "fetch_services": fetch_services,
                      "fetch_instances": fetch_instances, "fetch_trends": fetch_trends, "fetch_flags": fetch_flags,
                      "fetch_search": fetch_search, "fetch_summary": lambda _f, _t: summary,
-                     "fetch_estimates": lambda _f, _t: estimates, "fetch_coverage": lambda _f, _t: coverage}.items():
+                     "fetch_estimates": fetch_estimates, "fetch_coverage": lambda _f, _t: coverage}.items():
         setattr(store, name, fn)
 
     # /path is stubbed at the CH-fetch layer so the app's own status/cache/head classification runs for

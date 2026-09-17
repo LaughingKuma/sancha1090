@@ -49,7 +49,7 @@ const serviceRow = (r: ServiceRow) => ({
 });
 
 const airlineParams = () => ({ limit: PAGE_LIMIT, offset: (activePage.value - 1) * PAGE_LIMIT });
-const airlineFetch = (p: ReturnType<typeof airlineParams>) => fetchAirlines(p);
+const airlineFetch = (p: ReturnType<typeof airlineParams>, signal: AbortSignal) => fetchAirlines(p, signal);
 
 function DrillAirlines() {
   const st = useResource(airlineParams, airlineFetch);
@@ -72,7 +72,7 @@ function DrillAirlines() {
 const serviceParams = () => ({
   airline: activeAirline.value, limit: PAGE_LIMIT, offset: (activePage.value - 1) * PAGE_LIMIT,
 });
-const serviceFetch = (p: ReturnType<typeof serviceParams>) => fetchServices(p);
+const serviceFetch = (p: ReturnType<typeof serviceParams>, signal: AbortSignal) => fetchServices(p, signal);
 
 function DrillServices() {
   const st = useResource(serviceParams, serviceFetch);

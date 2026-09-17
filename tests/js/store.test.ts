@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { EPOCH, KEY, flush, resetStore, stubFetch } from "./_fixtures";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EPOCH, KEY, flush, resetStore, restoreFetch, stubFetch } from "./_fixtures";
 import { readUrl, type WbState } from "../../livemap/src/features/workbench/url";
 import {
   SCOPE_DEFAULTS, SCOPE_KEYS, VIEW_SCOPE, applyUrl, doorway, enterFocus, focus, focusedKey,
@@ -27,6 +27,7 @@ function setup(inst: string) {
 }
 
 beforeEach(() => vi.restoreAllMocks());
+afterEach(() => restoreFetch()); // here, not at a test's tail — a failed assertion must not leak the stub
 
 describe("resolveDeepLink", () => {
   it("a malformed key is dropped without a lookup", async () => {
@@ -233,7 +234,7 @@ describe("doorway table", () => {
   it("no view hand-codes a scope reset any more — the table owns them", () => {
     // vitest runs with the Vite root (livemap/) as cwd; from the repo root the prefix is one level up
     const root = process.cwd().endsWith("livemap") ? process.cwd() : join(process.cwd(), "livemap");
-    const dir = join(root, "src/features/workbench/views");
+    const dir = join(root, "src/features/workbench/components");
     const offenders: string[] = [];
     for (const f of readdirSync(dir)) {
       const text = readFileSync(join(dir, f), "utf8");

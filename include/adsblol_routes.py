@@ -161,9 +161,14 @@ def _parse_trace(points, base) -> list[_Fix]:
             f.on_ground = True
     # Takeoff trim: the last ground fix of a >= DWELL_S ground run opens the departure segment (DAL121: 16 h
     # parked inside one flight); a run that ends the trace has no departure to open.
-    for _i, j in _runs(fixes, _persisted(fixes, lambda f: f.on_ground)):
+    for i, j in _runs(fixes, _persisted(fixes, lambda f: f.on_ground)):
         if j + 1 < len(fixes):
             fixes[j].takeoff = True
+            # The roll before the trim point is not a flight: a ground-bit flicker inside a second the grid reads as
+            # ground (71be22 06-24) must not keep it; an arrival's last airborne fix sharing the landing second stays.
+            k = next(k for k in range(i, j + 1) if fixes[k].on_ground)
+            for f in fixes[k:j]:
+                f.on_ground = True
     return fixes
 
 
