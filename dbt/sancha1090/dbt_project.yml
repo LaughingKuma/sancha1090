@@ -70,7 +70,7 @@ vars:
   legs_turnaround_min: 30 # a callsign flip across a gap this long = out/back rotation -> split the leg
   legs_frozen_min: 30     # an airborne run of byte-identical positions longer than this is OpenSky re-serving a lost aircraft -> only its first fix counts (#213C)
   callsign_backfill_window_s: 600 # max gap to a same-airframe OpenSky snapshot when backfilling a blank ADS-B callsign
-  callsign_backfill_rebuild_days: 3  # int_adsb_callsign_from_opensky: trailing UTC days REPLACEd per run off the rooftop watermark; a day settles once its neighbour has landed (+/- window), the third day is slack for a late rooftop push
+  callsign_backfill_rebuild_days: 3  # int_adsb_callsign_from_opensky and fct_adsb_state: trailing UTC days REPLACEd per run off the rooftop watermark; a day settles once its neighbour has landed (+/- window), the third is slack for a late rooftop push, and each extra day rewrites ~35 MiB more per rooftop tick
   snap_iata_pref_km: 10   # else a closer heliport/seaplane base wrongly wins the endpoint snap (PALH vs PANC, #213A)
   chain_speed_min_kmh: 300   # implied boundary groundspeed below this = the aircraft stopped (landing)
   chain_speed_max_kmh: 1100  # above this = not the same continuous flight

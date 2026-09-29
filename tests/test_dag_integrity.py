@@ -25,7 +25,7 @@ EXPECTED_DAGS = {
         "task_ids": {"list_remote_bundles", "select_new", "validate_and_record", "summarize_emit_asset"},
     },
     "transform_marts": {
-        "schedule": "2-59/10 * * * *",
+        "schedule": "7-59/30 * * * *",
         "catchup": False,
         "max_active_runs": 1,
         "task_ids": {"dbt_run_ch", "dbt_test_ch", "ensure_ch_mvs", "push_flight_routes"},
@@ -42,6 +42,15 @@ EXPECTED_DAGS = {
         },
     },
     "transform_adsb_silver": {
+        "schedule_is_asset_triggered": True,
+        "catchup": False,
+        "max_active_runs": 1,
+        "task_ids": {"dbt_run_ch", "dbt_test_ch"},
+        "downstream_task_ids": {
+            "dbt_run_ch": {"dbt_test_ch"},
+        },
+    },
+    "refresh_fct_adsb_state_dims": {
         "schedule_is_asset_triggered": True,
         "catchup": False,
         "max_active_runs": 1,
@@ -268,3 +277,46 @@ def test_dag_structure(dagbag, dag_id, expected):
             f"{dag_id}.is_paused_upon_creation expected {expected['is_paused_upon_creation']}, "
             f"got {dag.is_paused_upon_creation}"
         )
+
+
+def test_dims_refresh_passes_full_refresh_to_run_only(dagbag):
+    # `dbt test` rejects --full-refresh, and callers without run_flags keep their exact command.
+    dims = dagbag.dags["refresh_fct_adsb_state_dims"]
+    run = dims.get_task("dbt_run_ch").bash_command
+    assert "dbt run --select +fct_adsb_state --exclude int_adsb_callsign_from_opensky --full-refresh " in run
+    assert "--full-refresh" not in dims.get_task("dbt_test_ch").bash_command
+    silver = dagbag.dags["transform_adsb_silver"].get_task("dbt_run_ch").bash_command
+    assert "dbt run --select +tag:adsb --profiles-dir . " in silver
+
+
+def test_adsb_silver_writers_share_one_pool(dagbag):
+    from include.dag_dbt import ADSB_SILVER_POOL
+
+    for dag_id in ("transform_adsb_silver", "refresh_fct_adsb_state_dims"):
+        dag = dagbag.dags[dag_id]
+        assert dag.get_task("dbt_run_ch").pool == ADSB_SILVER_POOL
+        assert dag.get_task("dbt_test_ch").pool != ADSB_SILVER_POOL  # tests only read
+
+
+def test_other_dbt_callers_take_no_pool(dagbag):
+    from include.dag_dbt import ADSB_SILVER_POOL
+
+    for dag_id in ("transform_marts", "transform_flights"):
+        for task_id in ("dbt_run_ch", "dbt_test_ch"):
+            assert dagbag.dags[dag_id].get_task(task_id).pool != ADSB_SILVER_POOL
+
+
+def test_airflow_init_creates_the_pool_with_one_slot():
+    import re
+    from pathlib import Path
+
+    import yaml
+
+    from include.dag_dbt import ADSB_SILVER_POOL
+
+    compose = yaml.safe_load((Path(__file__).resolve().parent.parent / "docker-compose.yml").read_text())
+    script = compose["services"]["airflow-init"]["command"][-1]
+    # a missing pool means its tasks are never scheduled, so a fresh stack must create it
+    assert re.search(rf"airflow pools set {ADSB_SILVER_POOL} 1 ", script)
+    # chained, so a failed migrate still fails airflow-init
+    assert re.search(r"airflow db migrate && \\\s*\n\s*exec /entrypoint airflow pools set", script)

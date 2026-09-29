@@ -151,7 +151,7 @@ def test_ensure_qualifies_serving_views_with_their_db(monkeypatch):
     for name in LEGACY_ACC:
         base = mv.SPECS[name]["drop_old"][0]
         assert any(c.startswith(f"CREATE OR REPLACE VIEW gold_ch.{base} AS") for c in rec.commands)
-    # ensure() owns no body redeploy: dropping the MV per tick would be a 10-minutely miss-window.
+    # ensure() owns no body redeploy: dropping the MV per tick would be a per-tick miss-window.
     assert not [c for c in rec.commands if c.startswith("DROP ")]
 
 

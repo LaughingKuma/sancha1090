@@ -95,7 +95,8 @@ services:
         fi
         mkdir -p /sources/logs /sources/dags /sources/plugins /sources/include /sources/config
         chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins,include,config}
-        exec /entrypoint airflow db migrate
+        /entrypoint airflow db migrate && \
+          exec /entrypoint airflow pools set adsb_silver_single_writer 1 "One writer at a time for the ADS-B silver dbt builds"
     volumes:
       - .:/sources
     restart: "no"

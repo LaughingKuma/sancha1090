@@ -11,20 +11,22 @@ models:
           - unique
 
   - name: int_adsb_callsign_from_opensky
-    description: "Nearest OpenSky callsign per (hex, capture_ts) for ADS-B frames that decoded a position but no callsign; single-valued by row_number()=1 so the join into fct_adsb_state preserves rowcount. Incremental by UTC day: each run replaces the trailing callsign_backfill_rebuild_days partitions off the rooftop watermark (#193)"
+    description: "Nearest OpenSky callsign per (hex, capture_ts) for ADS-B frames that decoded a position but no callsign; single-valued by row_number()=1 so the join into fct_adsb_state preserves rowcount. Incremental by UTC day: each run replaces the trailing callsign_backfill_rebuild_days partitions off the rooftop watermark, plus up to 5 older days whose bronze count no longer matches fct_adsb_state (#193)"
     columns:
       - name: hex
         tests:
           - not_null
       - name: day_key
-        description: "bronze.adsb_states.capture_date of the frame (UTC day), the daily partition key. A day is rebuilt while it sits inside the trailing window and is settled once its neighbour has landed, since the match window is +/- callsign_backfill_window_s; older days are rebuilt only by the callsign_backfill_rebuild_to/_days repair vars"
+        description: "bronze.adsb_states.capture_date of the frame (UTC day), the daily partition key. A day is rebuilt while it sits inside the trailing window and is settled once its neighbour has landed, since the match window is +/- callsign_backfill_window_s; older days rebuild when their bronze count stops matching fct_adsb_state (up to 5 per run) or through the callsign_backfill_rebuild_to/_days repair vars"
 
   - name: fct_adsb_state
-    description: "Enriched ADS-B observations: dbFlags decode + airframe/airline/country dims, callsign OpenSky-backfilled (row-count preserving)"
+    description: "Enriched ADS-B observations: dbFlags decode + airframe/airline/country dims, callsign OpenSky-backfilled (row-count preserving). Incremental by UTC day on the same window as int_adsb_callsign_from_opensky: each run replaces the trailing callsign_backfill_rebuild_days partitions off the rooftop watermark, plus up to 5 older days whose bronze count no longer matches its partition (#246)"
     columns:
       - name: hex
         tests:
           - not_null
+      - name: capture_date
+        description: "bronze.adsb_states.capture_date of the frame (UTC day), the daily partition key. Days outside the trailing window keep the dim values of their last build until the weekly refresh_fct_adsb_state_dims full rebuild"
       - name: callsign_source
         description: "Provenance of callsign_filled: 'adsb' (native), 'opensky_backfill' (recovered), or NULL (no callsign anywhere)"
         tests:

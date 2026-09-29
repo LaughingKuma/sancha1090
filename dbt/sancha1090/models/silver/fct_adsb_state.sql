@@ -1,7 +1,21 @@
-{{ config(materialized='table', tags=['adsb']) }}
+{{ config(
+    materialized='incremental',
+    incremental_strategy='insert_overwrite',
+    engine='MergeTree()',
+    partition_by='capture_date',
+    query_settings={'max_partitions_per_insert_block': 10000},
+    tags=['adsb'],
+) }}
+{#- one partition per UTC day, so --full-refresh lands ~120 of them in a single insert block (default cap 100) #}
+
+{%- set w = adsb_rebuild_window() %}
+{%- do adsb_partition_key_guard('capture_date') %}
 
 -- Row-count-preserving over bronze: every join is LEFT and every dim/backfill is single-valued per key.
-with base as (
+-- Rebuilds the shared window plus count-mismatched days: docs/notes/runbooks.md#callsign-backfill-repair
+{%- if w.windowed %}{% set bd = adsb_build_days(w) %}{% endif %}
+with
+base as (
     select
         s.capture_ts,
         s.hex,
@@ -18,10 +32,23 @@ with base as (
         s.track,
         -- db_flags is the dbFlags integer baked at load (v6.3 eliminated _raw_json from CH); 0 on absent (the
         -- same 2-valued contract JSONExtractInt gave), so the COALESCE(...,0) bit-tests below stay correct.
-        s.db_flags as db_flags
+        s.db_flags as db_flags,
+        s.capture_date
     from {{ source('bronze', 'adsb_states') }} s
     left join {{ ref('int_adsb_callsign_from_opensky') }} bf
            on bf.hex = s.hex and bf.capture_ts = s.capture_ts
+    {%- if w.windowed %}
+          -- bf.day_key IS that row's capture_date, so bounding it prunes partitions without changing matches
+          and {{ adsb_day_in(bd, 'bf.day_key') }}
+    -- the partition column and the filter column are the same one, so the union of day builds equals the full build
+    where {{ adsb_day_in(bd, 's.capture_date') }}
+      {%- if bd.prune_ts %}
+      -- the same bounds on the primary key prune the scan to the window's granules, not the whole month;
+      -- dropped with extra days so a NULL capture_ts (1970-01-01) day stays rebuildable
+      and s.capture_ts >= toUnixTimestamp(toDateTime('{{ bd.lo }}', 'UTC'))
+      and s.capture_ts <  toUnixTimestamp(toDateTime('{{ bd.hi_excl }}', 'UTC'))
+      {%- endif %}
+    {%- endif %}
 )
 select
     b.capture_ts,
@@ -44,7 +71,8 @@ select
     al.name    as airline_name,
     al.country as airline_country,
     -- reg_country via the P1 range_hashed dict; macro guards '~' hexes.
-    {{ ch_hex_country('b.hex') }} as reg_country
+    {{ ch_hex_country('b.hex') }} as reg_country,
+    b.capture_date
 from base b
 left join {{ ref('dim_aircraft') }} ac
        on ac.icao24 = lower(b.hex)

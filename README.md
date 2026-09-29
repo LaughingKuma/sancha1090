@@ -106,7 +106,7 @@ ClickHouse schemas, dictionary, seeds, and aircraft registry on its own; the opt
 multi-year adsb.lol history backfill is a separate manual step, `scripts/ch_setup_marts.sh`.
 
 Trigger `ingest_states` to start populating: `tableize_states` cascades via asset events,
-and `transform_marts` rebuilds on its own 10-minute cron.
+and `transform_marts` rebuilds on its own 30-minute cron.
 
 ### Live hot path
 

@@ -3,33 +3,14 @@
     incremental_strategy='insert_overwrite',
     engine='MergeTree()',
     partition_by='day_key',
-    query_settings={'max_memory_usage': 12000000000 if flags.FULL_REFRESH else 2000000000},
+    query_settings={'max_memory_usage': 12000000000 if flags.FULL_REFRESH else 2000000000,
+                    'max_partitions_per_insert_block': 10000},
     tags=['adsb'],
 ) }}
+{#- one partition per UTC day, so --full-refresh lands every day in a single insert block (default cap 100) #}
 
-{%- set rebuild_to = var('callsign_backfill_rebuild_to', '') | string %}
-{%- set rebuild_days = var('callsign_backfill_rebuild_days') %}
-{#- `| int` would let 1.5 or true pass the check and still reach the SQL as written. #}
-{%- if rebuild_days is boolean or rebuild_days is not integer or rebuild_days < 1 %}
-{{ exceptions.raise_compiler_error("callsign_backfill_rebuild_days must be a whole number >= 1, got " ~ rebuild_days) }}
-{%- endif %}
-{%- if rebuild_to %}
-{#- toDateOrNull would let a typo like 2026-06-31 fall back to the newest days and repair the wrong partitions. #}
-{%- do modules.datetime.datetime.strptime(rebuild_to, '%Y-%m-%d') %}
-{%- if flags.FULL_REFRESH %}
-{{ exceptions.raise_compiler_error("--full-refresh always recomputes all history; to rebuild in slices drop the table first, then run with the repair vars") }}
-{%- endif %}
-{%- endif %}
-{#- A rebuild is windowed on the incremental path and whenever a slice is nominated by hand. #}
-{%- set windowed = is_incremental() or rebuild_to != '' %}
-{%- if is_incremental() %}
-{#- REPLACE PARTITION needs matching partition keys: against the pre-incremental unpartitioned table it fails only
-    after creating the __dbt_new_data table, leaving one orphan per tick -- fail before any statement instead. #}
-{%- set partition_key = run_query("select partition_key from system.tables where database = '" ~ this.schema ~ "' and name = '" ~ this.identifier ~ "'").columns[0].values() %}
-{%- if partition_key[0] | replace('(', '') | replace(')', '') | trim != 'day_key' %}
-{{ exceptions.raise_compiler_error(this ~ " is not partitioned by day_key: pause transform_adsb_silver and run this model once with --full-refresh") }}
-{%- endif %}
-{%- endif %}
+{%- set w = adsb_rebuild_window() %}
+{%- do adsb_partition_key_guard('day_key') %}
 
 -- ADS-B identity messages broadcast ~10x less often than position, so ~4% of frames land with a decoded
 -- position but a blank callsign (worse at the range edge, where the rarer ID frame fails CRC). The same
@@ -42,41 +23,40 @@
 -- nearest is necessarily one of them. (A single preceding-only ASOF under-fills by 18%, so both sides
 -- are required for parity.) snapshot_time is DateTime64(6) -> micro-epoch seconds to match to_unixtime.
 -- Incremental by UTC day (#193): a full-history rebuild carries every callsign-bearing OpenSky row as the ASOF build
--- side (~6 GB, +0.04 GB/day). Only the trailing window rebuilds; replayed bronze older than it needs the repair vars
--- (docs/notes/runbooks.md#callsign-backfill-repair).
+-- side (~6 GB, +0.04 GB/day). The trailing window rebuilds, plus older days whose bronze count drifted from
+-- fct_adsb_state; an OpenSky replay needs the repair vars (docs/notes/runbooks.md#callsign-backfill-repair).
+{%- if w.windowed %}{% set bd = adsb_build_days(w) %}{% endif %}
 with
-{%- if windowed %}
-build_days as (
-    -- watermark, not now(): a stalled feed keeps rebuilding its last real days instead of empty ones
-    select day_hi - {{ rebuild_days }} + 1 as day_lo, day_hi
-    from (
-        {%- if rebuild_to %}
-        select toDate('{{ rebuild_to }}') as day_hi
-        {%- else %}
-        select max(capture_date) as day_hi from {{ source('bronze', 'adsb_states') }}
-        {%- endif %}
-    )
-),
-{%- endif %}
 miss as (
     select distinct hex, capture_ts, capture_date as day_key
     from {{ source('bronze', 'adsb_states') }}
     where (flight is null or trimBoth(flight) = '')
-    {%- if windowed %}
-      and capture_date between (select day_lo from build_days) and (select day_hi from build_days)
+    {%- if w.windowed %}
+      and {{ adsb_day_in(bd, 'capture_date') }}
+      {%- if bd.prune_ts %}
       -- the same bounds on the primary key prune the scan to the window's granules, not the whole month
-      and capture_ts >= toUnixTimestamp(toDateTime((select day_lo from build_days), 'UTC'))
-      and capture_ts <  toUnixTimestamp(toDateTime((select day_hi from build_days) + 1, 'UTC'))
+      and capture_ts >= toUnixTimestamp(toDateTime('{{ bd.lo }}', 'UTC'))
+      and capture_ts <  toUnixTimestamp(toDateTime('{{ bd.hi_excl }}', 'UTC'))
+      {%- endif %}
     {%- endif %}
 ),
 opensky as (
     select icao24, toUnixTimestamp64Micro(snapshot_time) / 1e6 as snap_epoch, trimBoth(callsign) as callsign
     from {{ source('bronze', 'opensky_states') }}
     where callsign is not null and trimBoth(callsign) <> ''
-    {%- if windowed %}
+    {%- if w.windowed %}
       -- the +/- window straddles midnight, so a frame at 00:05 still needs the 23:55 snapshot
-      and snapshot_time >= toDateTime64((select day_lo from build_days), 6, 'UTC') - interval {{ var('callsign_backfill_window_s') }} second
-      and snapshot_time <  toDateTime64((select day_hi from build_days) + 1, 6, 'UTC') + interval {{ var('callsign_backfill_window_s') }} second
+      and snapshot_time >= toDateTime64('{{ bd.lo }}', 6, 'UTC')
+                           - interval {{ var('callsign_backfill_window_s') }} second
+      and snapshot_time <  toDateTime64('{{ bd.hi_excl }}', 6, 'UTC')
+                           + interval {{ var('callsign_backfill_window_s') }} second
+      {%- if not bd.prune_ts %}
+      -- a gappy day set spans more history than it rebuilds: keep only snapshots within the window of a set
+      -- day, so the ASOF build side stays sized to the set, not the span, under the 2 GB cap
+      {%- set shift = "interval " ~ var('callsign_backfill_window_s') ~ " second, 'UTC')" %}
+      and ({{ adsb_day_in(bd, "toDate(snapshot_time - " ~ shift) }}
+           or {{ adsb_day_in(bd, "toDate(snapshot_time + " ~ shift) }})
+      {%- endif %}
     {%- endif %}
 ),
 preceding as (

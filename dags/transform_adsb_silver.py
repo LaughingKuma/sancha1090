@@ -3,7 +3,7 @@ from __future__ import annotations
 from airflow.sdk import dag
 
 from include.adsb_assets import adsb_bronze_table
-from include.dag_dbt import dbt_run_test
+from include.dag_dbt import ADSB_SILVER_POOL, dbt_run_test
 from include.dag_defaults import default_args
 
 
@@ -20,7 +20,7 @@ def transform_adsb_silver():
 
     # +tag:adsb pulls in dim_aircraft_registry (the one cross-lane ancestor dim_aircraft depends on);
     # the P4 ADS-B aggregates are served by self-maintaining MVs (include/ch_incremental_mvs.py), not dbt models.
-    dbt_run_test("--select +tag:adsb")
+    dbt_run_test("--select +tag:adsb", pool=ADSB_SILVER_POOL)
 
 
 transform_adsb_silver()

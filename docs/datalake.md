@@ -177,13 +177,13 @@ cruise gaps the band serves.
   other. Those are excluded from `agg_route_traffic`, skewing it toward domestic routes.
 - **Sparse airframe enrichment.** `dim_aircraft` only holds airframes the rooftop has heard;
   `dim_aircraft_registry` backfills registration and typecode where it can.
-- **Cross-feed lag.** `fct_flight_legs` geometry refreshes on the `transform_marts` 10-minute
+- **Cross-feed lag.** `fct_flight_legs` geometry refreshes on the `transform_marts` 30-minute
   cron, but its rooftop enrichment can lag a rooftop tick behind.
 - **`agg_country_traffic` is point-in-time** — a latest-5-minute snapshot, not full history.
-- **Backfilled callsigns are nearest-snapshot.** A small share of `fct_adsb_state` rows take
-  their callsign from the OpenSky feed (`callsign_source = 'opensky_backfill'`); at a
-  turnaround inside the ±10-minute window the nearest snapshot can carry the adjacent leg's
-  callsign; `callsign_source` lets consumers exclude them.
+- **`fct_adsb_state` is nearest-snapshot and as-of-last-build.** A callsign can come from OpenSky
+  (`callsign_source = 'opensky_backfill'`), at a turnaround the adjacent leg's (±10-min match).
+  Older days keep last-build dims until the weekly full rebuild; late bronze
+  rebuilds its day within a few ticks.
 - **SWIM resolves only US-touching flights, by inferred identity.** `int_swim_opinion` matches
   a filed callsign to an airframe hex by sighting density, not a direct identifier; ambiguous
   matches are withheld, so its vote share is smaller than its message volume.

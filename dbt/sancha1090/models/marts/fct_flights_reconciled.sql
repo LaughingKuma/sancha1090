@@ -4,7 +4,7 @@
     query_settings={'max_memory_usage': 12000000000},
 ) }}
 
--- Deploy-order guard: dim.dim_ladd arrives via clickhouse-init but this model rebuilds on the 10-min cron, so
+-- Deploy-order guard: dim.dim_ladd arrives via clickhouse-init but this model rebuilds on the transform_marts cron, so
 -- gate the LADD join on the table existing (sources.yml dim_ladd owns the ref edge; get_relation is execute-only).
 {%- set ladd_rel = optional_relation('dim', 'dim_ladd') %}
 
