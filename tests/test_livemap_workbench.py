@@ -858,7 +858,7 @@ def test_workbench_files_exist_next_to_app():
     # private sidecar (or a /features that cannot answer the handshake)
     copied = {tok for line in (livemap_dir / "Dockerfile").read_text().splitlines() if line.startswith("COPY ")
               for tok in line.split()[1:-1]}
-    assert {"wb_store.py", "wb_models.py", "wb_contract.json"} <= copied
+    assert {"wb_store.py", "wb_models.py", "wb_contract.json", "stats.py", "routes_stats.py"} <= copied
 
 
 # ---- live-CH query-form execution (both tier variants), same skip/connect semantics as ch_cur ----

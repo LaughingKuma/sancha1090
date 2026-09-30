@@ -167,12 +167,10 @@ byte-identical fail-closed empty response.
 
 ### Public deployment (Cloudflare Tunnel)
 
-The map can be exposed to the public web without opening a router port. A dedicated
-`livemap-public` service (a second copy of the same image) runs alongside the private instance
-and is reached only through a `cloudflared` container that dials **out** to Cloudflare: the
-home IP never appears in DNS and nothing else in the stack is reachable through the tunnel.
-That is how the public map is served. Both live behind the `public` compose profile, so the
-default `docker compose up -d` is unaffected until an operator opts in:
+A dedicated `livemap-public` service (a second copy of the same image) is reached only through
+a `cloudflared` container that dials **out** to Cloudflare: no router port, the home IP never
+appears in DNS, and nothing else in the stack is reachable through the tunnel. Both sit behind
+the `public` compose profile, so the default `docker compose up -d` is unaffected:
 
 ```bash
 # add CLOUDFLARED_TUNNEL_TOKEN to .env, then:
@@ -186,6 +184,9 @@ cache header is inert on its own. The public instance runs hardened
 (`LIVEMAP_PUBLIC_MODE=1`): per-IP rate limiting, an edge-cache hint on the snapshot endpoint,
 and standard security headers. It publishes no host port, and `cloudflared` shares only a
 dedicated `edge` network with it.
+
+Both instances serve `/stats/`, rooftop and warehouse totals: aircraft counts drop LADD
+airframes and name nothing below three airframes; no receiver position is sent.
 
 The public instance serves no receiver anchor. Its `/range-outline` anchors at the
 **centroid of the measured coverage outline** (`center_kind: "coverage"`): a pure function of

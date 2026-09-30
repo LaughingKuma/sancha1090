@@ -33,8 +33,9 @@
 
 
 {#- Literal 'YYYY-MM-DD' days to rebuild: the trailing window plus, on a plain incremental tick, days whose
-    bronze count no longer matches fct_adsb_state. prune_ts: the set is one contiguous run. #}
-{% macro adsb_build_days(w) %}
+    bronze count no longer matches the built table. prune_ts: the set is one contiguous run. #}
+{#- count_against='self': with no dbt edge to fct_adsb_state, fct's mismatches show only by run order. #}
+{% macro adsb_build_days(w, count_against='fct') %}
 {%- set dt = modules.datetime %}
 {%- if w.rebuild_to %}
 {%- set day_hi = dt.datetime.strptime(w.rebuild_to, '%Y-%m-%d').date() %}
@@ -56,7 +57,8 @@
 {%- for i in range(w.rebuild_days - 1, -1, -1) %}
 {%- do days.append((day_hi - dt.timedelta(days=i)).isoformat()) %}
 {%- endfor %}
-{%- set extra = adsb_count_mismatch_days(days) if execute and is_incremental() and not w.rebuild_to else [] %}
+{%- set extra = adsb_count_mismatch_days(days, count_against)
+    if execute and is_incremental() and not w.rebuild_to else [] %}
 {%- set all_days = (extra + days) | unique | sort %}
 {%- set hi = dt.datetime.strptime(all_days[-1], '%Y-%m-%d').date() %}
 {%- set hi_excl = (hi + dt.timedelta(days=1)).isoformat() %}
@@ -64,31 +66,44 @@
 {% endmacro %}
 
 
-{#- Days outside the window whose bronze count() differs from fct_adsb_state's active partition rows. Both
-    models compare against fct: the callsign model builds first, so both see the same pre-build fct. #}
-{% macro adsb_count_mismatch_days(window_days) %}
+{#- Days outside the window whose bronze count() differs from the built table's. The two silver models compare
+    against fct: the callsign model builds first, so both see the same pre-build fct. #}
+{% macro adsb_count_mismatch_days(window_days, against='fct') %}
+{%- if against == 'self' %}
+{%- set built = load_relation(this) %}
+{%- else %}
 {%- set node = graph.nodes.values() | selectattr('name', 'equalto', 'fct_adsb_state') | first %}
-{%- set fct = adapter.get_relation(database=node.database, schema=node.schema, identifier=node.alias) %}
-{%- if fct is none %}{% do return([]) %}{% endif %}
+{%- set built = adapter.get_relation(database=node.database, schema=node.schema, identifier=node.alias) %}
+{%- endif %}
+{%- if built is none %}{% do return([]) %}{% endif %}
 {#- no FINAL: the models read bronze without it, so a built day matches bronze's raw count #}
 {%- set sql %}
-select d, sumIf(n, src = 'bronze') as bronze_rows, sumIf(n, src = 'fct') as fct_rows
+select d, sumIf(n, src = 'bronze') as bronze_rows, sumIf(n, src = 'built') as built_rows
 from (
+{%- if against == 'self' %}
+    {#- the rooftop rollup's own row predicate and fix count, so a fully built day compares equal #}
+    select toString(capture_date) as d, count() as n, 'bronze' as src
+    from {{ source('bronze', 'adsb_states') }}
+    where hex is not null and capture_ts is not null group by capture_date
+    union all
+    select toString(capture_date), sum(n_fixes), 'built' from {{ built }} group by capture_date
+{%- else %}
     select toString(capture_date) as d, count() as n, 'bronze' as src
     from {{ source('bronze', 'adsb_states') }} group by capture_date
     union all
-    select partition, sum(rows), 'fct' from system.parts
-    where active and database = '{{ fct.schema }}' and table = '{{ fct.identifier }}' group by partition
+    select partition, sum(rows), 'built' from system.parts
+    where active and database = '{{ built.schema }}' and table = '{{ built.identifier }}' group by partition
+{%- endif %}
 )
 where d not in ('{{ window_days | join("', '") }}')
-group by d having bronze_rows != fct_rows order by d
+group by d having bronze_rows != built_rows order by d
 {%- endset %}
 {%- set cap = 5 %}
 {%- set extra = [] %}
 {%- for row in run_query(sql).rows %}
 {%- if row[1] | int == 0 %}
 {#- a rebuild yields no rows, so REPLACE never fires: dropping the partition stays manual #}
-{{- log(this ~ ": bronze has no rows for " ~ row[0] ~ " but fct has " ~ row[2]
+{{- log(this ~ ": bronze has no rows for " ~ row[0] ~ " but " ~ built ~ " has " ~ row[2]
         ~ "; drop that partition by hand (runbook: callsign-backfill-repair)", info=true) }}
 {%- else %}
 {%- do extra.append(row[0]) %}

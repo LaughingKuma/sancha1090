@@ -34,7 +34,7 @@ def test_repair_vars_are_validated_once():
 def test_watermark_is_read_once_at_compile():
     # A max() inside build_days re-scans bronze in every scalar subquery, each free to see a different value.
     src = MACROS.read_text()
-    days = src[src.index("macro adsb_build_days(w)"):src.index("macro adsb_count_mismatch_days")]
+    days = src[src.index("macro adsb_build_days("):src.index("macro adsb_count_mismatch_days")]
     assert re.search(
         r"elif execute %\}.*?\"select toString\(maxOrNull\(capture_date\)\) from \" ~ "
         r"source\('bronze', 'adsb_states'\).*?run_query\(wm_sql\)", days, re.DOTALL
@@ -53,10 +53,10 @@ def test_watermark_is_read_once_at_compile():
 def test_count_mismatch_days_are_added_only_on_the_plain_incremental_tick():
     # The manual repair path stays exclusive and --full-refresh already rebuilds every day.
     src = MACROS.read_text()
-    days = src[src.index("macro adsb_build_days(w)"):src.index("macro adsb_count_mismatch_days")]
+    days = src[src.index("macro adsb_build_days("):src.index("macro adsb_count_mismatch_days")]
     assert (
-        "{%- set extra = adsb_count_mismatch_days(days) if execute and is_incremental() "
-        "and not w.rebuild_to else [] %}" in days
+        "{%- set extra = adsb_count_mismatch_days(days, count_against)\n"
+        "    if execute and is_incremental() and not w.rebuild_to else [] %}" in days
     )
     assert "{%- set all_days = (extra + days) | unique | sort %}" in days
     # a gappy set drops the capture_ts bounds: NULL capture_ts rows sit on 1970-01-01, still rebuildable
@@ -68,18 +68,22 @@ def test_count_mismatch_compares_bronze_with_fct_partitions():
     m = src[src.index("macro adsb_count_mismatch_days"):src.index("macro adsb_day_in")]
     # both models compare against fct, found without ref() so the callsign model gains no cycle
     assert "selectattr('name', 'equalto', 'fct_adsb_state')" in m
-    assert "adapter.get_relation(database=node.database, schema=node.schema, identifier=node.alias)" in m
-    assert "{%- if fct is none %}{% do return([]) %}{% endif %}" in m
+    assert (
+        "{%- set built = adapter.get_relation(database=node.database, schema=node.schema, "
+        "identifier=node.alias) %}" in m
+    )
+    assert "{%- if built is none %}{% do return([]) %}{% endif %}" in m
     # no FINAL: the models read bronze without it, so counts compare like for like
     assert "final" not in m.lower().split("{%- set sql %}")[1]
+    m = m[m.index("{%- else %}\n    select toString"):]
     assert re.search(
         r"select toString\(capture_date\) as d, count\(\) as n, 'bronze' as src\s*\n"
         r"\s*from \{\{ source\('bronze', 'adsb_states'\) \}\} group by capture_date", m
     )
-    assert "select partition, sum(rows), 'fct' from system.parts" in m
-    assert "where active and database = '{{ fct.schema }}' and table = '{{ fct.identifier }}'" in m
+    assert "select partition, sum(rows), 'built' from system.parts" in m
+    assert "where active and database = '{{ built.schema }}' and table = '{{ built.identifier }}'" in m
     assert """where d not in ('{{ window_days | join("', '") }}')""" in m
-    assert "group by d having bronze_rows != fct_rows order by d" in m
+    assert "group by d having bronze_rows != built_rows order by d" in m
     # bronze-empty days never REPLACE, so they are logged for a manual drop instead of nominated
     assert re.search(r"if row\[1\] \| int == 0 %\}.*?log\(.*?\{%- else %\}\s*\n\{%- do extra\.append", m,
                      re.DOTALL)

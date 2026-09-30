@@ -39,6 +39,8 @@ rl = _load_sibling("ratelimit")
 routes_live = _load_sibling("routes_live")
 routes_aircraft = _load_sibling("routes_aircraft")
 routes_path = _load_sibling("routes_path")
+stats = _load_sibling("stats")
+routes_stats = _load_sibling("routes_stats")
 
 # Sibling surface re-exported under this module's names — this module stays the single address
 # for the sidecar's behaviour; the config-bound seams further down bind the rest.
@@ -133,7 +135,7 @@ def _static_build():
 # ruling 4 (2026-07-25): sidecar-attributed serving exhaust; legacy 'serving' = pre-split rows
 EST_PRODUCER = "serving-public" if PUBLIC_MODE else "serving-private"
 # Per-IP token bucket on the per-request DB endpoints only (/aircraft + /history are in-memory reads, free).
-RATE_LIMITED_PREFIXES = ("/track/", "/flights/", "/path/", "/estimate/live/")
+RATE_LIMITED_PREFIXES = ("/track/", "/flights/", "/path/", "/estimate/live/", "/stats-data")
 
 # recv rides the payload end-to-end (the P2 multi-receiver seam); rendered uniformly today.
 QUERY = """
@@ -751,6 +753,11 @@ if PUBLIC_MODE:
         elif path.startswith(("/path/", "/estimate/live/")):
             # rate-limit 429s bypass the endpoint's envelope — keep the every-response no-store belt intact
             resp.headers.setdefault("Cache-Control", "no-store")
+        elif path == "/stats-data" and resp.status_code == 200:
+            # 200 only: a cached 429 would lock the browser out of the page for the whole max-age. private and
+            # capped at the rooftop entry's life, so no shared or browser cache holds numbers past FRESH_TTL_S.
+            ttl = min(60, _stats_cache.seconds_left("rooftop"))
+            resp.headers["Cache-Control"] = f"private, max-age={ttl}"
         return resp
 
 
@@ -853,6 +860,8 @@ _ctx = _Ctx(globals())
 app.include_router(routes_live.build_router(_ctx))
 app.include_router(routes_aircraft.build_router(_ctx))
 app.include_router(routes_path.build_router(_ctx))
+_stats_cache = stats.StatsCache(cache.put)
+app.include_router(routes_stats.build_router(_ctx))
 
 if not PUBLIC_MODE:
     wb = _load_sibling("workbench")

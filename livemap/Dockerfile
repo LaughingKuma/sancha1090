@@ -21,6 +21,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py estimator.py est_serving.py est_route.py ladd.py pathfusion.py cache.py ratelimit.py routes_live.py routes_aircraft.py routes_path.py workbench.py routes_workbench.py ./
+COPY stats.py routes_stats.py ./
 COPY wb_store.py wb_models.py wb_contract.json ./
 COPY static ./static
 COPY --from=assets /home/node/app/static ./static

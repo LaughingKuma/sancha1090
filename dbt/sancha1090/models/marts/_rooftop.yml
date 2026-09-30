@@ -1,0 +1,42 @@
+version: 2
+
+models:
+  - name: agg_rooftop_airframe_hour
+    description: "Rooftop antenna rollup for the public stats page: one row per (UTC hour, hex) from bronze.adsb_states, aggregated per minute first, then per hour. Incremental by UTC day on the callsign model's trailing window (callsign_backfill_rebuild_days off the rooftop watermark, or the callsign_backfill_rebuild_to slice), plus up to 5 older days whose sum(n_fixes) no longer matches bronze (docs/notes/runbooks.md#callsign-backfill-repair). Carries no position and no receiver-relative bearing; LADD exclusion is applied at serve time from flag_ladd, callsigns and dim.dim_ladd."
+    tests:
+      - grain:
+          arguments:
+            column_names: [hour_utc, hex]
+    columns:
+      - name: hour_utc
+        description: "Start of the UTC hour the fixes fall in."
+        tests:
+          - not_null
+      - name: capture_date
+        description: "bronze.adsb_states.capture_date of the fixes (UTC day), the daily partition key."
+        tests:
+          - not_null
+      - name: hex
+        description: "Lowercase, trimmed Mode-S address as heard by the rooftop."
+        tests:
+          - not_null
+      - name: typecode
+        description: "readsb `t` (ICAO type designator) of the hour's latest fix that carried one; NULL when none did."
+      - name: n_fixes
+        description: "bronze rows (fixes) for this hex in the hour; per day it sums to bronze's count() of rows with hex and capture_ts."
+      - name: callsigns
+        description: "Sorted distinct trimmed, upper-cased `flight` values heard in the hour (blank callsigns dropped); X1 matches them against open dim_ladd callsigns."
+      - name: flag_ladd
+        description: "1 when any fix carried the edge's LADD bit (bitAnd(db_flags, 8)); the whole airframe is excluded from every stats count."
+      - name: flag_mil
+        description: "1 when any fix carried the military bit (bitAnd(db_flags, 1))."
+      - name: flag_heli
+        description: "1 when any fix had readsb category 'A7' (rotorcraft), the live map's is_helicopter test."
+      - name: minutes
+        description: "Sorted minutes of the hour (0-59) with at least one fix, for the most-aircraft-in-one-minute record."
+      - name: alt_rec_ft
+        description: "Highest per-minute median alt_baro (ft) over minutes with >= 5 fixes; NULL when no such minute had a numeric altitude."
+      - name: gs_rec_kt
+        description: "Highest per-minute median gs (kt) over minutes with >= 5 fixes whose median agrees within 10% with the speed between the minute's first and last position (>= 20 s apart); drops repeated bad-decode speeds."
+      - name: dst_rec_nmi
+        description: "Highest per-minute median r_dst (nmi, readsb's distance from the receiver) over minutes with >= 5 fixes that sit within the radio horizon 1.23 * (sqrt(alt_ft) + sqrt(1000)); drops bad-decode ranges. A distance only, never a direction."

@@ -1,0 +1,294 @@
+{
+  "contract": 1,
+  "generated_at": 1790671200,
+  "floor": 3,
+  "rooftop": {
+    "status": "ok",
+    "as_of": 1790671188,
+    "since": "2026-05-23",
+    "airframes": 13,
+    "types": [
+      {
+        "typecode": "B789",
+        "model": "BOEING 787-9",
+        "body_class": "widebody",
+        "is_helicopter": false,
+        "airframes": 5
+      },
+      {
+        "typecode": "A320",
+        "model": "AIRBUS A-320",
+        "body_class": "narrowbody",
+        "is_helicopter": false,
+        "airframes": 4
+      },
+      {
+        "typecode": "H160",
+        "model": null,
+        "body_class": null,
+        "is_helicopter": true,
+        "airframes": 3
+      }
+    ],
+    "rarest_types": [
+      {
+        "typecode": "H160",
+        "model": null,
+        "body_class": null,
+        "is_helicopter": true,
+        "airframes": 3
+      },
+      {
+        "typecode": "A320",
+        "model": "AIRBUS A-320",
+        "body_class": "narrowbody",
+        "is_helicopter": false,
+        "airframes": 4
+      },
+      {
+        "typecode": "B789",
+        "model": "BOEING 787-9",
+        "body_class": "widebody",
+        "is_helicopter": false,
+        "airframes": 5
+      }
+    ],
+    "types_below_floor": 1,
+    "airlines": [
+      {
+        "name": "All Nippon Airways",
+        "flights": 100,
+        "airframes": 3
+      }
+    ],
+    "routes": [
+      {
+        "o": "HND",
+        "o_city": "Tokyo",
+        "d": "CTS",
+        "d_city": "Sapporo",
+        "flights": 7
+      }
+    ],
+    "routes_as_of": "2026-08-28",
+    "hour_of_day": [
+      {
+        "hour": 0,
+        "avg_aircraft": 7.0
+      },
+      {
+        "hour": 1,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 2,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 3,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 4,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 5,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 6,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 7,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 8,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 9,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 10,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 11,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 12,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 13,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 14,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 15,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 16,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 17,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 18,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 19,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 20,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 21,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 22,
+        "avg_aircraft": 0.0
+      },
+      {
+        "hour": 23,
+        "avg_aircraft": 0.0
+      }
+    ],
+    "per_day": [
+      {
+        "day": "2026-08-26",
+        "flights": 10
+      },
+      {
+        "day": "2026-08-27",
+        "flights": 30
+      },
+      {
+        "day": "2026-08-28",
+        "flights": 30
+      }
+    ],
+    "busiest_day": {
+      "day": "2026-08-27",
+      "flights": 30
+    },
+    "peak_minute": {
+      "at": 1781597160,
+      "aircraft": 44
+    },
+    "records": {
+      "highest_ft": {
+        "value": 54200,
+        "typecode": null
+      },
+      "fastest_kt": {
+        "value": 642.7,
+        "typecode": "B789"
+      },
+      "farthest_nmi": 153,
+      "farthest_km": 284
+    },
+    "military_airframes": 2
+  },
+  "database": {
+    "status": "ok",
+    "as_of": 1790671188,
+    "layers": [
+      {
+        "layer": "bronze",
+        "rows": 100,
+        "bytes": 1000,
+        "raw_bytes": 5000,
+        "ratio": 5.0
+      },
+      {
+        "layer": "gold",
+        "rows": 10,
+        "bytes": 10,
+        "raw_bytes": 20,
+        "ratio": 2.0
+      }
+    ],
+    "freshness": [
+      {
+        "lane": "rooftop",
+        "latest": 1790661599
+      },
+      {
+        "lane": "opensky",
+        "latest": null
+      },
+      {
+        "lane": "adsb.lol",
+        "latest": 1790639999
+      },
+      {
+        "lane": "swim",
+        "latest": 1790661500
+      }
+    ],
+    "per_day": [
+      {
+        "lane": "rooftop",
+        "days": [
+          {
+            "day": "2026-09-26",
+            "rows": 30
+          },
+          {
+            "day": "2026-09-27",
+            "rows": 10
+          }
+        ],
+        "avg_30d": 20,
+        "peak_30d": {
+          "day": "2026-09-26",
+          "rows": 30
+        },
+        "bytes_per_day": 200
+      },
+      {
+        "lane": "opensky",
+        "days": [],
+        "avg_30d": null,
+        "peak_30d": null,
+        "bytes_per_day": null
+      },
+      {
+        "lane": "adsb.lol",
+        "days": [],
+        "avg_30d": null,
+        "peak_30d": null,
+        "bytes_per_day": null
+      },
+      {
+        "lane": "swim",
+        "days": [],
+        "avg_30d": null,
+        "peak_30d": null,
+        "bytes_per_day": null
+      }
+    ],
+    "messages_per_day": [
+      {
+        "day": "2026-09-28",
+        "messages": 3490121
+      }
+    ]
+  }
+}

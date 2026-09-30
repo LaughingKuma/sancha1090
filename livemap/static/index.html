@@ -89,6 +89,12 @@
     margin-top: 7px; font-size: 10.5px; letter-spacing: 0.16em;
     color: var(--ink-dim); text-transform: uppercase;
   }
+  .masthead .stats-link {
+    display: inline-block; margin-top: 9px; font-size: 10.5px; letter-spacing: 0.08em;
+    color: var(--amber); text-decoration: none; border-bottom: 1px solid var(--hair);
+  }
+  .masthead .stats-link:hover { border-bottom-color: var(--amber); }
+  .masthead .stats-link:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
 
   /* ── Telemetry strip ──────────────────────────────────── */
   .telemetry {
@@ -311,6 +317,7 @@
     <p class="kicker"><span class="live-dot"></span>Live · ADS-B Mesh</p>
     <h1>SANCHA <b>1090</b></h1>
     <div class="sub">Real-time aircraft surveillance</div>
+    <a class="stats-link" href="stats/">Rooftop stats</a>
   </div>
 
   <div class="hud telemetry">
@@ -386,6 +393,6 @@
 <script src="vendor/maplibre-gl.js"></script>
 <script src="vendor/deck.gl.min.js"></script>
 <!-- versioned URL evicts pre-no-cache copies browsers heuristic-cached; bump on release -->
-<script type="module" src="map.js?v=6.48"></script>
+<script type="module" src="map.js?v=6.51"></script>
 </body>
 </html>

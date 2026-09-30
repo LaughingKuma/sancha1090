@@ -1,8 +1,8 @@
-import { S } from "./state.js?v=6.48";
-import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.48";
-import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.48";
-import { map, overlay } from "./mapsetup.js?v=6.48";
-import { createMapFacade } from "./facade.js?v=6.48";
+import { S } from "./state.js?v=6.51";
+import { cardData, hoverCardHTML, PROV_BADGE } from "./card.js?v=6.51";
+import { rebuildSelectedSegments, pruneSelectedPts, pushFix, setHistPath, clearHistPath } from "./trails.js?v=6.51";
+import { map, overlay } from "./mapsetup.js?v=6.51";
+import { createMapFacade } from "./facade.js?v=6.51";
 
 // Composed here because this module holds every dependency and owns the spotlight, which shares the
 // facade's /path pipeline. It is the only thing a feature island ever receives.

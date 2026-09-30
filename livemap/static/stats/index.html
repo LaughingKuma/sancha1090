@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark light" />
+<title>SANCHA1090 Rooftop Stats</title>
+<meta name="description" content="What one ADS-B antenna on a Tokyo rooftop has heard, and how big the warehouse behind it has grown." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link href="stats.css?v=6.51" rel="stylesheet" />
+</head>
+<body>
+<header class="top wrap">
+  <div class="top-bar">
+    <a class="brand" href="../" aria-label="SANCHA 1090 live map">
+      <span class="kicker">Tokyo ADS-B</span>
+      <span class="wordmark">SANCHA <b>1090</b></span>
+    </a>
+    <a class="to-map" href="../">Live map</a>
+  </div>
+  <div class="intro">
+    <h1>What the rooftop has heard</h1>
+    <p>One 1090&nbsp;MHz antenna on a Tokyo roof picks up every aircraft that broadcasts within radio range.
+      These are its totals since the first day of capture, and the size of the warehouse that keeps them.
+      Aircraft on the FAA privacy list (LADD) are left out of every number, and no single airframe is ever named.</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="sec" id="rooftop" aria-labelledby="rooftop-h">
+    <div class="sec-head">
+      <h2 id="rooftop-h">Heard from the roof</h2>
+      <p class="asof" id="rooftop-asof"></p>
+    </div>
+    <div class="sec-body" id="rooftop-body" aria-live="polite"><p class="loading">Loading rooftop numbers…</p></div>
+  </section>
+
+  <section class="sec" id="database" aria-labelledby="database-h">
+    <div class="sec-head">
+      <h2 id="database-h">The warehouse</h2>
+      <p class="asof" id="database-asof"></p>
+    </div>
+    <div class="sec-body" id="database-body" aria-live="polite"><p class="loading">Loading warehouse numbers…</p></div>
+  </section>
+</main>
+
+<footer class="wrap">
+  <p>Types, airlines and routes are named only when at least three different airframes stand behind them.
+    Times are Japan Standard Time. Numbers refresh every ten minutes.</p>
+</footer>
+<script type="module" src="stats.js?v=6.51"></script>
+</body>
+</html>
